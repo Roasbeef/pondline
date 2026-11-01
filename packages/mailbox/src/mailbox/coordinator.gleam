@@ -38,7 +38,8 @@
 ////
 //// ## Why `ask` stays on a `Name`
 ////
-//// `ask` is a call against a process that was started elsewhere: look the
+//// `ask` (`mailbox/mail`, which also holds the simulation's interception
+//// seam) is a call against a process that was started elsewhere: look the
 //// name up, send, wait on a per-call subject, and answer `Error(Nil)` for
 //// a missing process or a late reply. That is the monitored, non-panicking
 //// call against a pre-existing pid which weft does not yet have (Loom's
@@ -55,8 +56,10 @@ import core/id
 import core/mailbox/protocol.{type Request, type Response}
 import core/time.{type Instant}
 import gleam/erlang/process.{type Name, type Subject}
+import gleam/option.{type Option}
 import gleam/otp/supervision
 import gleam/result
+import mailbox/mail.{type Handle}
 import mailbox/notifier
 import mailbox/service.{type GrantError, type Random}
 import mailbox/store.{type Store, type SweepReport}
@@ -68,7 +71,9 @@ pub type Config {
     /// The database file.
     path: String,
     /// The registry to tell after an append commits.
-    notifier: Name(notifier.Message),
+    notifier: Handle(notifier.Message),
+    /// A fault hook for the store's transactions, or `None` in production.
+    store_faults: Option(store.Faults),
   )
 }
 
@@ -84,7 +89,7 @@ pub opaque type Message {
 }
 
 type State {
-  State(store: Store, notifier: Name(notifier.Message))
+  State(store: Store, notifier: Handle(notifier.Message))
 }
 
 /// Opens the database and starts the coordinator under `name`. Start fails,
@@ -95,14 +100,14 @@ type State {
 ///
 /// ```gleam
 /// let name = process.new_name("coordinator")
-/// let assert Ok(_) = coordinator.start(name, Config(path, notifier_name))
+/// let assert Ok(_) = coordinator.start(name, Config(path, notifier, None))
 /// ```
 pub fn start(
   name: Name(Message),
   config: Config,
 ) -> actor.StartResult(Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    case store.open(config.path) {
+    case store.open_with(config.path, config.store_faults) {
       Ok(store) ->
         actor.initialised(State(store:, notifier: config.notifier))
         |> actor.returning(subject)
@@ -139,12 +144,14 @@ pub fn supervised(
 /// coordinator.handle(name, Instant(1_000), request, 5000)
 /// ```
 pub fn handle(
-  name: Name(Message),
+  name: Handle(Message),
   now: Instant,
   request: Request,
   timeout_ms: Int,
 ) -> Response {
-  ask(name, timeout_ms, fn(reply_with) { Handle(now:, request:, reply_with:) })
+  mail.ask(name, "handle", timeout_ms, fn(reply_with) {
+    Handle(now:, request:, reply_with:)
+  })
   |> result.unwrap(protocol.Refused(protocol.Unavailable))
 }
 
@@ -157,11 +164,13 @@ pub fn handle(
 /// coordinator.sweep(name, Instant(1_000), 5000)
 /// ```
 pub fn sweep(
-  name: Name(Message),
+  name: Handle(Message),
   now: Instant,
   timeout_ms: Int,
 ) -> Result(Result(SweepReport, store.Error), Nil) {
-  ask(name, timeout_ms, fn(reply_with) { Sweep(now:, reply_with:) })
+  mail.ask(name, "sweep", timeout_ms, fn(reply_with) {
+    Sweep(now:, reply_with:)
+  })
 }
 
 /// Creates a provisioning grant and returns its capability. `Error(Nil)`
@@ -173,28 +182,14 @@ pub fn sweep(
 /// coordinator.create_grant(name, 10, random, 5000)
 /// ```
 pub fn create_grant(
-  name: Name(Message),
+  name: Handle(Message),
   allowance: Int,
   random: Random,
   timeout_ms: Int,
 ) -> Result(Result(Capability(Provision), GrantError), Nil) {
-  ask(name, timeout_ms, fn(reply_with) {
+  mail.ask(name, "create_grant", timeout_ms, fn(reply_with) {
     CreateGrant(allowance:, random:, reply_with:)
   })
-}
-
-/// Sends one command to the coordinator and waits for its reply, failing
-/// soft: `Error(Nil)` if it is not running or the timeout passes.
-fn ask(
-  name: Name(Message),
-  timeout_ms: Int,
-  make: fn(Subject(reply)) -> Message,
-) -> Result(reply, Nil) {
-  use _ <- result.try(process.named(name))
-
-  let reply_with = process.new_subject()
-  process.send(process.named_subject(name), make(reply_with))
-  process.receive(reply_with, timeout_ms)
 }
 
 /// Runs one command to completion before the next is read, which is what

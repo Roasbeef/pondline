@@ -48,6 +48,7 @@ import primitives
 import simplifile
 import tor
 import tor/address
+import weft/timer
 
 /// The interface the server binds. It is not configurable.
 const loopback = "127.0.0.1"
@@ -238,6 +239,9 @@ fn serve(
       sweep_period_ms:,
       clock: fn() { Instant(ffi_system.unix_seconds()) },
       names: node.new_names(),
+      timer: timer.WallClock,
+      interceptor: None,
+      store_faults: None,
     ))
   use #(_supervisor, running) <- result.try(result.replace_error(
     started,

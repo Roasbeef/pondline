@@ -29,15 +29,18 @@
 //// names, but it is a state machine only when the process has phases. This
 //// one has a single mode and a homogeneous table of subjects with no
 //// per-waiter state or deadline (each waiter times out in its own process),
-//// so `docs/weft.md` keeps it a plain `weft/actor`. `deliver` stays a
-//// `process.named` check followed by a send, for the reason `coordinator`
-//// gives for `ask`: moving to `weft/registry` would change `node.Names`
-//// and need a registry process owned by the node.
+//// so `docs/weft.md` keeps it a plain `weft/actor`. Callers reach it
+//// through a `mailbox/mail` handle, a `process.named` check followed by a
+//// send, for the reason `coordinator` gives for `ask`: moving to
+//// `weft/registry` would change `node.Names` and need a registry process
+//// owned by the node. `forget` is an `ask`, since it waits for the
+//// registry's confirmation.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/otp/supervision
+import mailbox/mail.{type Handle}
 import weft/actor
 
 /// The registry's messages. The queue key is the queue identifier's bytes,
@@ -46,12 +49,6 @@ pub opaque type Message {
   Wait(queue: BitArray, wake: Subject(Nil))
   Forget(queue: BitArray, wake: Subject(Nil), done: Subject(Nil))
   Notify(queue: BitArray)
-}
-
-/// Whether `deliver` found the registry running.
-type Delivery {
-  Delivered
-  NotRunning
 }
 
 /// How long `forget` waits for the registry to confirm.
@@ -97,8 +94,8 @@ pub fn supervised(
 /// ```gleam
 /// notifier.wait(name, queue_bytes, wake)
 /// ```
-pub fn wait(name: Name(Message), queue: BitArray, wake: Subject(Nil)) -> Nil {
-  let _ = deliver(name, Wait(queue:, wake:))
+pub fn wait(name: Handle(Message), queue: BitArray, wake: Subject(Nil)) -> Nil {
+  let _ = mail.tell(name, "wait", Wait(queue:, wake:))
   Nil
 }
 
@@ -112,18 +109,19 @@ pub fn wait(name: Name(Message), queue: BitArray, wake: Subject(Nil)) -> Nil {
 /// ```gleam
 /// notifier.forget(name, queue_bytes, wake)
 /// ```
-pub fn forget(name: Name(Message), queue: BitArray, wake: Subject(Nil)) -> Nil {
-  let done = process.new_subject()
+pub fn forget(
+  name: Handle(Message),
+  queue: BitArray,
+  wake: Subject(Nil),
+) -> Nil {
+  // A registry that is not running answers at once; one that is confirms,
+  // or the wait runs out.
+  let _ =
+    mail.ask(name, "forget", forget_timeout_ms, fn(done) {
+      Forget(queue:, wake:, done:)
+    })
 
-  // Only wait for the confirmation if the registry got the message.
-  case deliver(name, Forget(queue:, wake:, done:)) {
-    Delivered -> {
-      let _ = process.receive(done, forget_timeout_ms)
-      Nil
-    }
-
-    NotRunning -> Nil
-  }
+  Nil
 }
 
 /// Wakes every waiter of `queue`. The coordinator calls this after an
@@ -134,24 +132,11 @@ pub fn forget(name: Name(Message), queue: BitArray, wake: Subject(Nil)) -> Nil {
 /// ```gleam
 /// notifier.notify(name, queue_bytes)
 /// ```
-pub fn notify(name: Name(Message), queue: BitArray) -> Nil {
-  let _ = deliver(name, Notify(queue:))
+pub fn notify(name: Handle(Message), queue: BitArray) -> Nil {
+  // A registry that is down loses the wake-ups, which every waiter's own
+  // timeout already covers, so a missing registry is not an error.
+  let _ = mail.tell(name, "notify", Notify(queue:))
   Nil
-}
-
-/// Sends to the registry if it is running. A registry that is down means
-/// wake-ups are lost, which every waiter's own timeout already covers, so
-/// a missing registry is not an error for any caller.
-fn deliver(name: Name(Message), message: Message) -> Delivery {
-  // Sending to an unregistered name would crash the sender, so look first.
-  case process.named(name) {
-    Ok(_) -> {
-      process.send(process.named_subject(name), message)
-      Delivered
-    }
-
-    Error(Nil) -> NotRunning
-  }
 }
 
 /// Keeps the waiter table: `Wait` adds, `Forget` removes and confirms,

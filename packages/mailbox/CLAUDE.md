@@ -22,9 +22,12 @@ process.
 - `mailbox/coordinator`: the storage coordinator, a `weft/actor`, the one
   writer. It receives complete commands and tells the notifier after an
   append commits. It opens the store in its initialiser so a bad file fails
-  the start. Callers reach it through `ask` on a `Name` (fail soft); that is
-  the monitored, non-panicking call against a pre-existing pid that weft does
-  not have, so it is not a `weft/registry` address.
+  the start. Callers reach it through `mailbox/mail`'s `ask` on a `Handle`
+  over its `Name` (fail soft); that is the monitored, non-panicking call
+  against a pre-existing pid that weft does not have, so it is not a
+  `weft/registry` address.
+- `mailbox/mail`: `Handle`, `tell`, `ask`, and the simulation's interception
+  seam (`Interceptor`, `Parcel`), the same shape as `daemon/mail`.
 - `mailbox/notifier`: the queue notification registry (queue to waiting
   callers), a `weft/actor` addressed by `Name`. A homogeneous subject table
   with no per-waiter state stays an actor, not a state machine.
@@ -50,7 +53,8 @@ process.
 
 Depends on `core` (protocol, ids, capabilities, envelopes, limits, time)
 and `primitives` (`sha256`, `constant_time_equal`), plus `sqlight` (esqlite,
-Apache-2.0), `gleam_otp` and `gleam_erlang`, `weft` 0.4.6, `mist` 6.0.3 (with `glisten`, Apache-2.0),
+Apache-2.0), `gleam_otp` and `gleam_erlang`, `weft` (the sibling checkout
+as a path dependency while its run timer source is unreleased), `mist` 6.0.3 (with `glisten`, Apache-2.0),
 `gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. and `tor` (only to host the
 onion service; the sidecar forwards every stream on any virtual port to the
 loopback port, so 80 is just the conventional value the daemon dials).
@@ -110,7 +114,9 @@ Nothing depends on it as a library.
   interface.
 - The sweep period is armed only by `actor.periodic`; the handler never
   re-arms it. `node_test` fails if it is removed. The long poll's wait is a
-  `process.receive` with a timeout (a message wait, so not `weft/poll`), and
+  `process.receive` with a timeout under the wall clock (a message wait, so
+  not `weft/poll`), or a select on the wake and an armed deadline under an
+  injected timer source, and
   `http.start`'s port report is a message already queued when `mist.start`
   returns, so its timeout is a bound that no test exercises.
 - Known gaps: a long poll is not bounded by `long_poll_seconds` (up to three
@@ -120,6 +126,28 @@ Nothing depends on it as a library.
   per-operation rate limit beyond the byte quota; no
   replication; no revocation or rotation; a `Fetch` and the sweeper share the
   coordinator's single connection, so reads are serialized with writes.
+
+## Simulation seams
+
+Nil-by-default hooks for the deterministic simulation (`docs/dst/plan.md`),
+all in `node.Config` and set to production by `mailbox serve`; no `src`
+module builds an injected timer, an interceptor or a fault hook.
+`test/mailbox/seams_test.gleam` runs an exchange with every seam at its
+default and checks each set seam reaches its boundary.
+
+- **Timer** (`timer`, production `timer.WallClock`): the sweeper's
+  `periodic` (`actor.with_timer_source`) and the long poll's deadline in
+  `node.wait_for_append`, so a simulated 25 s poll costs no wall time.
+- **Mail interception** (`interceptor`, production `None`): every call to the
+  coordinator (`handle`, `sweep`, `create_grant`) and the notifier (`wait`,
+  `forget`, `notify`) goes through a `mail.Handle`; without an interceptor it
+  is a direct send. Not intercepted: ask replies, the notifier's wake-ups to
+  waiting subjects, weft timers, exits and monitors.
+- **Store faults** (`store_faults`, production `None`; `store.open_with`):
+  `Down` fails a transaction before `BEGIN`, `AckLost` commits it and then
+  fails.
+- **Database location**: already `path`, which takes a shared-cache in-memory
+  URI.
 
 ## Deep Docs
 

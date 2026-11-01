@@ -2,12 +2,15 @@ import core/mailbox/protocol
 import core/time
 import gleam/erlang/process
 import gleam/list
+import gleam/option.{None}
 import mailbox/coordinator
+import mailbox/mail
 import mailbox/node
 import mailbox/support.{cap, eid, now, padded, qid}
 import simplifile
 import sqlight
 import weft/poll
+import weft/timer
 
 fn start(sweep_period_ms: Int, clock_key: String) -> #(node.Node, String) {
   let path = support.fresh_path()
@@ -19,6 +22,9 @@ fn start(sweep_period_ms: Int, clock_key: String) -> #(node.Node, String) {
       sweep_period_ms:,
       clock: fn() { support.read_clock(clock_key) },
       names: node.new_names(),
+      timer: timer.WallClock,
+      interceptor: None,
+      store_faults: None,
     )
   let assert Ok(#(_, running)) = node.start(config)
 
@@ -42,7 +48,7 @@ fn create_request(running: node.Node) -> protocol.Request {
 
 fn coordinator_grant(running: node.Node) {
   coordinator.create_grant(
-    running.names.coordinator,
+    mail.direct(running.names.coordinator),
     5,
     support.random(31),
     5000,
@@ -189,7 +195,13 @@ pub fn the_sweeper_removes_expired_envelopes_test() {
 
 pub fn the_node_answers_unavailable_when_stopped_test() {
   let names = node.new_names()
-  let running = node.Node(names:, clock: fn() { now })
+  let running =
+    node.Node(
+      names:,
+      clock: fn() { now },
+      timer: timer.WallClock,
+      interceptor: None,
+    )
 
   assert fetch(running, 0) == protocol.Refused(protocol.Unavailable)
 }
@@ -212,6 +224,9 @@ pub fn an_orderly_shutdown_closes_the_store_test() {
           sweep_period_ms: 60_000,
           clock: fn() { now },
           names: node.new_names(),
+          timer: timer.WallClock,
+          interceptor: None,
+          store_faults: None,
         )
       let assert Ok(#(supervisor, _)) = node.start(config)
 

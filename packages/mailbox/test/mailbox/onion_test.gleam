@@ -15,6 +15,7 @@ import mailbox.{Serve, TorHosting}
 import mailbox/http
 import mailbox/node
 import mailbox/support
+import weft/timer
 
 @external(erlang, "support_ffi", "getenv")
 fn getenv(name: String) -> Result(String, Nil)
@@ -83,6 +84,9 @@ fn host() -> Nil {
       sweep_period_ms: 60_000,
       clock: fn() { Instant(support.now.unix_seconds) },
       names: node.new_names(),
+      timer: timer.WallClock,
+      interceptor: None,
+      store_faults: None,
     )
   let assert Ok(#(_, running)) = node.start(config)
   let assert Ok(server) =

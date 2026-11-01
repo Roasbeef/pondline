@@ -5,6 +5,7 @@ import gleam/bit_array
 import gleam/erlang/process
 import gleam/int
 import gleam/list
+import gleam/option.{None}
 import gleam/string
 import mailbox.{grant}
 import mailbox/http
@@ -13,6 +14,7 @@ import mailbox/service
 import mailbox/store
 import mailbox/support.{cap, eid, now, padded, qid}
 import simplifile
+import weft/timer
 
 type Reply =
   Result(#(Int, List(#(String, String)), BitArray), Nil)
@@ -37,6 +39,9 @@ fn start() {
       sweep_period_ms: 60_000,
       clock: fn() { Instant(now.unix_seconds) },
       names: node.new_names(),
+      timer: timer.WallClock,
+      interceptor: None,
+      store_faults: None,
     )
   let assert Ok(#(_, running)) = node.start(config)
   let assert Ok(server) =

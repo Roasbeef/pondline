@@ -19,23 +19,29 @@
 //// next tick tries again. A sweeper that crashed on a transient fault would
 //// only be restarted to do the same.
 ////
-//// The clock is injected as a function, so a test can drive time.
+//// The clock is injected as a function, so a test can drive time, and the
+//// tick is armed on the config's timer source, so a simulation decides when
+//// it fires.
 
 import core/time.{type Instant}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/otp/supervision
 import mailbox/coordinator
+import mailbox/mail.{type Handle}
 import weft/actor
+import weft/timer
 
 /// What the sweeper needs to run.
 pub type Config {
   Config(
     /// The coordinator to ask.
-    coordinator: Name(coordinator.Message),
+    coordinator: Handle(coordinator.Message),
     /// Milliseconds between sweeps.
     period_ms: Int,
     /// The current time, read at each tick.
     clock: fn() -> Instant,
+    /// Where the periodic tick is armed.
+    timer: timer.Source,
   )
 }
 
@@ -52,6 +58,7 @@ const reply_timeout_ms = 30_000
 fn builder(config: Config) -> actor.Builder(Config, Message, Subject(Message)) {
   actor.new(config)
   |> actor.periodic(every: config.period_ms, sending: Tick)
+  |> actor.with_timer_source(config.timer)
   |> actor.on_message(handle)
 }
 
@@ -60,7 +67,7 @@ fn builder(config: Config) -> actor.Builder(Config, Message, Subject(Message)) {
 /// ## Examples
 ///
 /// ```gleam
-/// sweeper.start(Config(coordinator_name, 60_000, clock))
+/// sweeper.start(Config(coordinator, 60_000, clock, timer.WallClock))
 /// ```
 pub fn start(config: Config) -> actor.StartResult(Subject(Message)) {
   builder(config) |> actor.start

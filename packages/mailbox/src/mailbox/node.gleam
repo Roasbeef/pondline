@@ -36,8 +36,10 @@
 //// of subjects with no per-waiter state (`docs/weft.md`, "When not to"), so
 //// it is not a state machine or an event manager. The wait itself runs in
 //// the connection's own process, which this package does not own, and it
-//// waits on a message with one deadline, which is `process.receive` with a
-//// timeout. `weft/poll` re-probes a synchronous check, so it has nothing to
+//// waits on a message with one deadline: under the production timer source,
+//// `process.receive` with a timeout. Under an injected source the deadline
+//// is a message armed through that source and the wait selects on either,
+//// so a simulation's 25 second long poll costs no wall time. `weft/poll` re-probes a synchronous check, so it has nothing to
 //// ask here, and a `weft` run would add a scope process and a worker per
 //// poll to do what one `receive` does.
 ////
@@ -58,18 +60,31 @@
 ////    coordinator through `run`.
 //// 3. A waiting `Fetch` goes through `long_poll` and `wait_for_append`,
 ////    the three steps above.
+////
+//// ## Simulation seams
+////
+//// `Config` carries three values only a simulation changes: the `timer`
+//// source the sweeper's tick and the long poll's deadline are armed on
+//// (production: `timer.WallClock`), a mail `interceptor` that every call to
+//// the coordinator and the notifier goes through (production: `None`, a
+//// direct send), and `store_faults` for the coordinator's transactions
+//// (production: `None`). The database location is already `path`.
 
 import core/id
 import core/limits
 import core/mailbox/protocol.{type Request, type Response}
 import core/time.{type Instant}
-import gleam/erlang/process.{type Name}
+import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
+import gleam/option.{type Option}
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import mailbox/coordinator
+import mailbox/mail
 import mailbox/notifier
+import mailbox/store
 import mailbox/sweeper
+import weft/timer
 
 /// The names of a node's processes. Create them once with `new_names`
 /// and share them with every process that talks to the node.
@@ -80,9 +95,16 @@ pub type Names {
   )
 }
 
-/// What a running node's callers need: where to send, and what time it is.
+/// What a running node's callers need: where to send, what time it is,
+/// where the long poll's deadline is armed, and whether calls go through a
+/// simulation's interceptor.
 pub type Node {
-  Node(names: Names, clock: fn() -> Instant)
+  Node(
+    names: Names,
+    clock: fn() -> Instant,
+    timer: timer.Source,
+    interceptor: Option(mail.Interceptor),
+  )
 }
 
 /// How a node is started.
@@ -97,6 +119,15 @@ pub type Config {
     clock: fn() -> Instant,
     /// The names to start the node's processes under.
     names: Names,
+    /// Where the sweeper's tick and the long poll's deadline are armed.
+    /// Production passes `timer.WallClock`.
+    timer: timer.Source,
+    /// Where calls between the node's processes are handed instead of sent.
+    /// Production passes `None`.
+    interceptor: Option(mail.Interceptor),
+    /// A fault hook for the coordinator's transactions. Production passes
+    /// `None`.
+    store_faults: Option(store.Faults),
   )
 }
 
@@ -135,27 +166,51 @@ pub fn start(
   #(actor.Started(static_supervisor.Supervisor), Node),
   actor.StartError,
 ) {
-  let Config(path:, sweep_period_ms:, clock:, names:) = config
+  let Config(
+    path:,
+    sweep_period_ms:,
+    clock:,
+    names:,
+    timer:,
+    interceptor:,
+    store_faults:,
+  ) = config
 
   let started =
     static_supervisor.new(static_supervisor.RestForOne)
     |> static_supervisor.add(notifier.supervised(names.notifier))
     |> static_supervisor.add(coordinator.supervised(
       names.coordinator,
-      coordinator.Config(path:, notifier: names.notifier),
+      coordinator.Config(
+        path:,
+        notifier: mail.address(
+          names.notifier,
+          interceptor,
+          from: "coordinator",
+          to: "notifier",
+        ),
+        store_faults:,
+      ),
     ))
     |> static_supervisor.add(
       sweeper.supervised(sweeper.Config(
-        coordinator: names.coordinator,
+        coordinator: mail.address(
+          names.coordinator,
+          interceptor,
+          from: "sweeper",
+          to: "coordinator",
+        ),
         period_ms: sweep_period_ms,
         clock:,
+        timer:,
       )),
     )
     |> static_supervisor.start
 
   // The caller gets the node's addresses along with the supervisor.
   case started {
-    Ok(supervisor) -> Ok(#(supervisor, Node(names:, clock:)))
+    Ok(supervisor) ->
+      Ok(#(supervisor, Node(names:, clock:, timer:, interceptor:)))
     Error(error) -> Error(error)
   }
 }
@@ -186,10 +241,25 @@ pub fn handle(node: Node, request: Request) -> Response {
 /// Sends a request to the coordinator with the node's clock reading.
 fn run(node: Node, request: Request) -> Response {
   coordinator.handle(
-    node.names.coordinator,
+    mail.address(
+      node.names.coordinator,
+      node.interceptor,
+      from: "request",
+      to: "coordinator",
+    ),
     node.clock(),
     request,
     call_timeout_ms,
+  )
+}
+
+/// The request process's handle on the notification registry.
+fn registry(node: Node) -> mail.Handle(notifier.Message) {
+  mail.address(
+    node.names.notifier,
+    node.interceptor,
+    from: "request",
+    to: "notifier",
   )
 }
 
@@ -216,7 +286,7 @@ fn wait_for_append(
   wait_seconds: Int,
 ) -> Response {
   let wake = process.new_subject()
-  notifier.wait(node.names.notifier, queue, wake)
+  notifier.wait(registry(node), queue, wake)
 
   // Registered first, looked second: an append that committed between the
   // first fetch and the registration is visible here, and any later one
@@ -224,7 +294,7 @@ fn wait_for_append(
   let answer = case run(node, request) {
     protocol.Batch(envelopes: []) -> {
       let seconds = int.min(wait_seconds, limits.long_poll_seconds)
-      let _ = process.receive(wake, seconds * 1000)
+      await_wake(node.timer, wake, seconds * 1000)
 
       run(node, request)
     }
@@ -234,8 +304,37 @@ fn wait_for_append(
 
   // After `forget` returns the registry will not send again, so draining
   // here leaves no stray wake-up in this process's mailbox.
-  notifier.forget(node.names.notifier, queue, wake)
+  notifier.forget(registry(node), queue, wake)
   let _ = process.receive(wake, 0)
 
   answer
+}
+
+/// Sleeps until `wake` receives or `timeout_ms` passes on the timer source's
+/// own time base.
+fn await_wake(
+  source: timer.Source,
+  wake: Subject(Nil),
+  timeout_ms: Int,
+) -> Nil {
+  // The wall clock is a receive with a timeout, exactly as before the seam.
+  // An injected source arms the deadline as a message and the wait takes
+  // whichever comes first; a deadline that fires after a wake-up leaves one
+  // `Nil` in this process's mailbox, unread and released with the process.
+  case source {
+    timer.WallClock -> {
+      let _ = process.receive(wake, timeout_ms)
+      Nil
+    }
+
+    timer.Injected(after:) -> {
+      let expired = process.new_subject()
+      after(timeout_ms, fn() { process.send(expired, Nil) })
+
+      process.new_selector()
+      |> process.select(wake)
+      |> process.select(expired)
+      |> process.selector_receive_forever
+    }
+  }
 }

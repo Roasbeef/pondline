@@ -25,6 +25,15 @@
 //// Functions that change state assume the caller opened a transaction; they
 //// are individually correct only inside one.
 ////
+//// ## The fault hook
+////
+//// `open_with` takes an optional `Faults` hook for a deterministic
+//// simulation, and `open` is `open_with` without one. `transaction`
+//// consults the hook once per transaction, through `faulted`: `Down` fails
+//// before `BEGIN` and writes nothing, `AckLost` commits and then fails, and
+//// both return the I/O error `injected` builds. The migrations run before
+//// the hook is attached, and a production store has no hook.
+////
 //// ## Flow
 ////
 //// 1. `open` configures the connection and migrates the schema through
@@ -55,8 +64,26 @@ pub const busy_timeout_ms = 5000
 
 /// An open mailbox database.
 pub opaque type Store {
-  Store(connection: sqlight.Connection)
+  Store(connection: sqlight.Connection, faults: Option(Faults))
 }
+
+/// What a fault hook makes of one transaction. Only a simulation sets a
+/// hook; a production store runs every transaction as written.
+pub type Fate {
+  /// Run the transaction as written.
+  Proceed
+
+  /// Fail before `BEGIN`: nothing is written and the caller gets an error.
+  Down
+
+  /// Run and commit the transaction, then return an error: written, but the
+  /// caller cannot tell this from `Down`.
+  AckLost
+}
+
+/// A fault hook, consulted once per transaction after the store is open.
+pub type Faults =
+  fn() -> Fate
 
 /// Why a storage operation failed.
 pub type Error {
@@ -181,13 +208,27 @@ CREATE INDEX tombstones_by_deadline ON tombstones (deadline);
 /// // -> Ok(Nil)
 /// ```
 pub fn open(path: String) -> Result(Store, Error) {
+  open_with(path, None)
+}
+
+/// `open`, with a fault hook that every transaction after the migrations
+/// consults. `None` is `open`; the migrations run without the hook, so it
+/// cannot fail the open itself.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.open_with("file:m1?mode=memory&cache=shared", None)
+/// // -> Ok(store)
+/// ```
+pub fn open_with(path: String, faults: Option(Faults)) -> Result(Store, Error) {
   use connection <- result.try(sqlight.open(path) |> result.map_error(Sql))
-  let store = Store(connection:)
+  let store = Store(connection:, faults: None)
 
   // A failure after the connection exists must not leak it: the file would
   // stay locked until the process exits.
   case configure(store) |> result.try(fn(_) { migrate(store) }) {
-    Ok(Nil) -> Ok(store)
+    Ok(Nil) -> Ok(Store(..store, faults:))
 
     Error(error) -> {
       let _ = sqlight.close(connection)
@@ -301,6 +342,44 @@ fn apply_migrations(
 /// // -> Ok(Nil)
 /// ```
 pub fn transaction(
+  store: Store,
+  body: fn() -> Result(a, Error),
+) -> Result(a, Error) {
+  // Without a hook this is the transaction as written; a hook may fail it
+  // before it starts or after it commits.
+  case store.faults {
+    None -> atomically(store, body)
+    Some(decide) -> faulted(store, decide(), body)
+  }
+}
+
+/// A transaction under the fate a fault hook chose for it.
+fn faulted(
+  store: Store,
+  fate: Fate,
+  body: fn() -> Result(a, Error),
+) -> Result(a, Error) {
+  case fate {
+    Proceed -> atomically(store, body)
+
+    Down -> Error(injected("the database is unavailable"))
+
+    // The commit is real; only the caller's view of it is lost.
+    AckLost ->
+      atomically(store, body)
+      |> result.try(fn(_) { Error(injected("the commit's outcome was lost")) })
+  }
+}
+
+/// The error a fault hook's failure returns: an I/O error, which is what a
+/// real failing disk looks like to the caller.
+fn injected(message: String) -> Error {
+  Sql(sqlight.SqlightError(sqlight.Ioerr, message, -1))
+}
+
+/// Runs `body` between `BEGIN IMMEDIATE` and `COMMIT`, rolling back on any
+/// error.
+fn atomically(
   store: Store,
   body: fn() -> Result(a, Error),
 ) -> Result(a, Error) {
