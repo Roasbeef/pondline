@@ -17,8 +17,9 @@
 ////   `Active` or has since closed.
 //// - `delivered_once`: one payload tag is delivered at most once per daemon
 ////   (the schema keeps message ids unique; this catches a message the
-////   operator sent twice). A tag whose send answered `Unavailable` and was
-////   retried is excused as H4.
+////   operator sent twice). The sim sends each tag under its own idempotency
+////   key, so a send retried after `Unavailable` must not deliver it twice
+////   (ADR-011).
 //// - `never_resurrected`: the mailbox never stores an envelope it has
 ////   tombstoned.
 ////
@@ -40,9 +41,8 @@
 ////   mailbox holds nothing for a queue a live relationship reads.
 //// - `offers_opened`: no offer is still `provisioning`.
 //// - `pairings_settled`: no relationship is `joining`; one `awaiting` has a
-////   peer that is `pending` (an operator decision). A joiner with no peer,
-////   on a daemon whose `accept` answered `Unavailable` and was retried, is
-////   excused as H4, one per such answer.
+////   peer that is `pending` (an operator decision). A retried accept returns
+////   the first relationship (ADR-011), so no second joiner waits unpaired.
 //// - `ops_returned`: every operator call returned, and none accepted an
 ////   input past a limit.
 ////
@@ -50,9 +50,6 @@
 ////
 //// An excuse matches one exact state and is counted, never silent:
 ////
-//// - `h4_retried_send`: a duplicate payload whose send was retried after
-////   `Unavailable`.
-//// - `h4_retried_accept`: a joiner with no peer, one per retried accept.
 //// - `lied_append`: a failed row whose `Append` response was a lie.
 //// - `corrupted_fetch`: a message, receipt or handshake lost because a
 ////   fetch response carrying it was a lie, so the reader dropped and
@@ -106,10 +103,6 @@ pub type Facts {
   Facts(
     /// `#(node, envelope)` of every `Append` whose response was a lie.
     lied_appends: Set(#(String, BitArray)),
-    /// Payload tags whose send answered `Unavailable` before the end.
-    retried_tags: Set(String),
-    /// Per daemon, how many `accept` answers were `Unavailable`.
-    retried_accepts: Dict(String, Int),
     /// Operator calls that never returned, by op index.
     unfinished: List(Int),
     /// Operator calls that returned something the op did not expect.
@@ -282,18 +275,15 @@ pub fn short(bytes: BitArray) -> String {
 pub fn safety(view: View, facts: Facts) -> #(List(Violation), List(Excuse)) {
   let per_node =
     list.flat_map([view.a, view.b], fn(node) {
-      list.flatten([budget_books(node), rows_decode(node), active_only(node)])
-    })
-  let #(duplicates, excused) =
-    list.map([view.a, view.b], fn(node) { delivered_once(node, facts) })
-    |> list.fold(#([], []), fn(acc, pair) {
-      #(list.append(acc.0, pair.0), list.append(acc.1, pair.1))
+      list.flatten([
+        budget_books(node),
+        rows_decode(node),
+        active_only(node),
+        delivered_once(node),
+      ])
     })
 
-  #(
-    list.flatten([per_node, duplicates, never_resurrected(view, facts)]),
-    excused,
-  )
+  #(list.append(per_node, never_resurrected(view, facts)), [])
 }
 
 /// Each relationship's budget agrees with its deliveries.
@@ -370,33 +360,20 @@ fn active_only(node: Node) -> List(Violation) {
   })
 }
 
-/// No payload tag is delivered twice on one daemon, unless its send was
-/// retried after `Unavailable` (H4).
-fn delivered_once(
-  node: Node,
-  facts: Facts,
-) -> #(List(Violation), List(Excuse)) {
-  let tags =
-    list.filter_map(node.deliveries, fn(row) { ops.tag_of(row.payload) })
-  let twice =
-    list.group(tags, fn(tag) { tag })
-    |> dict.to_list
-    |> list.filter(fn(pair) { list.drop(pair.1, 1) != [] })
-    |> list.map(fn(pair) { pair.0 })
-  let #(excused, failed) =
-    list.partition(twice, fn(tag) { set.contains(facts.retried_tags, tag) })
-
-  #(
-    list.map(failed, fn(tag) {
-      Violation(
-        check: "delivered_once",
-        detail: node.name <> " received payload " <> tag <> " twice",
-      )
-    }),
-    list.map(excused, fn(tag) {
-      Excuse(name: "h4_retried_send", detail: node.name <> " " <> tag)
-    }),
-  )
+/// No payload tag is delivered twice on one daemon. The sim's sends carry
+/// their tag as an idempotency key (ADR-011), so a send retried after
+/// `Unavailable` is the same message, never a second one.
+fn delivered_once(node: Node) -> List(Violation) {
+  list.filter_map(node.deliveries, fn(row) { ops.tag_of(row.payload) })
+  |> list.group(fn(tag) { tag })
+  |> dict.to_list
+  |> list.filter(fn(pair) { list.drop(pair.1, 1) != [] })
+  |> list.map(fn(pair) {
+    Violation(
+      check: "delivered_once",
+      detail: node.name <> " received payload " <> pair.0 <> " twice",
+    )
+  })
 }
 
 /// The mailbox never stores an envelope again after tombstoning it.
@@ -771,53 +748,31 @@ fn pairings_settled(
 
       // Joining never waits on anyone; awaiting waits only on an operator.
       case row.phase, theirs {
-        "joining", _ -> Ok(#(corrupted, Paired, label <> " still joining"))
+        "joining", _ -> Ok(#(corrupted, label <> " still joining"))
 
         "awaiting", Some(contact) ->
           case list.find(peer.rows, fn(r) { r.contact == contact }) {
             Ok(found) if found.phase == "pending" -> Error(Nil)
             _ ->
-              Ok(#(
-                corrupted,
-                Paired,
-                label <> " awaiting an accept that never came",
-              ))
+              Ok(#(corrupted, label <> " awaiting an accept that never came"))
           }
 
+        // A retried accept used to leave a second joiner here, waiting with
+        // no peer; accepting an invitation twice now returns the first
+        // relationship (ADR-011), so nothing excuses it.
         "awaiting", None ->
-          Ok(#(
-            corrupted,
-            Unpaired,
-            label <> " awaiting with no peer relationship",
-          ))
+          Ok(#(corrupted, label <> " awaiting with no peer relationship"))
 
         _, _ -> Error(Nil)
       }
     })
-  let #(lost, rest) = list.partition(stuck, fn(entry) { entry.0 == Corrupted })
-
-  // A retried accept leaves at most one joiner per `Unavailable` answer
-  // whose `Hello` the inviter dropped as a repeat of the consumed offer: it
-  // waits with no peer. Only that shape is excused, one per answer.
-  let #(unpaired, paired) =
-    list.partition(rest, fn(entry) { entry.1 == Unpaired })
-  let allowed = dict.get(facts.retried_accepts, node.name) |> result.unwrap(0)
-  let excused = list.take(unpaired, allowed)
-  let failed = list.append(paired, list.drop(unpaired, allowed))
+  let #(lost, failed) =
+    list.partition(stuck, fn(entry) { entry.0 == Corrupted })
 
   #(
-    list.map(failed, fn(entry) { Violation("pairings_settled", entry.2) }),
-    list.flatten([
-      list.map(excused, fn(entry) { Excuse("h4_retried_accept", entry.2) }),
-      list.map(lost, fn(entry) { Excuse("corrupted_fetch", entry.2) }),
-    ]),
+    list.map(failed, fn(entry) { Violation("pairings_settled", entry.1) }),
+    list.map(lost, fn(entry) { Excuse("corrupted_fetch", entry.1) }),
   )
-}
-
-/// Whether a stuck joiner has a peer relationship on the other daemon.
-type Pairing {
-  Paired
-  Unpaired
 }
 
 /// Every operator call returned, and none took an input past a limit.
