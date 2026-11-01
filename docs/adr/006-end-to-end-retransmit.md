@@ -142,3 +142,28 @@ What is implemented and tested:
   a one-time gap at the upgrade.
 - Revisit the window and the bound with measurements from real deployments:
   how long receivers are offline, and how often mailboxes lose data.
+
+## Addendum (2026-11-01): retention slack (ADR-008)
+
+The consequence above about retention expiry assumed the retention
+deadline and the message's expiry were equal. ADR-008 makes them differ: a
+send offers the mailbox `min(expires_at, now + message_retention_seconds -
+retention_slack_seconds)`, computed at the time of each send, while the
+row's `deadline`, which bounds the retransmit schedule, stays the message's
+`expires_at`.
+
+So the slack does let retransmission cover part of the retention-expiry
+window. The original copy is held until about an hour before the message
+expires (less the time between sealing and the first send). Every
+retransmitted copy is sent at least `receipt_window_seconds` after the
+original was stored, and that window is no shorter than the slack, so a
+copy's first offer is the message's own expiry and the mailbox holds it to
+the end. A receiver offline long enough that the mailbox swept the original,
+but back before the message expires, fetches a copy and delivers it. The
+window this recovers is at most `retention_slack_seconds` wide, and only for
+a message that earned no receipt in the 31 hours its copies are sent over:
+no copy is scheduled in response to the mailbox's expiry, so a longer gap
+between sweep and expiry would need a schedule that runs later than
+`due_at`'s does today. If the slack is ever raised above the receipt
+window, the first copy is held short of the expiry too, and only the later
+copies cover the window.
