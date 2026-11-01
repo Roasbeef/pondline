@@ -62,6 +62,11 @@ primitive functions the shell builds from `packages/primitives`.
   `retransmit(suite, relationship, Unreceipted, now)` returns a
   `Retransmission` (a fresh envelope for a copy of a stored row's bytes) or
   a `Stop`.
+- `core/retention`: the retention deadlines a sender offers a mailbox
+  (ADR-008). `offers(expires_at:, now:)` returns the default,
+  `retention_slack_seconds` below the mailbox's maximum and never past
+  `expires_at`, and up to `max_deadline_offers - 1` shorter ones, each
+  halving the lifetime, all after `now`.
 
 ## Relationships
 
@@ -102,6 +107,13 @@ None. `core` sends no messages and owns no processes.
 - Skip bounds are checked before any key is derived; the skipped-key store
   evicts its oldest keys rather than refusing, and `decode_state` refuses
   a stored count over the bound.
+- A sender never offers the mailbox's full retention by its own clock: the
+  first offer sits `retention_slack_seconds` below it, the list of offers is
+  finite (`max_deadline_offers`), and no offer is `now` or earlier or past
+  the row's deadline (`test/core/retention_test.gleam`, with properties). A
+  mailbox whose clock trails the sender's by up to the slack accepts the
+  first offer. The pure simulation does not model clock skew and still
+  stores envelopes under the row's deadline.
 - The fake `Suite` used by tests lives under `test/` only, so it cannot be
   compiled into a release (spec §13.3).
 - A retransmit is the same committed padded ciphertext under a new envelope
@@ -147,6 +159,7 @@ None. `core` sends no messages and owns no processes.
   and test strategy).
 - `docs/adr/006-end-to-end-retransmit.md` (retransmission and
   regenerated receipts).
+- `docs/adr/008-deadline-slack.md` (retention slack and shorter offers).
 - `docs/crypto-profile-v1.md` (the profile, byte for byte),
   `docs/adr/002-pq-crypto-over-otp.md` and
   `docs/adr/005-hybrid-authentication.md`.
