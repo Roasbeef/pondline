@@ -109,11 +109,14 @@ None. `core` sends no messages and owns no processes.
   a stored count over the bound.
 - A sender never offers the mailbox's full retention by its own clock: the
   first offer sits `retention_slack_seconds` below it, the list of offers is
-  finite (`max_deadline_offers`), and no offer is `now` or earlier or past
-  the row's deadline (`test/core/retention_test.gleam`, with properties). A
-  mailbox whose clock trails the sender's by up to the slack accepts the
-  first offer. The pure simulation does not model clock skew and still
-  stores envelopes under the row's deadline.
+  finite (`max_deadline_offers`), no offer is past the row's deadline, and
+  for a row whose deadline is still ahead no offer is `now` or earlier (a
+  row exactly at its deadline is offered the deadline, which the mailbox
+  refuses) (`test/core/retention_test.gleam`, with properties). A mailbox
+  whose clock trails the sender's by up to the slack accepts the first
+  offer, and one up to 529 650 s (about 6.1 days) behind accepts some
+  offer. The pure simulation does not model clock skew and still stores
+  envelopes under the row's deadline.
 - The fake `Suite` used by tests lives under `test/` only, so it cannot be
   compiled into a release (spec §13.3).
 - A retransmit is the same committed padded ciphertext under a new envelope
@@ -149,6 +152,17 @@ None. `core` sends no messages and owns no processes.
   (prints the seed and run index of the first failure); replay one seed
   with `REEDWIRE_REPLAY=<hex> gleam test` or
   `core@swarm:replay("<hex>")`.
+- `core/tlv`, `limits.padded_size`, `envelope.pad`/`unpad`/`from_wire`,
+  `retention.offers` and `retransmit.due_at` are transcribed into Lean and
+  proved (`formal/lean`, `docs/formal/lean.md`). The proofs hold for Gleam
+  only while `test/core/formal_vectors_test.gleam` passes: it replays the
+  11 201 generated vectors in `test/core/formal_vectors.txt` against the real
+  functions. Changing one of these functions means changing its Lean
+  definition and rerunning `formal/lean/check.sh --write`; never edit the
+  vectors by hand. Mutation-checked: a non-minimal BigSize, a repeated type,
+  ignored unknown even types, an off-by-one halving, a dropped slack, `<`
+  for `<=` on the retransmit deadline or on a bucket, and a miscounted
+  length prefix each fail it.
 - `fake_suite.seeded(n)` draws identifiers from a seeded counter, so a
   simulation run depends only on its seed; `fake_suite.suite()` keeps a
   process-wide counter for tests that build several suites.
@@ -164,3 +178,4 @@ None. `core` sends no messages and owns no processes.
   `docs/adr/002-pq-crypto-over-otp.md` and
   `docs/adr/005-hybrid-authentication.md`.
 - `docs/gleam-style.md` Part IV §5 (purity layering).
+- `docs/formal/lean.md` (the Lean proofs and the conformance vectors).
