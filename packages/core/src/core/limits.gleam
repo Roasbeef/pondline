@@ -91,9 +91,11 @@ pub const max_message_bytes = 67_584
 /// The largest encoded `Hello`: a route, a description and framing (1 KiB).
 pub const max_hello_bytes = 1024
 
-/// The largest invitation file: the bundle, a route and a description, with
-/// framing (4 KiB).
-pub const max_invitation_bytes = 4096
+/// The largest invitation file: the bundle (13 736 bytes, most of it the
+/// inviter's hybrid identity and the two hybrid prekey signatures), a
+/// route and a description, with framing (16 KiB). The largest file the
+/// codecs can produce is about 14.6 KB.
+pub const max_invitation_bytes = 16_384
 
 /// The largest encoded route: an onion hostname, a port, a queue identifier
 /// and a capability, with framing (512 bytes).
