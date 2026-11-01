@@ -22,6 +22,25 @@ pub const support_relationship_seconds = 7200
 /// policy narrows it (7 days).
 pub const message_retention_seconds = 604_800
 
+/// How far below the mailbox's maximum retention a sender's default
+/// retention deadline sits, by the sender's own clock (1 hour). A mailbox
+/// refuses a deadline past its `now + message_retention_seconds`, so this
+/// is how far a sender's clock may run ahead of the mailbox's and still be
+/// accepted on the first offer. A clock kept by NTP is within a second; an
+/// unsynchronised one drifts by seconds a day, and a daylight-saving slip is
+/// one hour, which this still covers because the mailbox reads its clock
+/// after the sender does. It costs every envelope an hour of a week's
+/// retention (`docs/adr/008-deadline-slack.md`).
+pub const retention_slack_seconds = 3600
+
+/// The most retention deadlines one append offers the mailbox (4): the
+/// default, then up to three more after `BadDeadline` refusals, each
+/// halving the lifetime of the one before. Three halvings reach a deadline
+/// the mailbox accepts for a clock up to about six days ahead, and the
+/// bound caps what a clock that far off costs at three extra round trips
+/// per attempt (`core/retention`).
+pub const max_deadline_offers = 4
+
 /// The largest application body one message may carry (64 KiB).
 pub const max_body_bytes = 65_536
 
