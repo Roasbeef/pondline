@@ -7,7 +7,8 @@ the capability hashes that authorize each operation, and tombstones that
 stop an acknowledged envelope from coming back. This document describes
 the processes that do that work, who owns which state, and how a request
 moves from an HTTP connection to a committed SQLite row. It reflects the
-code at `bf7d597`.
+code at `bf7d597`, with the move of its processes onto
+[weft](../weft.md) at `7782850`.
 
 The wire format of each request is in `packages/core/src/core/mailbox/codec.gleam`
 (type tables in its module doc), and the request and response types are in
@@ -93,7 +94,7 @@ sequenceDiagram
         C-->>Sup: init error
         Sup-->>Main: Error, print "the node could not start", halt(1)
     end
-    Sup->>S: start, send_after(60_000, Tick)
+    Sup->>S: start, weft actor.periodic(60_000, Tick)
     Main->>M: mist.start on 127.0.0.1:port
     M-->>Main: after_start sends bound port (5000 ms)
     Main->>Main: print "listening 127.0.0.1:<port>", sleep_forever
@@ -317,8 +318,10 @@ same envelope id, which the idempotency rules make safe. When the
 coordinator or notifier is not registered, calls answer
 `Refused(Unavailable)` or do nothing, rather than crash the caller.
 
-The sweeper schedules its next tick only after the sweep reply or its
-30_000 ms timeout, so ticks are at least 60_000 ms apart and never overlap.
+The sweeper is a `weft/actor` whose `periodic` timer is fixed-delay: the
+next tick is armed once the handler for this one returns, after the sweep
+reply or its 30_000 ms timeout, so ticks are at least 60_000 ms apart and
+never overlap.
 Sweeps run inside the coordinator, serialized with requests.
 
 ## Known gaps
@@ -331,7 +334,8 @@ Sweeps run inside the coordinator, serialized with requests.
   it relies on the coordinator being the only connection.
 - The worst-case duration of one long poll is not bounded by
   `long_poll_seconds` alone: three coordinator calls of up to 30_000 ms
-  each surround the wait.
+  each surround the wait. The `mailbox/node` module doc says why a weft
+  deadline around the whole poll was not added.
 - If the HTTP client disconnects during a long poll, the connection process
   keeps waiting until its timeout or a wake; whether mist stops the handler
   earlier was not checked.
