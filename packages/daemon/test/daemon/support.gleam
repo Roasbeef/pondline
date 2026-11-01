@@ -56,6 +56,12 @@ pub fn fresh(prefix: String) -> String {
 
 /// Starts a mailbox with a large provisioning allowance.
 pub fn start_mailbox() -> Mailbox {
+  start_mailbox_on(config.system_clock())
+}
+
+/// Starts a mailbox with a large provisioning allowance that reads `clock`,
+/// for tests that set the mailbox's clock apart from a daemon's.
+pub fn start_mailbox_on(clock: fn() -> time.Instant) -> Mailbox {
   let path = fresh("mailbox") <> ".db"
   let assert Ok(db) = mailbox_store.open(path)
   let assert Ok(provision) =
@@ -65,7 +71,6 @@ pub fn start_mailbox() -> Mailbox {
   let file = fresh("provision") <> ".cap"
   let assert Ok(Nil) = simplifile.write_bits(file, capability.expose(provision))
 
-  let clock = config.system_clock()
   let assert Ok(#(_, running)) =
     mailbox_node.start(mailbox_node.Config(
       path:,

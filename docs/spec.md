@@ -391,6 +391,8 @@ Quota reservation and durable insertion MUST occur atomically. The server must n
 
 The response binds the queue, envelope, content digest, and accepted retention deadline. It is evidence of the provider’s acceptance—not proof that the provider will behave honestly.
 
+*Amended by ADR-008.* The mailbox judges a requested retention deadline by its own clock and refuses one that is not in the future or exceeds its maximum retention. A client offers a deadline `retention_slack_seconds` below that maximum by its own clock, never past the message's expiry, so a clock modestly ahead is still accepted. A client refused for the deadline offers the same envelope again with the lifetime halved, at most `max_deadline_offers` offers per attempt, and treats a refusal of the last as a retryable failure bounded by the message's expiry, never as a permanent rejection.
+
 ## 6.5 Fetch and acknowledgment
 
 `Fetch` is non-destructive.
@@ -739,6 +741,8 @@ These are engineering starting points, not measured optimal values.
 | Long-poll wait | At most 25 seconds |
 | Receipt window before an end-to-end retransmit | 1 hour, doubling per copy (ADR-006) |
 | End-to-end retransmits per message | At most 5 (ADR-006) |
+| Retention slack below the mailbox's maximum | 1 hour (ADR-008) |
+| Retention deadlines offered per append | At most 4, each halving the lifetime (ADR-008) |
 | Initial queue capacity | 64 MiB, with separate message/rate limits |
 | Ratchet work limits | Fixed by the crypto profile; never unbounded |
 

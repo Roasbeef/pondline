@@ -189,7 +189,11 @@ fn seal(
   body: message.Body,
   now: Instant,
 ) -> Result(#(envelope.Padded, relationship.Link), String) {
-  let expires_at = time.add(now, limits.message_retention_seconds - 3600)
+  let expires_at =
+    time.add(
+      now,
+      limits.message_retention_seconds - limits.retention_slack_seconds,
+    )
   let plaintext =
     message.encode(message.Message(id: message_id, expires_at:, body:))
 
@@ -239,7 +243,10 @@ fn append(
     queue: link.outbound.queue,
     append: link.outbound.append,
     envelope:,
-    retention_deadline: time.add(now, limits.message_retention_seconds - 3600),
+    retention_deadline: time.add(
+      now,
+      limits.message_retention_seconds - limits.retention_slack_seconds,
+    ),
     ciphertext: padded,
   )
 }

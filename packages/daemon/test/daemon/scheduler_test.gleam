@@ -88,7 +88,6 @@ pub fn permanent_refusals_fail_and_transient_ones_retry_test() {
     [
       protocol.Conflict,
       protocol.Unauthorized,
-      protocol.BadDeadline,
       protocol.TooLarge,
       protocol.Malformed,
       protocol.UnsupportedVersion,
@@ -97,9 +96,15 @@ pub fn permanent_refusals_fail_and_transient_ones_retry_test() {
       assert verdict(reason) == scheduler.Refused
     },
   )
-  list.each([protocol.QuotaExceeded, protocol.Unavailable], fn(reason) {
-    assert verdict(reason) == scheduler.Transient
-  })
+
+  // A deadline outside the mailbox's window is a clock disagreement, not a
+  // verdict on the envelope (ADR-008), so it is retried.
+  list.each(
+    [protocol.QuotaExceeded, protocol.Unavailable, protocol.BadDeadline],
+    fn(reason) {
+      assert verdict(reason) == scheduler.Transient
+    },
+  )
 }
 
 pub fn a_transport_failure_retries_test() {

@@ -118,14 +118,18 @@ campaigns need `+t` raised: each daemon start makes atoms for its names.
 `sim.regressions()` holds the seeds of production bugs the swarm found and
 that are not fixed yet; the test asserts each still fails its check:
 
-- H1: a daemon clock five seconds ahead of the mailbox; the default
-  deadline (`now + retention`) is refused `BadDeadline`, which the
-  scheduler treats as permanent (`outbox_settled`).
 - H2: a byzantine peer repeats a message id; the receiver's commit fails on
   `UNIQUE (contact, message_id)`, the envelope is never acknowledged and
   every later one on that queue waits behind it (`queues_drained`).
 
-When a fix lands, move its seed to the corpus.
+When a fix lands, move its seed to the corpus, where it must pass. Fixed so
+far:
+
+- H1 (ADR-008): a daemon clock five seconds ahead of the mailbox; the
+  default deadline (`now + retention`) was refused `BadDeadline`, which the
+  scheduler treated as permanent (`outbox_settled`). The sender's slack
+  below the mailbox's maximum and the retried, shortened offers fixed it;
+  the seed is the corpus's last entry.
 
 ## Known gaps
 
