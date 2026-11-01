@@ -14,6 +14,7 @@ simplifile = ">= 2.0.0 and < 3.0.0"
 core = { path = "../core" }
 primitives = { path = "../primitives" }
 tor = { path = "../tor" }
+weft = "== 0.4.6"
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"

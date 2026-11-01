@@ -29,6 +29,28 @@
 ////    the clamped wait elapses, then fetch a last time and answer, possibly
 ////    with an empty batch.
 ////
+//// ## Why the wait is not a weft primitive
+////
+//// The waiting side is a list of waiters flushed on a state change, but the
+//// list lives in the notifier, a `weft/actor`, and it is a homogeneous list
+//// of subjects with no per-waiter state (`docs/weft.md`, "When not to"), so
+//// it is not a state machine or an event manager. The wait itself runs in
+//// the connection's own process, which this package does not own, and it
+//// waits on a message with one deadline, which is `process.receive` with a
+//// timeout. `weft/poll` re-probes a synchronous check, so it has nothing to
+//// ask here, and a `weft` run would add a scope process and a worker per
+//// poll to do what one `receive` does.
+////
+//// The worst case of one poll is still not bounded by
+//// `limits.long_poll_seconds`: each of the three `run` calls can wait out
+//// `call_timeout_ms` on a coordinator that is stuck, so a poll may take
+//// the wait plus up to three such timeouts. A `weft` deadline would bound
+//// it only by running the whole poll in a worker killed at the deadline,
+//// which needs a slack above the wait for the healthy case, an arbitrary
+//// answer when it expires, and the caller's own `forget` after the kill.
+//// That is more machinery than the case warrants, since a coordinator that
+//// stuck already holds every other request for as long, so the gap stays.
+////
 //// ## Flow
 ////
 //// 1. `start` brings up the three processes under one supervisor.

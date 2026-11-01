@@ -19,11 +19,17 @@ process.
 - `mailbox/service`: `handle(store, now, request) -> Response`, `sweep`,
   and `create_grant(store, allowance, random)`, which returns the
   provisioning capability once and stores only its hash.
-- `mailbox/coordinator`: the storage coordinator actor, the one writer. It
-  receives complete commands and tells the notifier after an append commits.
+- `mailbox/coordinator`: the storage coordinator, a `weft/actor`, the one
+  writer. It receives complete commands and tells the notifier after an
+  append commits. It opens the store in its initialiser so a bad file fails
+  the start. Callers reach it through `ask` on a `Name` (fail soft); that is
+  the monitored, non-panicking call against a pre-existing pid that weft does
+  not have, so it is not a `weft/registry` address.
 - `mailbox/notifier`: the queue notification registry (queue to waiting
-  callers), addressed by `Name`.
-- `mailbox/sweeper`: a periodic actor that asks the coordinator to sweep.
+  callers), a `weft/actor` addressed by `Name`. A homogeneous subject table
+  with no per-waiter state stays an actor, not a state machine.
+- `mailbox/sweeper`: a `weft/actor` whose `periodic` tick (a fixed delay,
+  armed once in the builder) asks the coordinator to sweep.
 - `mailbox/http`: `start(node, Config(interface, port))` returns a `Server`
   with the bound port (port 0 is ephemeral); the mist handler, routing,
   bounded body read and one log line per request.
@@ -44,7 +50,7 @@ process.
 
 Depends on `core` (protocol, ids, capabilities, envelopes, limits, time)
 and `primitives` (`sha256`, `constant_time_equal`), plus `sqlight` (esqlite,
-Apache-2.0), `gleam_otp` and `gleam_erlang`, `mist` 6.0.3 (with `glisten`, Apache-2.0),
+Apache-2.0), `gleam_otp` and `gleam_erlang`, `weft` 0.4.6, `mist` 6.0.3 (with `glisten`, Apache-2.0),
 `gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. and `tor` (only to host the
 onion service; the sidecar forwards every stream on any virtual port to the
 loopback port, so 80 is just the conventional value the daemon dials).
@@ -70,7 +76,8 @@ Nothing depends on it as a library.
   following the commit.
 - Long-polling caller to notifier: `Wait`, then a synchronous `Forget`, so no
   wake-up can reach the caller after cleanup.
-- Sweeper to coordinator: a `Sweep` every `sweep_period_ms`.
+- Sweeper to coordinator: a `Sweep` every `sweep_period_ms`, from the
+  actor's `periodic` tick.
 
 ## Invariants
 
@@ -101,7 +108,14 @@ Nothing depends on it as a library.
   with `REEDWIRE_TOR_NETWORK=1`.
 - The server binds `127.0.0.1` by default and the binary offers no other
   interface.
-- Known gaps: no TLS, auth headers, admin API or metrics; no per-connection
+- The sweep period is armed only by `actor.periodic`; the handler never
+  re-arms it. `node_test` fails if it is removed. The long poll's wait is a
+  `process.receive` with a timeout (a message wait, so not `weft/poll`), and
+  `http.start`'s port report is a message already queued when `mist.start`
+  returns, so its timeout is a bound that no test exercises.
+- Known gaps: a long poll is not bounded by `long_poll_seconds` (up to three
+  `call_timeout_ms` coordinator calls plus the wait, only when the
+  coordinator is stuck); no TLS, auth headers, admin API or metrics; no per-connection
   or per-address rate limit and no cap on concurrent connections; no
   per-operation rate limit beyond the byte quota; no
   replication; no revocation or rotation; a `Fetch` and the sweeper share the

@@ -275,6 +275,10 @@ fn serve(
 /// stops when the caller does. The service is created before Tor can reach
 /// it, so a client may need to retry for a while after this returns.
 ///
+/// Both waits, for the bootstrap and for the service, are `tor`'s own
+/// bounded calls into its `weft/state_machine`, which owns their deadlines;
+/// nothing here polls, so there is no `weft/poll` to port.
+///
 /// ## Examples
 ///
 /// ```gleam

@@ -8,6 +8,13 @@
 //// itself runs inside the coordinator, so it is serialized with every write
 //// and needs no locking of its own.
 ////
+//// The tick is `weft/actor`'s `periodic`: a fixed delay armed in one place,
+//// the actor's builder, and re-armed by the loop once the handler for the
+//// last tick has returned. A sweep slower than the period therefore delays
+//// the next tick instead of queueing a backlog of them, and the handler no
+//// longer carries a `send_after` of its own to keep in step with the
+//// builder.
+////
 //// A tick whose sweep fails, or finds the coordinator down, is dropped; the
 //// next tick tries again. A sweeper that crashed on a transient fault would
 //// only be restarted to do the same.
@@ -16,9 +23,9 @@
 
 import core/time.{type Instant}
 import gleam/erlang/process.{type Name, type Subject}
-import gleam/otp/actor
 import gleam/otp/supervision
 import mailbox/coordinator
+import weft/actor
 
 /// What the sweeper needs to run.
 pub type Config {
@@ -32,7 +39,7 @@ pub type Config {
   )
 }
 
-/// The sweeper's only message, from its own timer.
+/// The sweeper's only message, from its own periodic timer.
 pub opaque type Message {
   Tick
 }
@@ -41,7 +48,14 @@ pub opaque type Message {
 /// round.
 const reply_timeout_ms = 30_000
 
-/// Starts the sweeper and schedules its first tick.
+/// Builds the sweeper. The first tick comes one period after start.
+fn builder(config: Config) -> actor.Builder(Config, Message, Subject(Message)) {
+  actor.new(config)
+  |> actor.periodic(every: config.period_ms, sending: Tick)
+  |> actor.on_message(handle)
+}
+
+/// Starts the sweeper; its first tick comes one period later.
 ///
 /// ## Examples
 ///
@@ -49,15 +63,7 @@ const reply_timeout_ms = 30_000
 /// sweeper.start(Config(coordinator_name, 60_000, clock))
 /// ```
 pub fn start(config: Config) -> actor.StartResult(Subject(Message)) {
-  actor.new_with_initialiser(1000, fn(subject) {
-    process.send_after(subject, config.period_ms, Tick)
-
-    actor.initialised(#(config, subject))
-    |> actor.returning(subject)
-    |> Ok
-  })
-  |> actor.on_message(handle)
-  |> actor.start
+  builder(config) |> actor.start
 }
 
 /// The sweeper as a supervised child.
@@ -70,22 +76,21 @@ pub fn start(config: Config) -> actor.StartResult(Subject(Message)) {
 pub fn supervised(
   config: Config,
 ) -> supervision.ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(config) })
+  builder(config) |> actor.supervised
 }
 
-/// On each tick, asks the coordinator to sweep and schedules the next tick.
-/// The next tick is scheduled whether or not this sweep succeeded.
-fn handle(
-  state: #(Config, Subject(Message)),
-  _message: Message,
-) -> actor.Next(#(Config, Subject(Message)), Message) {
-  let #(config, subject) = state
+/// On each tick, asks the coordinator to sweep. The timer re-arms itself
+/// whether or not this sweep succeeded.
+fn handle(config: Config, message: Message) -> actor.Next(Config, Message) {
+  // The only message is the tick.
+  case message {
+    Tick -> {
+      // The result is dropped on purpose: a failed or unanswered sweep is
+      // retried by the next tick, and the sweep has no caller to tell.
+      let _ =
+        coordinator.sweep(config.coordinator, config.clock(), reply_timeout_ms)
 
-  // The result is dropped on purpose: a failed or unanswered sweep is
-  // retried by the next tick, and the sweep has no caller to tell.
-  let _ =
-    coordinator.sweep(config.coordinator, config.clock(), reply_timeout_ms)
-
-  process.send_after(subject, config.period_ms, Tick)
-  actor.continue(state)
+      actor.continue(config)
+    }
+  }
 }

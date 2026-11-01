@@ -66,7 +66,11 @@ import mist.{type Connection, type ResponseData}
 /// The media type of every request and response body.
 pub const media_type = "application/vnd.reedwire.mailbox+tlv"
 
-/// How long `start` waits for the listener to report its port.
+/// How long `start` waits for the listener to report its port. mist runs
+/// `after_start` before `mist.start` returns, so the report is already in
+/// this process's mailbox and the wait never blocks; the bound only keeps
+/// `start` from hanging if a later mist stops doing that. Setting it to
+/// zero fails no test, which is why this is documented rather than tested.
 const start_timeout_ms = 5000
 
 /// How the HTTP server is started.
@@ -115,6 +119,8 @@ pub fn start(node: Node, config: Config) -> Result(Server, StartError) {
 
   // mist calls this from the listener's process once the socket is bound,
   // which is the only moment the real port of an ephemeral bind is known.
+  // It is a message and not a probe, so `process.receive` is the wait and
+  // `weft/poll`, which re-probes a synchronous check, has nothing to ask.
   let bound = process.new_subject()
 
   let started =

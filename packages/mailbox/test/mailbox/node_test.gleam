@@ -5,7 +5,9 @@ import gleam/list
 import mailbox/coordinator
 import mailbox/node
 import mailbox/support.{cap, eid, now, padded, qid}
+import simplifile
 import sqlight
+import weft/poll
 
 fn start(sweep_period_ms: Int, clock_key: String) -> #(node.Node, String) {
   let path = support.fresh_path()
@@ -171,8 +173,79 @@ pub fn the_sweeper_removes_expired_envelopes_test() {
   // Move the clock past the deadline; the periodic sweep, not any request,
   // must release the row and its bytes.
   support.set_clock("clock_sweep", time.add(now, 7200))
-  process.sleep(500)
 
+  let released =
+    poll.until(within: 5000, every: 25, attempt: fn() {
+      case stored(path) {
+        #(0, 0) -> poll.Done(Nil)
+        _ -> poll.Retry
+      }
+    })
+
+  assert released == poll.Answered(Nil)
+
+  support.remove_files(path)
+}
+
+pub fn the_node_answers_unavailable_when_stopped_test() {
+  let names = node.new_names()
+  let running = node.Node(names:, clock: fn() { now })
+
+  assert fetch(running, 0) == protocol.Refused(protocol.Unavailable)
+}
+
+/// The coordinator closes its connection when the node is shut down in an
+/// orderly way. SQLite removes the write-ahead log only when the last
+/// connection closes cleanly, so its absence is the observable proof.
+pub fn an_orderly_shutdown_closes_the_store_test() {
+  let path = support.fresh_path()
+  let started = process.new_subject()
+
+  // The helper is the supervisor's parent, and only a parent's exit signal
+  // makes a supervisor shut its children down in order. It is unlinked from
+  // this test so that the supervisor's exit cannot take the test with it.
+  let _ =
+    process.spawn_unlinked(fn() {
+      let config =
+        node.Config(
+          path:,
+          sweep_period_ms: 60_000,
+          clock: fn() { now },
+          names: node.new_names(),
+        )
+      let assert Ok(#(supervisor, _)) = node.start(config)
+
+      // A subject belongs to the process that made it, so the helper makes
+      // the one it waits on and hands it out.
+      let stop = process.new_subject()
+      process.send(started, #(supervisor.pid, stop))
+
+      process.receive_forever(stop)
+      process.send_exit(supervisor.pid)
+    })
+
+  let assert Ok(#(supervisor, stop)) = process.receive(started, 5000)
+  let down = process.monitor(supervisor)
+  let selector =
+    process.new_selector()
+    |> process.select_specific_monitor(down, fn(_) { Nil })
+
+  // While the node runs, the connection is open and the log exists.
+  assert simplifile.is_file(path <> "-wal") == Ok(True)
+
+  process.send(stop, Nil)
+  let assert Ok(Nil) = process.selector_receive(selector, 5000)
+
+  // The supervisor stops its children before it exits, so the connection
+  // is already closed when the monitor fires and no wait is needed.
+  assert simplifile.is_file(path <> "-wal") == Ok(False)
+
+  support.remove_files(path)
+}
+
+/// The envelope count and the bytes charged to the queue, read through a
+/// separate connection.
+fn stored(path: String) -> #(Int, Int) {
   let assert Ok(raw) = sqlight.open(path)
   let assert Ok([rows]) =
     sqlight.query(
@@ -190,15 +263,5 @@ pub fn the_sweeper_removes_expired_envelopes_test() {
     )
   let assert Ok(Nil) = sqlight.close(raw)
 
-  assert rows == 0
-  assert bytes == 0
-
-  support.remove_files(path)
-}
-
-pub fn the_node_answers_unavailable_when_stopped_test() {
-  let names = node.new_names()
-  let running = node.Node(names:, clock: fn() { now })
-
-  assert fetch(running, 0) == protocol.Refused(protocol.Unavailable)
+  #(rows, bytes)
 }

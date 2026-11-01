@@ -19,18 +19,48 @@
 //// functions below fail soft: if the coordinator is down or does not answer
 //// within the timeout, the answer is `Refused(Unavailable)` and the client
 //// retries, rather than the calling process crashing.
+////
+//// ## Why the store opens in the initialiser
+////
+//// `weft/actor`'s `continuing` is for an actor whose first work must run
+//// before any request but may finish after `start` returns. This actor is
+//// the opposite: a database that cannot be opened must fail the start, so
+//// the supervisor sees it and the node never accepts an append it cannot
+//// store. The initialiser is synchronous, so no request can reach a
+//// coordinator that has no store, and there is no first message to inject.
+////
+//// There is no `on_shutdown` that closes the store, and the actor does not
+//// trap exits to run one. The connection belongs to this process, and an
+//// orderly node shutdown ends it with the process: SQLite removes the WAL
+//// file when the last connection goes, which `node_test` observes. A
+//// callback would be code for a case nothing exercises, and it could not
+//// run on a brutal kill anyway.
+////
+//// ## Why `ask` stays on a `Name`
+////
+//// `ask` is a call against a process that was started elsewhere: look the
+//// name up, send, wait on a per-call subject, and answer `Error(Nil)` for
+//// a missing process or a late reply. That is the monitored, non-panicking
+//// call against a pre-existing pid which weft does not yet have (Loom's
+//// `docs/weft.md` records the same gap), so the shape stays here rather
+//// than being forced onto `weft/registry`. A registry address would trade
+//// the `process.named` check for `registry.lookup`, but it needs a
+//// registry process whose lifetime the node would have to own, and it
+//// would change `node.Names`, which the daemon's tests build. It would
+//// also still wait the full timeout on a coordinator that dies mid-call,
+//// because it does not monitor either.
 
 import core/capability.{type Capability, type Provision}
 import core/id
 import core/mailbox/protocol.{type Request, type Response}
 import core/time.{type Instant}
 import gleam/erlang/process.{type Name, type Subject}
-import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
 import mailbox/notifier
 import mailbox/service.{type GrantError, type Random}
 import mailbox/store.{type Store, type SweepReport}
+import weft/actor
 
 /// What the coordinator needs to start.
 pub type Config {

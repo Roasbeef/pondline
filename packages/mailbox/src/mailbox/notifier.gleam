@@ -22,12 +22,23 @@
 //// The registry is addressed by a `Name`, not a subject, so it can be
 //// restarted under the supervisor without callers learning a new address.
 //// Losing it loses only the wake-ups: a waiter's own timeout still answers.
+////
+//// ## Why this is an actor and not a state machine
+////
+//// A list of waiters flushed on a state change is one of the shapes weft
+//// names, but it is a state machine only when the process has phases. This
+//// one has a single mode and a homogeneous table of subjects with no
+//// per-waiter state or deadline (each waiter times out in its own process),
+//// so `docs/weft.md` keeps it a plain `weft/actor`. `deliver` stays a
+//// `process.named` check followed by a send, for the reason `coordinator`
+//// gives for `ask`: moving to `weft/registry` would change `node.Names`
+//// and need a registry process owned by the node.
 
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
-import gleam/otp/actor
 import gleam/otp/supervision
+import weft/actor
 
 /// The registry's messages. The queue key is the queue identifier's bytes,
 /// which is all the registry needs and keeps it free of protocol types.
