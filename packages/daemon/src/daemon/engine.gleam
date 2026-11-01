@@ -61,6 +61,17 @@
 //// `relationship.resend_receipt`, which queues the same logical receipt
 //// again and delivers nothing (ADR-006, spec §7.3).
 ////
+//// ## Retransmitting
+////
+//// `retransmit` is the sending half of ADR-006, run by the scheduler on
+//// every tick. It reads the stored rows whose receipt window has passed
+//// (`store.due_retransmits`), asks `retransmit.retransmit` about each
+//// against the relationship as it is now, and commits either a copy of the
+//// row under a fresh envelope (`store.Retransmitted`, whose `Transmit`
+//// effect wakes the scheduler) or the end of its schedule
+//// (`store.RetransmitStopped`). The copy's bytes come from the committed
+//// row inside the store, so a retransmit never re-encrypts.
+////
 //// ## Job kinds and the fault hook
 ////
 //// Every job is labelled with a `JobKind`, one per public function, which
@@ -81,6 +92,7 @@
 ////    only after `store.commit` returned.
 //// 4. `handle_envelope` is the inbound path, and `open_session` the
 ////    outbound one for a joiner whose queue just came up.
+//// 5. `retransmit` sends stored rows again whose receipt never came.
 
 import core/crypto/pqxdh
 import core/crypto/suite.{type Suite}
@@ -96,6 +108,7 @@ import core/invitation
 import core/offer.{type Approval}
 import core/plan.{type EnvelopeRef, type Plan, EnvelopeRef}
 import core/relationship.{type Relationship}
+import core/retransmit
 import core/route.{type Inbox}
 import core/time.{type Instant}
 import daemon/log
@@ -204,6 +217,7 @@ pub type JobKind {
   Unacked
   MarkAcked
   OutboxPending
+  Retransmit
 }
 
 /// What the fault hook makes of one job. Only a simulation sets a hook; a
@@ -1119,7 +1133,7 @@ pub fn record_send(
   outcome: store.SendOutcome,
 ) -> Result(Nil, Failure) {
   run(name, RecordSend, fn(state) {
-    fault(store.record_send(state.store, envelope, outcome))
+    fault(store.record_send(state.store, state.clock(), envelope, outcome))
   })
 }
 
@@ -1167,6 +1181,90 @@ pub fn mark_acked(
 /// ```
 pub fn outbox_pending(name: Handle(Message)) -> Result(Int, Failure) {
   run(name, OutboxPending, fn(state) { fault(store.pending_count(state.store)) })
+}
+
+// ---------------------------------------------------------- retransmit
+
+/// The most due rows one `retransmit` job considers; the rest wait for the
+/// scheduler's next tick.
+const retransmit_batch = 16
+
+/// Sends again every stored row whose receipt window has passed, up to
+/// `retransmit_batch`, and ends the schedule of each row the core says will
+/// never be sent again. Returns how many copies were committed. Nothing is
+/// sent here: each copy is an outbox row the scheduler sends like any other.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.retransmit(name)
+/// // -> Ok(1)
+/// ```
+pub fn retransmit(name: Handle(Message)) -> Result(Int, Failure) {
+  run(name, Retransmit, fn(state) {
+    let now = state.clock()
+
+    use due <- result.try(
+      fault(store.due_retransmits(state.store, now, retransmit_batch)),
+    )
+    use sent <- result.try(
+      list.try_map(due, fn(entry) { retransmit_one(state, now, entry) }),
+    )
+
+    Ok(list.count(sent, fn(copied) { copied == Copied }))
+  })
+}
+
+/// What `retransmit_one` did with a due row.
+type Settled {
+  /// A copy was committed.
+  Copied
+
+  /// The schedule ended, or the row was left due for the next tick.
+  NotCopied
+}
+
+/// Decides one due row against its relationship as it is now, and commits
+/// the decision.
+fn retransmit_one(
+  state: State,
+  now: Instant,
+  entry: store.DueRetransmit,
+) -> Result(Settled, Failure) {
+  use found <- result.try(
+    fault(store.relationship_by_contact(state.store, entry.contact)),
+  )
+
+  // A row whose relationship is gone can never be receipted.
+  let decided = case found {
+    Some(record) ->
+      retransmit.retransmit(state.suite, record.relationship, entry.row, now)
+
+    None -> Error(retransmit.NotActive)
+  }
+
+  // A copy is committed; a misbehaving randomness source leaves the row due;
+  // every other refusal is final.
+  case decided {
+    Ok(made) -> {
+      use _ <- result.try(commit_change(state, store.Retransmitted(made), None))
+      Ok(Copied)
+    }
+
+    Error(retransmit.NoRandomness) -> Ok(NotCopied)
+
+    Error(retransmit.NotRetransmitted)
+    | Error(retransmit.NotActive)
+    | Error(retransmit.Exhausted)
+    | Error(retransmit.Expired) -> {
+      use _ <- result.try(commit_change(
+        state,
+        store.RetransmitStopped(entry.row.envelope),
+        None,
+      ))
+      Ok(NotCopied)
+    }
+  }
 }
 
 // ------------------------------------------------------------- helpers
@@ -1307,5 +1405,6 @@ pub fn kind_label(kind: JobKind) -> String {
     Unacked -> "unacked"
     MarkAcked -> "mark_acked"
     OutboxPending -> "outbox_pending"
+    Retransmit -> "retransmit"
   }
 }
