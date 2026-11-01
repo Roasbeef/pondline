@@ -123,8 +123,9 @@ fn held(w: world.World) -> Int {
 }
 
 /// Across a campaign the swarm reaches the states the audits reason about:
-/// closes, the clock, held messages before the heal raises them, and the
-/// excuses the audits know.
+/// closes, the clock, held messages before the heal raises them, a mailbox
+/// losing a stored envelope, both retransmit paths (a message delivered from
+/// a copy, a receipt regenerated), and the excuses the audits know.
 pub fn the_swarm_reaches_the_audited_states_test() {
   let seeds = list.map(swarm.runs(60), swarm.generate(11, _))
   let scripted = list.map(seeds, walked)
@@ -134,9 +135,9 @@ pub fn the_swarm_reaches_the_audited_states_test() {
   assert list.any(scripted, fn(w) { world.saw(w, "close-from-awaiting") })
   assert list.any(scripted, fn(w) { world.saw(w, "offer-expired") })
   assert list.any(scripted, fn(w) { held(w) > 0 })
-  assert list.any(healed, fn(w) {
-    list.contains(world.excuses_of(w), "message-corrupted-in-mailbox")
-  })
+  assert list.any(scripted, fn(w) { world.saw(w, "lost-in-mailbox") })
+  assert list.any(healed, fn(w) { world.saw(w, "delivered-by-retransmit") })
+  assert list.any(healed, fn(w) { world.saw(w, "receipt-regenerated") })
   assert list.any(healed, fn(w) {
     list.contains(world.excuses_of(w), "receiver-closed")
   })

@@ -44,6 +44,19 @@
 //// (`settlement`), so a run that gains an owner fails exhaustiveness here
 //// instead of falling into a catch-all.
 ////
+//// ## End-to-end retransmission
+////
+//// The mailbox's `Appended` is not the end of a message's story: a mailbox
+//// can still corrupt, lose or expire what it stored, and only the peer's
+//// receipt proves arrival (ADR-006). Every `Tick` first asks the engine to
+//// `retransmit`: stored rows whose receipt window passed are copied, inside
+//// the store, under a fresh envelope identifier, and the copies are ordinary
+//// queued rows that the same tick's `dispatch` sends. The scheduler never
+//// holds or builds the bytes of a copy, so a retransmit is no more able to
+//// send uncommitted ciphertext than a first send is. The window is counted
+//// in the injected clock's seconds, so a simulation moves it by moving the
+//// clock; the tick only decides how soon a due row is noticed.
+////
 //// ## Timers
 ////
 //// One `weft/actor` periodic tick is the rescan, armed in one place. A
@@ -356,12 +369,28 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   // outcome becomes a finished send or a release.
   let after = case message {
     Nudge -> dispatch(state)
-    Tick -> dispatch(release_held(state))
+    Tick -> state |> release_held |> retransmit_due |> dispatch
     Finished(row:, verdict:) -> finish(state, row, verdict)
     Settled(batch:, pulled:) -> settle(state, batch, pulled)
   }
 
   actor.continue(after) |> actor.with_selector(listening(after))
+}
+
+/// Asks the engine to commit copies of the stored rows whose receipt window
+/// passed. An engine that cannot answer is asked again on the next tick; the
+/// rows stay due in the store.
+fn retransmit_due(state: State) -> State {
+  // Only whether the engine answered matters here: the copies it committed
+  // are queued rows the dispatch that follows reads back.
+  case engine.retransmit(state.config.engine) {
+    Ok(_) -> state
+
+    Error(_) -> {
+      log.line("scheduler", "could not send stored messages again")
+      state
+    }
+  }
 }
 
 /// What the scheduler receives: its own mailbox, and one subject per run

@@ -1,5 +1,5 @@
 -module(daemon_test_ffi).
--export([env/1, capture_start/0, capture_stop/0]).
+-export([env/1, capture_start/0, capture_stop/0, set_clock_shift/2, clock_shift/1]).
 
 %% An environment variable as a Gleam `Result(String, Nil)`.
 env(Name) ->
@@ -47,3 +47,12 @@ to_binary(Chars) ->
         Bin when is_binary(Bin) -> Bin;
         _ -> <<>>
     end.
+
+%% A named shift, in seconds, for `support.shiftable_clock`. A persistent
+%% term because the clock is read from every process of a daemon's tree.
+set_clock_shift(Name, Seconds) ->
+    persistent_term:put({?MODULE, clock_shift, Name}, Seconds),
+    nil.
+
+clock_shift(Name) ->
+    persistent_term:get({?MODULE, clock_shift, Name}, 0).

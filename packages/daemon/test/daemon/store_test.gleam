@@ -13,8 +13,10 @@ import daemon/config
 import daemon/node
 import daemon/store
 import daemon/support
+import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/result
 import primitives/suite
 import simplifile
 import sqlight
@@ -64,8 +66,60 @@ pub fn a_newer_schema_is_refused_test() {
   let assert Ok(Nil) = sqlight.exec("PRAGMA user_version=99", connection)
   let assert Ok(Nil) = sqlight.close(connection)
 
-  let assert Error(store.FutureSchema(found: 99, supported: 1)) =
+  let assert Error(store.FutureSchema(found: 99, supported:)) =
     store.open(path, suite.suite())
+  assert supported == store.schema_version
+}
+
+/// A file written by schema 1, with a committed outbox row, migrates to
+/// schema 2 in place: the row survives, nothing is due for retransmission,
+/// and the new fingerprint table answers.
+pub fn a_populated_first_schema_migrates_test() {
+  let #(opened, path) = open()
+  let #(contact, _) = joined(opened)
+  let assert Ok(Nil) = store.close(opened)
+
+  // Take the file back to what a schema 1 build left on disk.
+  let assert Ok(connection) = sqlight.open(path)
+  let assert Ok(Nil) =
+    sqlight.exec(
+      "DROP INDEX outbox_retransmit;
+       ALTER TABLE outbox DROP COLUMN retransmits;
+       ALTER TABLE outbox DROP COLUMN retransmit_at;
+       DROP TABLE fingerprints;
+       PRAGMA user_version=1;",
+      connection,
+    )
+  let assert Ok(rows_before) = outbox_rows(connection)
+  let assert Ok(Nil) = sqlight.close(connection)
+  assert rows_before > 0
+
+  let assert Ok(migrated) = store.open(path, suite.suite())
+  let assert Ok(settings) = store.settings(migrated)
+  assert settings.user_version == store.schema_version
+  assert store.due_retransmits(migrated, at, 16) == Ok([])
+  assert store.fingerprint(migrated, contact, <<0:256>>) == Ok(None)
+  let assert Ok(Nil) = store.close(migrated)
+
+  let assert Ok(connection) = sqlight.open(path)
+  assert outbox_rows(connection) == Ok(rows_before)
+  let assert Ok(Nil) = sqlight.close(connection)
+}
+
+fn outbox_rows(connection: sqlight.Connection) -> Result(Int, sqlight.Error) {
+  let count = {
+    use rows <- decode.field(0, decode.int)
+    decode.success(rows)
+  }
+
+  use found <- result.try(sqlight.query(
+    "SELECT count(*) FROM outbox",
+    on: connection,
+    with: [],
+    expecting: count,
+  ))
+  let assert [rows] = found as "count(*) returns one row"
+  Ok(rows)
 }
 
 pub fn the_state_directory_and_files_are_private_test() {

@@ -37,6 +37,20 @@
 //// with the digest they were handled under. `deliveries`, `sent_messages`
 //// and `audit` are what the local API reads.
 ////
+//// ## End-to-end retransmission
+////
+//// Schema version 2 adds the two halves of ADR-006. On the sending side an
+//// outbox row carries `retransmits` (how many copies of its bytes were
+//// committed before it) and `retransmit_at`, set from `retransmit.due_at`
+//// when the mailbox's receipt is recorded and cleared when the peer's
+//// receipt names the message or the row is replaced. A retransmit
+//// (`Retransmitted`) is an `INSERT ... SELECT` from the replaced row, so the
+//// copy's bytes, route and deadline come from the committed row and from
+//// nowhere else. On the receiving side `fingerprints` maps a relationship's
+//// ratchet-message digest to the message it carried, written with the
+//// delivery and pruned once the message expires, which is all the bound it
+//// needs: no honest sender retransmits past a message's expiry.
+////
 //// ## Secrets
 ////
 //// The blobs hold identity keys, ratchet state and capabilities, and
@@ -73,11 +87,13 @@ import core/id.{
   type Message as MessageKind, type Queue,
 }
 import core/invitation
+import core/limits
 import core/mailbox/codec
 import core/mailbox/protocol
 import core/offer.{type Offer}
 import core/plan.{type Effect, type EnvelopeRef, type Plan, type Record}
 import core/relationship.{type Relationship}
+import core/retransmit.{type Retransmission, type Unreceipted}
 import core/route.{type Inbox, type Route}
 import core/secret
 import core/snapshot
@@ -90,7 +106,7 @@ import gleam/result
 import sqlight
 
 /// The schema version this build writes and understands.
-pub const schema_version = 1
+pub const schema_version = 2
 
 /// How long SQLite waits on a locked database before giving up. Only an
 /// outside process can contend with the engine, so this is a courtesy.
@@ -208,6 +224,14 @@ pub type Commit {
 
   /// A transition of an existing offer, computed from `version`.
   OfferRevised(offer: Offer, version: Int)
+
+  /// A stored row sent again: a copy of its bytes under a fresh envelope,
+  /// queued, and the replaced row's schedule ended. The commit fails with
+  /// `Conflict` if the replaced row's schedule already ended.
+  Retransmitted(retransmission: Retransmission)
+
+  /// A stored row that will not be sent again; its schedule ends.
+  RetransmitStopped(envelope: Id(Envelope))
 }
 
 /// Proof that a `Commit` is durable, and the effects the engine may now
@@ -245,6 +269,11 @@ pub type OutboxRow {
     /// How many sends have already failed.
     attempts: Int,
   )
+}
+
+/// A stored row due to be sent again, with the relationship that sent it.
+pub type DueRetransmit {
+  DueRetransmit(contact: Id(Contact), row: Unreceipted)
 }
 
 /// Where an outbound message stands (spec §7.2).
@@ -384,6 +413,24 @@ CREATE TABLE audit (
   payload BLOB NOT NULL,
   at INTEGER NOT NULL
 ) STRICT;
+",
+  "
+ALTER TABLE outbox ADD COLUMN retransmits INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE outbox ADD COLUMN retransmit_at INTEGER;
+
+CREATE INDEX outbox_retransmit ON outbox (retransmit_at)
+  WHERE retransmit_at IS NOT NULL;
+
+CREATE TABLE fingerprints (
+  contact BLOB NOT NULL,
+  digest BLOB NOT NULL,
+  message_id BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,
+  receipts INTEGER NOT NULL,
+  PRIMARY KEY (contact, digest)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX fingerprints_by_expiry ON fingerprints (expires_at);
 ",
 ]
 
@@ -672,7 +719,57 @@ fn apply(
       use _ <- result.try(update_offer(store, offer, version))
       Ok(Committed(effects: []))
     }
+
+    Retransmitted(retransmission:) -> {
+      use _ <- result.try(copy_row(store, now, retransmission))
+      Ok(Committed(effects: [plan.Transmit]))
+    }
+
+    RetransmitStopped(envelope:) -> {
+      use _ <- result.try(end_schedule(store, envelope))
+      Ok(Committed(effects: []))
+    }
   }
+}
+
+/// Commits a retransmit: the replaced row's bytes, route, deadline, kind
+/// and message are copied under the fresh envelope, due at once, and the
+/// replaced row's schedule ends. Copying in SQL is what keeps a retransmit
+/// to the committed ciphertext: no bytes enter from outside the store. A
+/// replaced row whose schedule already ended copies nothing, which is a
+/// `Conflict`: something settled it since it was read.
+fn copy_row(
+  store: Store,
+  now: Instant,
+  retransmission: Retransmission,
+) -> Result(Nil, Error) {
+  use rows <- result.try(query(
+    store,
+    "INSERT INTO outbox
+       (envelope, contact, kind, message_id, route, padded, deadline, status,
+        attempts, next_attempt_at, retransmits)
+     SELECT ?, contact, kind, message_id, route, padded, deadline, 'queued',
+            0, ?, ?
+     FROM outbox WHERE envelope = ? AND retransmit_at IS NOT NULL
+     RETURNING envelope",
+    [
+      sqlight.blob(id.to_bytes(retransmission.envelope)),
+      sqlight.int(now.unix_seconds),
+      sqlight.int(retransmission.retransmits),
+      sqlight.blob(id.to_bytes(retransmission.replaces)),
+    ],
+    decode.success(Nil),
+  ))
+  use _ <- result.try(one_row_or_conflict(rows))
+
+  end_schedule(store, retransmission.replaces)
+}
+
+/// Ends one row's retransmit schedule.
+fn end_schedule(store: Store, envelope: Id(Envelope)) -> Result(Nil, Error) {
+  write(store, "UPDATE outbox SET retransmit_at = NULL WHERE envelope = ?", [
+    sqlight.blob(id.to_bytes(envelope)),
+  ])
 }
 
 /// Writes a relationship plan's records, in order, under its contact.
@@ -890,18 +987,55 @@ fn put_record(
         )
       })
 
+    // The receipt also ends the retransmit schedule of every row that
+    // carries the message; a regenerated receipt for a message already
+    // received changes nothing.
     plan.PeerReceived(contact:, messages:), _ ->
       list.try_each(messages, fn(message) {
-        write(
+        let key = [
+          sqlight.blob(id.to_bytes(contact)),
+          sqlight.blob(id.to_bytes(message)),
+        ]
+
+        use _ <- result.try(write(
           store,
           "UPDATE sent_messages SET state = 'received_by_peer'
            WHERE contact = ? AND message_id = ?",
-          [
-            sqlight.blob(id.to_bytes(contact)),
-            sqlight.blob(id.to_bytes(message)),
-          ],
+          key,
+        ))
+
+        write(
+          store,
+          "UPDATE outbox SET retransmit_at = NULL
+           WHERE contact = ? AND message_id = ? AND kind = 'application'",
+          key,
         )
       })
+
+    // A fingerprint replaces the one with the same digest, which is how a
+    // regenerated receipt counts. Expired fingerprints are pruned in the
+    // same transaction, so the table holds only messages still alive.
+    plan.Remembered(contact:, fingerprint:), _ -> {
+      use _ <- result.try(
+        write(
+          store,
+          "INSERT OR REPLACE INTO fingerprints
+           (contact, digest, message_id, expires_at, receipts)
+         VALUES (?, ?, ?, ?, ?)",
+          [
+            sqlight.blob(id.to_bytes(contact)),
+            sqlight.blob(fingerprint.digest),
+            sqlight.blob(id.to_bytes(fingerprint.message)),
+            sqlight.int(fingerprint.expires_at.unix_seconds),
+            sqlight.int(fingerprint.receipts),
+          ],
+        ),
+      )
+
+      write(store, "DELETE FROM fingerprints WHERE expires_at < ?", [
+        sqlight.int(now.unix_seconds),
+      ])
+    }
 
     plan.Audit(direction:, contact:, message:, content_type:, payload:, at:), _
     ->
@@ -1233,16 +1367,19 @@ pub fn due(
 
 /// Applies the scheduler's report on one row, and moves the message state
 /// with it: `stored_by_mailbox` only from `locally_queued`, so a receipt
-/// that already arrived is never downgraded, and `failed` likewise.
+/// that already arrived is never downgraded, and `failed` likewise. A row
+/// the mailbox stored at `now` is scheduled to be sent again
+/// (`retransmit.due_at`), unless its peer already receipted it.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// store.record_send(store, envelope, store.Rejected)
+/// store.record_send(store, now, envelope, store.Rejected)
 /// // -> Ok(Nil)
 /// ```
 pub fn record_send(
   store: Store,
+  now: Instant,
   envelope: Id(Envelope),
   outcome: SendOutcome,
 ) -> Result(Nil, Error) {
@@ -1254,11 +1391,20 @@ pub fn record_send(
     // The outcome decides the row's status and the message's next state.
     case outcome {
       Stored(receipt:) -> {
+        use due <- result.try(retransmit_schedule(store, now, envelope))
         use _ <- result.try(
           write(
             store,
-            "UPDATE outbox SET status = 'stored', receipt = ? WHERE envelope = ?",
-            [sqlight.blob(receipt), key],
+            "UPDATE outbox SET status = 'stored', receipt = ?, retransmit_at = ?
+             WHERE envelope = ?",
+            [
+              sqlight.blob(receipt),
+              sqlight.nullable(
+                sqlight.int,
+                option.map(due, fn(at) { at.unix_seconds }),
+              ),
+              key,
+            ],
           ),
         )
         advance_message(store, key, "stored_by_mailbox")
@@ -1287,6 +1433,113 @@ pub fn record_send(
           ],
         )
     }
+  })
+}
+
+/// When a row the mailbox stored at `now` is due to be sent again, if ever:
+/// `retransmit.due_at` over the row's kind, copies so far and deadline, and
+/// never for a message its peer already receipted, which can happen when the
+/// receipt overtakes the scheduler's report of the mailbox's answer.
+fn retransmit_schedule(
+  store: Store,
+  now: Instant,
+  envelope: Id(Envelope),
+) -> Result(Option(Instant), Error) {
+  let row = {
+    use kind <- decode.field(0, decode.string)
+    use message <- decode.field(1, decode.optional(decode.bit_array))
+    use deadline <- decode.field(2, decode.int)
+    use retransmits <- decode.field(3, decode.int)
+    use receipted <- decode.field(4, decode.int)
+    decode.success(#(kind, message, deadline, retransmits, receipted))
+  }
+
+  use rows <- result.try(query(
+    store,
+    "SELECT kind, message_id, deadline, retransmits,
+            EXISTS (SELECT 1 FROM sent_messages AS sent
+                    WHERE sent.message_id = outbox.message_id
+                      AND sent.state = 'received_by_peer')
+     FROM outbox WHERE envelope = ?",
+    [sqlight.blob(id.to_bytes(envelope))],
+    row,
+  ))
+
+  // A row that is gone has nothing to schedule; a receipted message needs
+  // no copy.
+  case rows {
+    [] -> Ok(None)
+
+    [#(_, _, _, _, 1), ..] -> Ok(None)
+
+    [#(kind, message, deadline, retransmits, _), ..] -> {
+      use kind <- result.try(outbound_kind_of(kind, message))
+
+      Ok(retransmit.due_at(
+        limits.receipt_window_seconds,
+        kind,
+        now,
+        retransmits,
+        Instant(deadline),
+      ))
+    }
+  }
+}
+
+/// The stored rows whose retransmit is due at `now`, earliest first, at
+/// most `limit` of them.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.due_retransmits(store, now, 16)
+/// // -> Ok([DueRetransmit(contact, row)])
+/// ```
+pub fn due_retransmits(
+  store: Store,
+  now: Instant,
+  limit: Int,
+) -> Result(List(DueRetransmit), Error) {
+  let row = {
+    use envelope <- decode.field(0, decode.bit_array)
+    use contact <- decode.field(1, decode.bit_array)
+    use kind <- decode.field(2, decode.string)
+    use message <- decode.field(3, decode.optional(decode.bit_array))
+    use deadline <- decode.field(4, decode.int)
+    use retransmits <- decode.field(5, decode.int)
+    decode.success(#(envelope, contact, kind, message, deadline, retransmits))
+  }
+
+  use rows <- result.try(query(
+    store,
+    "SELECT envelope, contact, kind, message_id, deadline, retransmits
+     FROM outbox
+     WHERE retransmit_at IS NOT NULL AND retransmit_at <= ?
+     ORDER BY retransmit_at LIMIT ?",
+    [sqlight.int(now.unix_seconds), sqlight.int(limit)],
+    row,
+  ))
+
+  list.try_map(rows, fn(columns) {
+    let #(envelope, contact, kind, message, deadline, retransmits) = columns
+
+    use envelope <- result.try(
+      id.from_bytes(envelope) |> result.map_error(fn(_) { corrupt("outbox") }),
+    )
+    use contact <- result.try(
+      id.from_bytes(contact) |> result.map_error(fn(_) { corrupt("outbox") }),
+    )
+    use kind <- result.try(outbound_kind_of(kind, message))
+
+    Ok(DueRetransmit(
+      contact:,
+      row: retransmit.Unreceipted(
+        envelope:,
+        kind:,
+        deadline: Instant(deadline),
+        retransmits:,
+      ),
+    ))
   })
 }
 
@@ -1351,6 +1604,57 @@ pub fn processed_digest(
   ))
 
   Ok(first(rows))
+}
+
+/// The fingerprint a relationship remembers for a ratchet message's digest,
+/// if any. Expiry is the core's to judge (`relationship.resend_receipt`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.fingerprint(store, contact, digest)
+/// // -> Ok(Some(plan.Fingerprint(..)))
+/// ```
+pub fn fingerprint(
+  store: Store,
+  contact: Id(Contact),
+  digest: BitArray,
+) -> Result(Option(plan.Fingerprint), Error) {
+  let row = {
+    use message <- decode.field(0, decode.bit_array)
+    use expires_at <- decode.field(1, decode.int)
+    use receipts <- decode.field(2, decode.int)
+    decode.success(#(message, expires_at, receipts))
+  }
+
+  use rows <- result.try(query(
+    store,
+    "SELECT message_id, expires_at, receipts FROM fingerprints
+     WHERE contact = ? AND digest = ?",
+    [sqlight.blob(id.to_bytes(contact)), sqlight.blob(digest)],
+    row,
+  ))
+
+  // The primary key admits one row at most.
+  case rows {
+    [] -> Ok(None)
+
+    [#(message, expires_at, receipts), ..] -> {
+      use message <- result.try(
+        id.from_bytes(message)
+        |> result.map_error(fn(_) { corrupt("fingerprints") }),
+      )
+
+      Ok(
+        Some(plan.Fingerprint(
+          digest:,
+          message:,
+          expires_at: Instant(expires_at),
+          receipts:,
+        )),
+      )
+    }
+  }
 }
 
 /// The envelopes of `queue` that are processed and committed but not yet
@@ -1779,6 +2083,30 @@ fn direction_name(direction: plan.Direction) -> String {
   case direction {
     plan.In -> "in"
     plan.Out -> "out"
+  }
+}
+
+/// The outbox kind its `kind` and `message_id` columns name, the inverse of
+/// `outbound_kind`.
+fn outbound_kind_of(
+  name: String,
+  message: Option(BitArray),
+) -> Result(plan.OutboundKind, Error) {
+  // A present identifier must decode; an absent one is valid only for the
+  // handshake, which the case below decides.
+  let message = case message {
+    Some(bytes) -> id.from_bytes(bytes) |> result.replace_error(Nil)
+    None -> Error(Nil)
+  }
+
+  // Only the writer's four names are valid, and every kind but the
+  // handshake names its message.
+  case name, message {
+    "handshake", _ -> Ok(plan.Handshake)
+    "application", Ok(sent) -> Ok(plan.ApplicationOut(sent))
+    "receipt", Ok(sent) -> Ok(plan.ReceiptOut(sent))
+    "control", Ok(sent) -> Ok(plan.ControlOut(sent))
+    _, _ -> Error(corrupt("outbox"))
   }
 }
 

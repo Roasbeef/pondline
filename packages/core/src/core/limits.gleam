@@ -75,6 +75,21 @@ pub const max_held_messages = 256
 /// (one million).
 pub const max_budget_messages = 1_000_000
 
+/// How long a sender waits, after the mailbox stored a message, for the
+/// peer's receipt before it sends the same ciphertext again under a new
+/// envelope identifier (1 hour). Each later retransmit waits twice as long
+/// as the copy before it, so a receiver that is merely offline is not
+/// flooded (`docs/adr/006-end-to-end-retransmit.md`).
+pub const receipt_window_seconds = 3600
+
+/// The most times one message's committed ciphertext is sent again under a
+/// new envelope identifier (5). With `receipt_window_seconds` doubling, the
+/// last retransmit leaves 31 hours after the first copy was stored, well
+/// inside `message_retention_seconds`. It also bounds how often a receiver
+/// regenerates a receipt for one message, so a mailbox replaying a stored
+/// ciphertext cannot make it answer without end.
+pub const max_retransmits = 5
+
 /// The longest content type, in bytes (128).
 pub const max_content_type_bytes = 128
 
