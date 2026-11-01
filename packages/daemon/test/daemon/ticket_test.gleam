@@ -6,11 +6,14 @@
 //// expired, a ticket for nothing, a mistyped one, and a ticket whose
 //// mailbox the joiner's carrier policy does not allow.
 
+import core/capability
 import core/endpoint
 import core/id
+import core/mailbox/protocol
 import core/offer
 import core/secret.{type Secret}
 import core/ticket
+import core/time
 import daemon/api
 import daemon/config
 import daemon/node
@@ -20,7 +23,10 @@ import gleam/dynamic/decode
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
+import mailbox/node as mailbox_node
+import primitives
 import primitives/suite
+import simplifile
 import sqlight
 
 fn active_contact(daemon: api.Daemon) {
@@ -218,6 +224,62 @@ pub fn a_ticket_outside_the_carrier_policy_is_refused_test() {
     == Error(api.Refused(
       "the carrier policy does not permit the ticket's mailbox",
     ))
+
+  let _ = node.stop(a)
+  let _ = node.stop(b)
+}
+
+/// Someone who holds a ticket's secret can seal any invitation under it,
+/// so the joiner also checks the invitation names the mailbox its ticket
+/// came from. Here a genuine invitation from A, whose queue is at the
+/// first mailbox, is sealed under a ticket for a second mailbox and stored
+/// there: the AEAD and the commitment both pass, and the mailbox check is
+/// what refuses it.
+pub fn an_invitation_for_another_mailbox_is_refused_test() {
+  let home = support.start_mailbox()
+  let elsewhere = support.start_mailbox()
+  let #(a, _) = support.start_daemon(home)
+  let #(b, _) = support.start_daemon(home)
+
+  let assert Ok(file) = api.invite(a, "moved", offer.AutoApprove, 5)
+
+  // A queue at the second mailbox to pay for the blob.
+  let assert Ok(provision_bytes) =
+    simplifile.read_bits(elsewhere.provisioning_file)
+  let assert Ok(provision) = capability.from_bytes(provision_bytes)
+  let assert Ok(queue) = id.from_bytes(primitives.random_bytes(16))
+  let assert Ok(admin) = capability.from_bytes(primitives.random_bytes(32))
+  let assert Ok(read) = capability.from_bytes(primitives.random_bytes(32))
+  let assert Ok(append) = capability.from_bytes(primitives.random_bytes(32))
+  let assert protocol.QueueCreated(_) =
+    mailbox_node.handle(
+      elsewhere.node,
+      protocol.CreateQueue(provision:, queue:, read:, append:, admin:),
+    )
+
+  let assert Ok(port) = endpoint.port(elsewhere.port)
+  let assert Ok(made) =
+    ticket.from_parts(endpoint.Loopback(port), primitives.random_bytes(32))
+  let assert Ok(keys) = ticket.keys(suite.suite(), made)
+  let assert Ok(sealed) = ticket.seal(suite.suite(), keys, file)
+  let assert protocol.BlobStored(_) =
+    mailbox_node.handle(
+      elsewhere.node,
+      protocol.PutBlob(
+        queue:,
+        admin:,
+        blob: keys.locator,
+        retrieve: keys.retrieve,
+        retention_deadline: time.add(support.now(), 3600),
+        sealed:,
+      ),
+    )
+
+  assert api.accept_ticket(b, ticket.encode(made), "x")
+    == Error(api.InvalidInvitation(
+      "the invitation names a different mailbox than its ticket",
+    ))
+  assert api.contacts(b) == Ok([])
 
   let _ = node.stop(a)
   let _ = node.stop(b)
