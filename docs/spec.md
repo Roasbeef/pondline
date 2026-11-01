@@ -535,6 +535,21 @@ Authenticated but expired content may require cryptographic state advancement; i
 
 An invalid ciphertext must not mutate authoritative session state.
 
+*Amended by ADR-010.* Message identity is checked against the relationship's
+own deliveries: an authenticated application message under an identifier the
+relationship already stored a message under MUST NOT be delivered again. It
+advances the session, is recorded processed and acknowledged, earns no
+receipt and spends no budget, and is recorded for the operator. Distinct
+from §7.3, a known ciphertext is matched by its fingerprint before it is
+opened. An envelope that is not an exact duplicate is counted durably before
+it is processed, and one that has failed `max_process_attempts` times is
+quarantined: recorded processed as dropped, acknowledged, and recorded for
+the operator, so one envelope cannot block its queue. Quarantine changes no
+relationship state, so an honest message set aside this way is recovered by
+its sender's retransmit (§8.2). Acknowledgement after commit covers a queue
+whose relationship closed in the same batch: what was committed is
+acknowledged before its reader stops.
+
 ## 8.4 Single-writer ownership
 
 A relationship has one logical writer for cryptographic state.
@@ -743,6 +758,7 @@ These are engineering starting points, not measured optimal values.
 | End-to-end retransmits per message | At most 5 (ADR-006) |
 | Retention slack below the mailbox's maximum | 1 hour (ADR-008) |
 | Retention deadlines offered per append | At most 4, each halving the lifetime (ADR-008) |
+| Processing attempts before an envelope is quarantined | 5 (ADR-010) |
 | Initial queue capacity | 64 MiB, with separate message/rate limits |
 | Ratchet work limits | Fixed by the crypto profile; never unbounded |
 
