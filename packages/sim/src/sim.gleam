@@ -92,7 +92,7 @@ pub fn summary(report: Report) -> String {
 ///
 /// ```gleam
 /// list.length(sim.corpus())
-/// // -> 15
+/// // -> 16
 /// ```
 pub fn corpus() -> List(String) {
   [
@@ -126,29 +126,28 @@ pub fn corpus() -> List(String) {
     "0000040300085004010850000000010850020102000850120000001201000108c0",
     // kills: engine, coordinator, notifier.
     "000008030008500401085000000001085002010200085013000000130800010850130a08c0",
+    // H1, fixed by ADR-008: daemon A's clock leads the mailbox by five
+    // seconds. Its default deadline (now + retention) was refused as
+    // BadDeadline and the row failed for good; the slack below the
+    // mailbox's maximum now covers it.
+    "00800003000850040108500000000108500201020008500f03000008c0",
   ]
 }
 
 /// Seeds that found a production bug, with the check each must keep
 /// failing until the fix lands (the plan makes the fixes after the harness
 /// finds them blind, so the recall table can count them). Each is minimal:
-/// the honest corpus pairing, one fault, one send.
+/// the honest corpus pairing, one fault, one send. A fixed bug's seed moves
+/// to `corpus`, where it must pass.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// sim.regressions()
-/// // -> [#("0080..", "outbox_settled"), ..]
+/// // -> [#("0000..", "queues_drained")]
 /// ```
 pub fn regressions() -> List(#(String, String)) {
   [
-    // H1: daemon A's clock leads the mailbox by five seconds; its
-    // message's default deadline (now + retention) is refused as
-    // BadDeadline, which the scheduler treats as permanent.
-    #(
-      "00800003000850040108500000000108500201020008500f03000008c0",
-      "outbox_settled",
-    ),
     // H2: A, as an authenticated byzantine peer, repeats a message id it
     // already sent; B's commit fails on UNIQUE (contact, message_id), the
     // envelope is never acknowledged, and every later envelope on that
