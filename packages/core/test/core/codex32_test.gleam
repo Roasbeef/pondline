@@ -73,11 +73,17 @@ pub fn regrouping_round_trips_and_padding_is_strict_test() {
   assert codex32.symbols_to_bytes([]) == Ok(<<>>)
 }
 
-/// A string longer than the code's guaranteed length never verifies.
-pub fn an_overlong_codeword_never_verifies_test() {
-  let data = list.repeat(0, codex32.max_codeword_symbols)
-  let whole = list.append(data, codex32.checksum("rw", data))
+/// The guarantee's bound is exact: an expanded codeword (five prefix
+/// symbols for `rw`, the data and the checksum) of 1023 symbols verifies,
+/// and one of 1024 never does, whatever its residue.
+pub fn the_codeword_length_bound_is_exact_test() {
+  let longest = list.repeat(7, codex32.max_codeword_symbols - 5 - 15)
+  let over = [7, ..longest]
 
-  assert !codex32.verify("rw", whole)
+  assert codex32.verify(
+    "rw",
+    list.append(longest, codex32.checksum("rw", longest)),
+  )
+  assert !codex32.verify("rw", list.append(over, codex32.checksum("rw", over)))
   assert string.length(codex32.alphabet) == 32
 }

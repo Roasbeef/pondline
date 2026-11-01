@@ -41,6 +41,7 @@ import daemon/local_api
 import daemon/local_api_backend
 import daemon/local_api_client.{CannotConnect, ConnectionFailed, MalformedReply}
 import daemon/local_api_protocol as protocol
+import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/io
@@ -120,6 +121,7 @@ fn attempt(
     |> result.map_error(failure(cli.exit_unauthorized, _)),
   )
   use input <- result.try(read_input(cli.input_of(action)))
+  use Nil <- result.try(check_ticket_text(action, input))
 
   let #(op, args) = cli.request(action, input)
 
@@ -142,6 +144,22 @@ fn attempt(
       Ok(failed(output, line, category, message))
 
     protocol.Succeeded(result:) -> succeeded(output, action, line, result)
+  }
+}
+
+/// Refuses a ticket input that is not text before the daemon is asked. A
+/// ticket is ASCII, so such input is usually an invitation file given
+/// without dropping `--ticket`; the refusal does not repeat it.
+fn check_ticket_text(action: Action, input: BitArray) -> Result(Nil, Outcome) {
+  // Only a ticket accept reads its input as text.
+  case action, bit_array.to_string(input) {
+    cli.AcceptInvite(form: cli.FromTicket, ..), Error(Nil) ->
+      Error(failure(
+        cli.exit_refused,
+        "the ticket is not text; an invitation file is accepted without --ticket",
+      ))
+
+    _, _ -> Ok(Nil)
   }
 }
 

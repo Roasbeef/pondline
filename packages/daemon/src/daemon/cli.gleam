@@ -597,9 +597,12 @@ fn read_loop(
 /// the user can see the typo; a stray word is not, because a stray word
 /// is often a secret typed where a flag stood (`--ticket rw1...`).
 fn unknown(name: String) -> String {
-  case string.starts_with(name, "-") {
-    True -> "unknown option " <> name
-    False ->
+  // An option written `--name=value` is named without its value, which
+  // may be the secret (`--ticket=rw1...`).
+  case string.starts_with(name, "-"), string.split_once(name, "=") {
+    True, Ok(#(option, _)) -> "unknown option " <> option <> "=..."
+    True, Error(Nil) -> "unknown option " <> name
+    False, _ ->
       "unexpected argument; secrets are read from a file or standard input"
   }
 }
@@ -776,6 +779,14 @@ pub fn input_of(action: Action) -> Input {
   }
 }
 
+/// How long the CLI waits for an invitation to be created or a ticket to be
+/// redeemed (130 s). `invite` waits up to `api.invite_wait_ms` for its
+/// queue, and a ticket's mailbox call is retried for `api.ticket_wait_ms`
+/// with one call of up to `api.ticket_call_ms` still running at the end;
+/// giving up sooner would report a failure for an invitation that is then
+/// created, or a contact that is then accepted. `cli_test` checks the sum.
+pub const invitation_timeout_ms = 130_000
+
 /// How long to wait for the daemon's answer, in milliseconds: the wait the
 /// action asks for plus a margin.
 ///
@@ -788,6 +799,8 @@ pub fn input_of(action: Action) -> Input {
 pub fn timeout_ms(action: Action) -> Int {
   case action {
     ReceiveMessages(wait_seconds:, ..) -> wait_seconds * 1000 + 10_000
+    CreateInvite(..) | AcceptInvite(form: FromTicket, ..) ->
+      invitation_timeout_ms
     _ -> 10_000
   }
 }
@@ -821,18 +834,12 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
       ]),
     )
 
-    // A ticket pasted into a file or piped in usually ends in a newline,
-    // which is not part of it. Bytes that are not text send an empty
-    // ticket, which the daemon refuses as invalid without echoing it.
+    // The ticket goes as text; `cli_run` has already refused input that is
+    // not, and the daemon drops the newline a paste leaves.
     AcceptInvite(form: FromTicket, description:, ..) -> #(
       "accept",
       json.object([
-        #(
-          "ticket",
-          json.string(
-            string.trim(result.unwrap(bit_array.to_string(input), "")),
-          ),
-        ),
+        #("ticket", json.string(result.unwrap(bit_array.to_string(input), ""))),
         #("description", json.string(description)),
       ]),
     )

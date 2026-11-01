@@ -58,9 +58,8 @@ pub fn ticket(result: Dynamic) -> Result(String, String) {
   field(result, "ticket", decode.string)
 }
 
-/// Renders a result for human reading. `CreateInvite` renders only what
-/// it prints, the ticket or the file's path, because the caller writes the
-/// file.
+/// Renders a result for human reading. `CreateInvite` renders nothing:
+/// `cli_run` writes the file and prints the ticket or path itself.
 ///
 /// ## Examples
 ///
@@ -70,12 +69,8 @@ pub fn ticket(result: Dynamic) -> Result(String, String) {
 /// ```
 pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
   case action {
-    CreateInvite(output: cli.InvitationFile(path:), ..) ->
-      Ok(text("wrote " <> path))
-
-    CreateInvite(output: cli.TicketOnly, ..)
-    | CreateInvite(output: cli.TicketAndFile(..), ..) ->
-      result.map(ticket(result), text)
+    // `cli_run` hands out an invitation itself, before rendering.
+    CreateInvite(..) -> Ok(Rendered(<<>>, ""))
 
     AcceptInvite(..) -> contact_line(result)
     ListContacts -> contacts(result)

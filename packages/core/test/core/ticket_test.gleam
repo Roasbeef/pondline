@@ -206,6 +206,35 @@ pub fn only_the_canonical_spelling_decodes_test() {
   })
 }
 
+/// The near misses of a real ticket: its last data symbol, whose high two
+/// bits end the payload and whose low three are padding (both formats
+/// leave three), replaced by every value, with the checksum recomputed.
+/// Non-zero padding is refused; zero padding is a ticket whose own text is
+/// the candidate, and it is the original ticket exactly when the symbol is.
+pub fn a_ticket_has_exactly_one_spelling_near_its_own_test() {
+  property(qcheck.tuple2(tickets(), qcheck.bounded_int(0, 31)), fn(case_) {
+    let #(made, last) = case_
+    let data = data_of(made)
+    let kept = list.take(data, list.length(data) - 1)
+    let assert Ok(original) = list.last(data)
+    let candidate = checksummed(list.append(kept, [last]))
+
+    // The padding bits decide whether there is a ticket at all.
+    case last % 8, ticket.decode(candidate) {
+      0, Ok(found) -> {
+        assert text(found) == candidate
+        assert { found == made } == { last == original }
+      }
+
+      0, Error(_) -> panic as "zero padding must decode"
+
+      _, decoded -> {
+        assert decoded == Error(ticket.BadPayload)
+      }
+    }
+  })
+}
+
 /// Strictness past the checksum: non-zero padding, an extra symbol, a
 /// missing one, an unknown format, port zero and an onion label that is
 /// not v3 are all refused even with a valid checksum.
@@ -272,6 +301,7 @@ pub fn a_ticket_does_not_print_its_secret_test() {
 
   assert !string.contains(shown, text(made))
   assert !string.contains(shown, "rw1")
+  assert !string.contains(shown, string.inspect(<<9:256>>))
 }
 
 // ------------------------------------------------------------- derivation

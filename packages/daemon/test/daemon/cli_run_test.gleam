@@ -182,8 +182,9 @@ pub fn invite_create_with_a_ticket_prints_the_ticket_test() {
     == 3
 }
 
-/// `invite accept --ticket` reads the ticket from its file, drops the
-/// trailing newline a paste leaves, and sends it as a ticket.
+/// `invite accept --ticket` reads the ticket from its file and sends it as
+/// a ticket, as written; `api.accept_ticket` drops the newline a paste
+/// leaves, for every local API client alike.
 pub fn invite_accept_with_a_ticket_reads_the_file_test() {
   use f <- fixture.with_server
 
@@ -202,7 +203,20 @@ pub fn invite_accept_with_a_ticket_reads_the_file_test() {
 
   assert outcome.status == 0
   assert stdout(outcome) == contact_hex() <> "\n"
-  assert list.contains(fixture.calls(f.fake), "accept_ticket rw1abc al")
+  assert list.contains(fixture.calls(f.fake), "accept_ticket rw1abc\n al")
+}
+
+/// A ticket input that is not text, such as an invitation file given with
+/// `--ticket`, is refused before the daemon is asked.
+pub fn a_ticket_that_is_not_text_is_refused_locally_test() {
+  use f <- fixture.with_server
+
+  let path = f.dir <> "/binary.invite"
+  let assert Ok(Nil) = simplifile.write_bits(path, <<255, 0, 254>>)
+  let outcome = run(f, ["invite", "accept", "--ticket", "--file", path])
+
+  assert outcome.status == cli.exit_refused
+  assert fixture.calls(f.fake) == []
 }
 
 pub fn the_agent_credential_cannot_run_operator_commands_test() {

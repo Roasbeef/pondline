@@ -1,5 +1,6 @@
 import core/id
 import core/offer.{AutoApprove, OperatorApproves}
+import daemon/api
 import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, CreateInvite,
   DaemonOptions, DeclineContact, Encoded, FromInvitation, FromTicket,
@@ -346,7 +347,12 @@ pub fn no_command_accepts_a_ticket_in_argv_test() {
 
   list.each(commands, fn(command) {
     list.each(
-      [[ticket], ["--ticket", ticket], ["--ticket-text", ticket]],
+      [
+        [ticket],
+        ["--ticket", ticket],
+        ["--ticket-text", ticket],
+        ["--ticket=" <> ticket],
+      ],
       fn(extra) {
         let line = list.flatten([command, extra, common])
         let assert Error(message) = parse(line)
@@ -356,6 +362,20 @@ pub fn no_command_accepts_a_ticket_in_argv_test() {
       },
     )
   })
+}
+
+/// The CLI waits for an invitation or a ticket's redemption at least as
+/// long as the daemon may work on it, so it never reports a failure for an
+/// invitation that is then created or a contact that is then accepted.
+pub fn the_cli_outwaits_the_daemon_on_invitations_test() {
+  let daemon_bound =
+    api.invite_wait_ms + api.ticket_wait_ms + api.ticket_call_ms
+
+  assert cli.invitation_timeout_ms >= daemon_bound
+  assert cli.timeout_ms(CreateInvite("d", AutoApprove, 1, TicketOnly))
+    == cli.invitation_timeout_ms
+  assert cli.timeout_ms(AcceptInvite(InputStdin, FromTicket, ""))
+    == cli.invitation_timeout_ms
 }
 
 pub fn requests_carry_the_wire_shape_test() {
