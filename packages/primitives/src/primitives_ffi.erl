@@ -20,6 +20,12 @@
 
 random_bytes(N) when is_integer(N), N >= 0 -> crypto:strong_rand_bytes(N).
 
+%% sha256/1 and hmac_sha256/2 are not wrapped in ?GUARD, so that the Gleam
+%% API stays a plain BitArray. They cannot raise for the byte-aligned
+%% binaries every caller in this repository passes: crypto:hash/2 and
+%% crypto:mac/4 raise only on a non-binary or non-byte-aligned bitstring,
+%% and an HMAC key of any length is valid. Neither carries a secret in a
+%% raised error the way the key operations below could.
 sha256(Data) -> crypto:hash(sha256, Data).
 
 hmac_sha256(Key, Data) -> crypto:mac(hmac, sha256, Key, Data).

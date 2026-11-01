@@ -20,11 +20,16 @@ the protocol logic stays pure.
   rule.
 - `src/primitives_ffi.erl`: the Erlang shim. Every wrapper catches every
   exception.
+- `primitives/suite`: `suite()`, the production `core/crypto/suite.Suite`
+  built from the functions above. The only place the record is filled with
+  real implementations; the fake lives in `core`'s `test/` only.
 
 ## Relationships
 
-Depends on `gleam_stdlib` and OTP's `crypto`. Consumed by the daemon and
-mailbox shells, which build `core/crypto`'s suite from it.
+Depends on `gleam_stdlib`, OTP's `crypto`, and `core` (for the `Suite` type
+alone; `core` never depends back). Consumed by the daemon and mailbox
+shells, which take `primitives/suite.suite()`. Its tests run the real
+handshake and ratchet over these primitives.
 
 ## Traffic
 
@@ -39,10 +44,15 @@ None. Pure function calls into OpenSSL; no processes, no messages.
   (`test/primitives/known_answer_test.gleam`: RFC 7748, 8032, 8439, 4231,
   FIPS 180-4). ML-KEM, which has no deterministic key generation through
   OTP, is checked by round trip, size and implicit rejection.
+- HKDF (`core/crypto/hkdf`) matches RFC 5869 cases 1 to 3
+  (`test/primitives/hkdf_test.gleam`), and the full PQXDH and ratchet tests
+  in `test/primitives/protocol_test.gleam` are the only tests of the
+  protocols over real crypto.
 - ML-KEM decapsulation of a forged ciphertext returns an unrelated secret,
   not an error. Authentication comes from what that secret later keys.
 
 ## Deep Docs
 
 - `docs/adr/002-pq-crypto-over-otp.md` (the decision and its evidence).
+- `docs/crypto-profile-v1.md` (the algorithms, layouts and guarantees).
 - `docs/spec.md` §5 (the crypto contract).

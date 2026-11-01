@@ -71,6 +71,18 @@ pub fn x25519_refuses_a_low_order_point_test() {
   assert primitives.x25519(secret, <<0:256>>) == Error(Nil)
 }
 
+/// The order-8 point of RFC 7748 §6.1's low-order list, and the order-4 point
+/// u = 1: a clamped scalar sends each to the identity, so the shared secret
+/// is all zeros and must be refused.
+pub fn x25519_refuses_small_order_points_test() {
+  let #(secret, _public) = primitives.x25519_keypair()
+  let order_8 =
+    hex("5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157")
+
+  assert primitives.x25519(secret, order_8) == Error(Nil)
+  assert primitives.x25519(secret, <<1, 0:248>>) == Error(Nil)
+}
+
 pub fn x25519_refuses_wrong_sizes_test() {
   let #(secret, public) = primitives.x25519_keypair()
 
