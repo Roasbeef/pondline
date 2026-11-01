@@ -2264,7 +2264,12 @@ pub fn undocumented(x) { x }
   )
   |> should.equal(#(1, 0))
 
-  should.equal(policy.literate_packages(), ["core", "lint", "primitives"])
+  should.equal(policy.literate_packages(), [
+    "core",
+    "lint",
+    "mailbox",
+    "primitives",
+  ])
 }
 
 /// R13 gates, and the gate is what keeps a spine honest: a spine naming a
