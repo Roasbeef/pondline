@@ -396,7 +396,10 @@ pub fn stop(daemon: api.Daemon) -> Nil {
   wait_for_lock(api.state_dir(daemon) <> "/" <> lock_file, stop_wait_ms)
 }
 
-/// Polls until the lock can be taken or the wait is over.
+/// Polls until the lock can be taken or the wait is over. The `Retry` arm is
+/// a backstop that no test exercises: the lock's `on_shutdown` frees it
+/// before a following `start` probes it, so no test sees the first attempt
+/// fail.
 fn wait_for_lock(path: String, within_ms: Int) -> Nil {
   // A free lock ends the stop; a spent wait ends it too, and the caller
   // finds out when it starts on the directory again.

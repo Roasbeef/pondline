@@ -17,6 +17,7 @@ import daemon/api
 import daemon/carrier
 import daemon/engine
 import daemon/fetcher
+import daemon/node
 import daemon/scheduler
 import daemon/status
 import daemon/store
@@ -25,7 +26,9 @@ import daemon/transport
 import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
+import gleam/otp/actor
 import primitives
+import tor
 import weft
 
 fn onion() -> endpoint.Endpoint {
@@ -189,6 +192,57 @@ pub fn a_poll_that_hangs_is_abandoned_and_retried_test() {
   await_dials(dials, 2, 4000)
 }
 
+pub fn an_acknowledgement_that_hangs_is_abandoned_and_retried_test() {
+  let mailbox = support.start_mailbox()
+  let #(a, _) = support.start_daemon(mailbox)
+  let #(b, settings_b) = support.start_daemon(mailbox)
+  let assert Ok(file) = api.invite(a, "a", offer.AutoApprove, 10)
+  let assert Ok(_) = api.accept(b, file, "a")
+  let at_a = active_contact(a)
+  let _ = active_contact(b)
+
+  // B finishes acknowledging the `Accept` it processed during pairing, goes
+  // down, and misses a message, which then waits in its queue.
+  let assert Ok([before]) = engine.live_inboxes(api.engine_name(b))
+  support.eventually(15_000, fn() {
+    support.when(support.stored_in(before) == [])
+  })
+  node.stop(b)
+  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hi":utf8>>, None)
+  support.eventually(15_000, fn() {
+    support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
+  })
+
+  // B comes back without workers and commits the envelope by hand, so it
+  // owes the mailbox an acknowledgement.
+  let assert Ok(offline) = node.start_offline(settings_b)
+  let assert Ok([inbox]) = engine.live_inboxes(api.engine_name(offline))
+  let assert [stored] = support.stored_in(inbox)
+  assert engine.process(
+      api.engine_name(offline),
+      inbox.queue,
+      stored.envelope,
+      stored.ciphertext,
+    )
+    == Ok(engine.Fresh)
+
+  // The acknowledgement's call hangs. Only the run's deadline can end it,
+  // and the backoff then starts a round that acknowledges again.
+  let dials = process.new_subject()
+  let config =
+    fetcher.Config(
+      ..fetcher_config(
+        offline,
+        Inbox(..inbox, endpoint: onion()),
+        hanging_dialer(dials),
+        5000,
+      ),
+      ack_deadline_ms: 300,
+    )
+  let assert Ok(_) = fetcher.start(config)
+  await_dials(dials, 2, 4000)
+}
+
 pub fn a_fetcher_for_a_retired_queue_ends_by_itself_test() {
   let #(daemon, inbox) = open_inbox()
   let assert Ok(other) = id.from_bytes(<<9:128>>)
@@ -286,6 +340,7 @@ pub fn a_completed_bootstrap_reports_bootstrapped_test() {
       cell,
       fn() { Ok(Nil) },
       5000,
+      fn(_) { Nil },
     )
 
   support.eventually(5000, fn() {
@@ -301,6 +356,7 @@ pub fn a_failed_bootstrap_reports_unavailable_test() {
       cell,
       fn() { Error(Nil) },
       5000,
+      fn(_) { Nil },
     )
 
   support.eventually(5000, fn() {
@@ -319,8 +375,140 @@ pub fn a_bootstrap_that_hangs_is_abandoned_at_its_deadline_test() {
         Ok(Nil)
       },
       300,
+      fn(_) { Nil },
     )
 
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorUnavailable)
+  })
+}
+
+/// What one scripted bootstrap attempt does.
+type Attempt {
+  Succeeds
+  Fails
+  Hangs
+}
+
+/// A bootstrap whose successive calls do what `script` says, and announce
+/// themselves on `calls`. A call past the end of the script hangs.
+fn scripted(
+  script: List(Attempt),
+  calls: Subject(Nil),
+) -> fn() -> Result(Nil, Nil) {
+  let assert Ok(started) =
+    actor.new(script)
+    |> actor.on_message(fn(remaining, reply: Subject(Attempt)) {
+      case remaining {
+        [next, ..rest] -> {
+          process.send(reply, next)
+          actor.continue(rest)
+        }
+
+        [] -> {
+          process.send(reply, Hangs)
+          actor.continue([])
+        }
+      }
+    })
+    |> actor.start
+
+  fn() {
+    let attempt = actor.call(started.data, 1000, fn(reply) { reply })
+    process.send(calls, Nil)
+
+    case attempt {
+      Succeeds -> Ok(Nil)
+      Fails -> Error(Nil)
+      Hangs -> {
+        process.sleep(60_000)
+        Ok(Nil)
+      }
+    }
+  }
+}
+
+fn carrier_with(
+  script: List(Attempt),
+) -> #(process.Name(status.Message), Subject(Nil), Subject(tor.Event)) {
+  let cell = status_cell(status.TorStarting)
+  let calls = process.new_subject()
+  let handoff = process.new_subject()
+  let assert Ok(_) =
+    carrier.start_with_bootstrap(
+      process.new_name("workers_test_carrier"),
+      cell,
+      scripted(script, calls),
+      60_000,
+      process.send(handoff, _),
+    )
+  let assert Ok(events) = process.receive(handoff, 1000)
+
+  #(cell, calls, events)
+}
+
+pub fn a_restarted_sidecar_is_bootstrapped_again_test() {
+  let #(cell, calls, events) = carrier_with([Succeeds, Succeeds])
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorBootstrapped)
+  })
+  await_dials(calls, 1, 1000)
+
+  // The replacement sidecar is not bootstrapped, so a second run starts and
+  // the carrier does not claim to be ready in the meantime.
+  process.send(events, tor.SidecarRestarted)
+  await_dials(calls, 1, 5000)
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorBootstrapped)
+  })
+}
+
+pub fn a_restart_that_fails_to_bootstrap_is_unavailable_test() {
+  let #(cell, calls, events) = carrier_with([Succeeds, Fails, Succeeds])
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorBootstrapped)
+  })
+
+  process.send(events, tor.SidecarRestarted)
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorUnavailable)
+  })
+  await_dials(calls, 2, 1000)
+
+  // A later restart is a new chance: `Unavailable` is not terminal for a
+  // sidecar that comes back.
+  process.send(events, tor.SidecarRestarted)
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorBootstrapped)
+  })
+}
+
+pub fn a_restart_during_a_bootstrap_starts_a_new_run_test() {
+  let #(cell, calls, events) = carrier_with([Hangs, Succeeds])
+  await_dials(calls, 1, 1000)
+  assert tor_of(cell) == status.TorStarting
+
+  // The first run is stuck. The restart replaces it, and the new run's
+  // answer is the one the carrier believes.
+  process.send(events, tor.SidecarRestarted)
+  await_dials(calls, 1, 5000)
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorBootstrapped)
+  })
+}
+
+pub fn a_sidecar_that_is_given_up_on_makes_the_carrier_unavailable_test() {
+  let #(cell, _calls, events) = carrier_with([Succeeds])
+  support.eventually(5000, fn() {
+    support.when(tor_of(cell) == status.TorBootstrapped)
+  })
+
+  // A death alone decides nothing; giving up does.
+  process.send(events, tor.SidecarDied(1))
+  process.sleep(200)
+  assert tor_of(cell) == status.TorBootstrapped
+
+  process.send(events, tor.SidecarGaveUp)
   support.eventually(5000, fn() {
     support.when(tor_of(cell) == status.TorUnavailable)
   })

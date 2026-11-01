@@ -27,8 +27,11 @@
 //// mailbox and a call that hangs is abandoned by its run instead of waited
 //// for. A run's outcome arrives as a message, followed by one end marker.
 //// An outcome moves the machine on; the end marker of a run the machine
-//// has already left is dropped, which is why the two runs push to two
-//// subjects, `Acked` and `Polled`, and not to one.
+//// has already left is dropped. The two runs push to two subjects, `Acked` and `Polled`, so a message names the run that spoke and each
+//// state reads like the step it waits for. That is mostly for readability:
+//// the runs never overlap, and a stale end marker is ignored by any arm. The
+//// one thing a single subject would risk is a late `RunLost` of the finished
+//// run being read as the next run's failure.
 ////
 //// A failure of either step enters `BackingOff` and arms a state timeout of
 //// `backoff_ms(failures)`. The state timeout dies with the state, and the

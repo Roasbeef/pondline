@@ -85,7 +85,11 @@ this before changing any of them.
   the selector is rebuilt from the table of running batches, so an outcome
   that carries only an index finds its row. All seven `Outcome` variants are
   written out: crashed, abandoned and failed sends are retried with backoff,
-  `NeverStarted` leaves the row queued. The rescan is `actor.periodic`
+  `NeverStarted` leaves the row queued. A row claims its envelope in
+  `in_flight` with a `Claim` that names its owner (`Sending` the run's
+  subject, `Expiring`, or `Held`): a run's end marker releases only its own
+  `Sending` claims, and a row whose outcome the engine could not record is
+  `Held` until the next tick instead of being resent at once. The rescan is `actor.periodic`
   (`tick_ms`) plus a first tick via `continuing`; the engine has no soonest
   `next_attempt_at` query, so a computed named timeout is not possible yet.
   `classify` and `backoff_seconds` are the pure policy.
@@ -108,7 +112,10 @@ this before changing any of them.
 - `daemon/carrier`: a `weft/state_machine` (`Unused`, `Bootstrapping`,
   `Bootstrapped`, `Unavailable`) that owns the Tor handle, runs the bootstrap
   as a relayed one-task run bounded by `bootstrap_deadline_ms`, reports each
-  decision to the status cell, and drops end markers after it settles. The
+  decision to the status cell, and drops end markers after it settles. It
+  subscribes to the sidecar's events: `SidecarRestarted` (the replacement is
+  not bootstrapped) starts a new run and returns to `Bootstrapping` from any
+  state with a sidecar, `SidecarGaveUp` settles `Unavailable`. The
   onion `Dialer` asks it for the handle on every dial.
 - `daemon/node`: the `rest_for_one` tree (`lock`, `status`, `events`,
   `carrier`, `engine`, `scheduler`, `provisioner`, `fetch_manager`), the
@@ -150,7 +157,17 @@ Invariants:
   `periodic`, the fetcher's backoff state timeout or run deadline, the
   provisioner's named timeout, or the carrier's run deadline each fails a
   named test there. The fetch manager's `periodic` is not covered (it is the
-  backstop for a lost nudge and offer expiry).
+  backstop for a lost nudge and offer expiry), nor is
+  `node.wait_for_lock`'s `Retry` arm (a backstop: the lock's `on_shutdown`
+  frees it before `node.start` probes it, so no test sees the first attempt
+  fail). The fetcher's two run deadlines are covered by the hanging poll and
+  hanging acknowledgement tests, and the carrier's restart handling by the
+  restart tests there. The scheduler's `Held` pacing and per-run claims have
+  no test: the store's 5 s busy timeout makes a failing record slow rather
+  than hot, so a test cannot tell a resend per tick from a resend per
+  message, and the stale end marker needs a failed record, a resend into a
+  newer run and an old marker in one interleaving; both are argued in the
+  code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
 - A restart resumes committed state: an unsent outbox row is sent on start,

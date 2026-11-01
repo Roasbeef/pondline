@@ -27,7 +27,7 @@
 //// | `Unused` | no sidecar was configured |
 //// | `Bootstrapping` | the run is going |
 //// | `Bootstrapped` | the run completed |
-//// | `Unavailable` | the run failed, crashed, was abandoned at its deadline or was lost |
+//// | `Unavailable` | the run failed, crashed, was abandoned at its deadline or was lost, or the sidecar was given up on |
 ////
 //// The machine is the one place that decides which of the last three the
 //// carrier is in, and it reports each decision to the status cell. The run's
@@ -36,6 +36,21 @@
 //// marker and is dropped, so a late marker cannot overwrite the result. The
 //// handle is requested in every state and always answered from the data.
 ////
+//// ## The sidecar's restarts
+////
+//// `tor` restarts a crashed sidecar by itself, and the new one is not
+//// bootstrapped, so a carrier that stayed `Bootstrapped` would fail every
+//// onion dial from then on. The machine subscribes to the sidecar's events
+//// (`tor.subscribe`). `SidecarRestarted` starts a new bootstrap run and
+//// moves the machine back to `Bootstrapping`, whatever state it was in;
+//// `SidecarGaveUp` settles it in `Unavailable` for good. The run is
+//// replaced, not cancelled: the selector is rebuilt around the new run's
+//// subject, so a stale outcome or end marker of the old run is never read,
+//// and the old run ends by itself, because the death that preceded the
+//// restart already failed its pending request and its deadline bounds it
+//// anyway. The restart count is `tor`'s; a carrier that sees `SidecarDied`
+//// has nothing to do until one of the other two follows.
+////
 //// One isolation group per queue is the caller's choice (`mailbox_client`
 //// passes the queue id in hex); this module passes it through unchanged.
 
@@ -43,7 +58,7 @@ import core/endpoint
 import daemon/mail
 import daemon/status
 import daemon/transport.{type Connection, type Dialer, type TransportError}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Name, type Selector, type Subject}
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/supervision
@@ -69,6 +84,7 @@ pub const send_timeout_ms = 60_000
 pub opaque type Message {
   GetTor(reply_with: Subject(Option(tor.Tor)))
   Bootstrap(pulled: weft.Pulled(Nil, Nil))
+  SidecarEvent(event: tor.Event)
 }
 
 /// What the carrier knows about its sidecar.
@@ -79,10 +95,18 @@ type State {
   Unavailable
 }
 
-/// What the machine keeps: the handle it answers requests with, and where
-/// it reports Tor's status.
+/// What the machine keeps: the handle it answers requests with, where it
+/// reports Tor's status, and what a new bootstrap run needs. The state never
+/// carries any of it, so starting another run is not a state change.
 type Data {
-  Data(held: Option(tor.Tor), status: Name(status.Message))
+  Data(
+    held: Option(tor.Tor),
+    status: Name(status.Message),
+    self: Subject(Message),
+    events: Subject(tor.Event),
+    bootstrap: fn() -> Result(Nil, Nil),
+    deadline_ms: Int,
+  )
 }
 
 /// Starts the carrier under `name`. With a sidecar `binary`, starts it and
@@ -121,13 +145,23 @@ pub fn supervised(
 }
 
 /// Starts a carrier that bootstraps with `bootstrap` instead of a sidecar,
-/// under a run deadline of `deadline_ms`. It holds no handle, so dials fail,
-/// and exists to exercise the bootstrap's outcomes without Tor.
+/// under a run deadline of `deadline_ms`. `subscribe` receives the subject
+/// the machine listens to for the sidecar's events, as `tor.subscribe` does
+/// for a real sidecar; a subject is read only by the process that made it,
+/// so the machine makes it and hands it out. It holds no handle, so dials
+/// fail, and exists to exercise the bootstrap's outcomes and the restarts
+/// without Tor.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// carrier.start_with_bootstrap(name, status_name, fn() { Ok(Nil) }, 1000)
+/// carrier.start_with_bootstrap(
+///   name,
+///   status_name,
+///   fn() { Ok(Nil) },
+///   1000,
+///   fn(events) { process.send(handoff, events) },
+/// )
 /// // -> Ok(started), and Tor reports bootstrapped
 /// ```
 pub fn start_with_bootstrap(
@@ -135,11 +169,24 @@ pub fn start_with_bootstrap(
   status_name: Name(status.Message),
   bootstrap: fn() -> Result(Nil, Nil),
   deadline_ms: Int,
+  subscribe: fn(Subject(tor.Event)) -> Nil,
 ) -> actor.StartResult(Subject(Message)) {
   sm.new_with_initialiser(5000, fn(subject) {
     status.set_tor(status_name, status.TorStarting)
 
-    Ok(begin(subject, None, status_name, bootstrap, deadline_ms))
+    let events = process.new_subject()
+    subscribe(events)
+
+    Ok(
+      begin(Data(
+        held: None,
+        status: status_name,
+        self: subject,
+        events:,
+        bootstrap:,
+        deadline_ms:,
+      )),
+    )
   })
   |> sm.on_event(handle)
   |> sm.named(name)
@@ -173,7 +220,19 @@ fn launch(
     None -> {
       status.set_tor(status_name, status.TorNotUsed)
 
-      sm.initialised(Unused, Data(held: None, status: status_name))
+      // Nothing is ever subscribed, so the machine hears nothing but its own
+      // mailbox in `Unused`.
+      sm.initialised(
+        Unused,
+        Data(
+          held: None,
+          status: status_name,
+          self: subject,
+          events: process.new_subject(),
+          bootstrap: fn() { Error(Nil) },
+          deadline_ms: 0,
+        ),
+      )
       |> sm.returning(subject)
       |> Ok
     }
@@ -188,44 +247,49 @@ fn launch(
         |> result.replace_error("the Tor sidecar could not be started"),
       )
 
-      Ok(begin(
-        subject,
-        Some(started),
-        status_name,
-        fn() {
-          tor.bootstrap(started, bootstrap_timeout_ms)
-          |> result.replace_error(Nil)
-        },
-        bootstrap_deadline_ms,
-      ))
+      // The machine hears the sidecar's restarts, which un-bootstrap it.
+      let events = process.new_subject()
+      tor.subscribe(started, events)
+
+      Ok(
+        begin(Data(
+          held: Some(started),
+          status: status_name,
+          self: subject,
+          events:,
+          bootstrap: fn() {
+            tor.bootstrap(started, bootstrap_timeout_ms)
+            |> result.replace_error(Nil)
+          },
+          deadline_ms: bootstrap_deadline_ms,
+        )),
+      )
     }
   }
 }
 
-/// Starts the bootstrap run and builds the machine's start in
-/// `Bootstrapping`. The relay is linked to the machine, so the machine's
-/// end takes the run with it.
-fn begin(
-  subject: Subject(Message),
-  held: Option(tor.Tor),
-  status_name: Name(status.Message),
-  bootstrap: fn() -> Result(Nil, Nil),
-  deadline_ms: Int,
-) -> sm.Initialised(State, Data, Message, Subject(Message)) {
+/// Starts a bootstrap run and returns what the machine listens to while it
+/// goes: its own mailbox, the sidecar's events and the run's subject, and
+/// no other run's. The relay is linked to the machine, so the machine's end
+/// takes the run with it.
+fn run(data: Data) -> Selector(Message) {
   let sink = process.new_subject()
   let _relay =
-    weft.new([bootstrap])
-    |> weft.deadline(deadline_ms)
+    weft.new([data.bootstrap])
+    |> weft.deadline(data.deadline_ms)
     |> weft.start_relayed(sink)
 
-  let selector =
-    process.new_selector()
-    |> process.select(subject)
-    |> process.select_map(sink, Bootstrap)
+  process.new_selector()
+  |> process.select(data.self)
+  |> process.select_map(data.events, SidecarEvent)
+  |> process.select_map(sink, Bootstrap)
+}
 
-  sm.initialised(Bootstrapping, Data(held:, status: status_name))
-  |> sm.selecting(selector)
-  |> sm.returning(subject)
+/// Builds the machine's start in `Bootstrapping`, with the first run going.
+fn begin(data: Data) -> sm.Initialised(State, Data, Message, Subject(Message)) {
+  sm.initialised(Bootstrapping, data)
+  |> sm.selecting(run(data))
+  |> sm.returning(data.self)
 }
 
 /// Handles one event. Every state and message pair is written.
@@ -253,6 +317,36 @@ fn handle(
     Unused, Bootstrap(_) -> sm.keep(data)
     Bootstrapped, Bootstrap(_) -> sm.keep(data)
     Unavailable, Bootstrap(_) -> sm.keep(data)
+
+    // Without a sidecar there is nothing to hear from.
+    Unused, SidecarEvent(_) -> sm.keep(data)
+
+    Bootstrapping, SidecarEvent(event:)
+    | Bootstrapped, SidecarEvent(event:)
+    | Unavailable, SidecarEvent(event:)
+    -> followed(data, event)
+  }
+}
+
+/// What the sidecar's own event means to a carrier that owns one.
+fn followed(data: Data, event: tor.Event) -> sm.Next(State, Data, Message) {
+  case event {
+    // The replacement sidecar listens but is not bootstrapped, so whatever
+    // the carrier had decided about the old one no longer holds.
+    tor.SidecarRestarted -> {
+      status.set_tor(data.status, status.TorStarting)
+
+      sm.transition(to: Bootstrapping, data:)
+      |> sm.with_selector(run(data))
+    }
+
+    // `tor` restarts nothing more; the carrier is done for good.
+    tor.SidecarGaveUp -> fail(data)
+
+    // A death is followed by a restart or by giving up; the verdict waits
+    // for that. A service's state is not the carrier's business.
+    tor.SidecarDied(_) -> sm.keep(data)
+    tor.ServiceStateChanged(_, _) -> sm.keep(data)
   }
 }
 

@@ -51,6 +51,14 @@
 //// "soonest `next_attempt_at`" query to size a single wake from, so the
 //// tick polls at `tick_ms`; a retry that comes due is sent within that long.
 ////
+//// The same tick paces a failing record. A row whose outcome the engine could
+//// not record is still `queued` and due, and is held out of every dispatch
+//// until the next tick (`Held`), so a store that keeps failing costs one
+//// resend per period instead of a resend per message handled. Each row's
+//// claim names the run that owns it, and a run's end marker releases only
+//// its own claims, so a row sent again in a newer run is never started a
+//// third time by an older run's marker.
+////
 //// ## Flow
 ////
 //// 1. `start` builds the actor, which handles one tick before anything else
@@ -158,9 +166,32 @@ type State {
   State(
     config: Config,
     self: Subject(Message),
-    in_flight: Dict(BitArray, Nil),
+    in_flight: Dict(BitArray, Claim),
     batches: List(Batch),
   )
+}
+
+/// Why a row is kept out of the next dispatch, and who may release it.
+///
+/// A row's envelope is claimed from the moment `dispatch` chooses it until
+/// something ends that claim. The claim names its owner because a row can
+/// outlive the run it was first sent in: when `engine.record_send` fails the
+/// row stays `queued` and due, a later dispatch sends it again in a newer
+/// run, and the older run's end marker may still be on its way. That marker
+/// may release only what its own run claimed, or the row would be started a
+/// third time while the newer send is still going.
+type Claim {
+  /// Past its deadline: a `Finished(Refused)` to the scheduler itself is on
+  /// the way, and it will end the claim.
+  Expiring
+
+  /// Being sent by the run that pushes to this subject.
+  Sending(sink: Subject(Sent))
+
+  /// Sent, but the outcome could not be recorded, so the row is still due.
+  /// Only the next `Tick` releases it, which paces a failing record at one
+  /// resend per period instead of one per message the scheduler handles.
+  Held
 }
 
 /// What a run's outcome means for one row.
@@ -321,7 +352,7 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   // outcome becomes a finished send or a release.
   let after = case message {
     Nudge -> dispatch(state)
-    Tick -> dispatch(state)
+    Tick -> dispatch(release_held(state))
     Finished(row:, verdict:) -> finish(state, row, verdict)
     Settled(batch:, pulled:) -> settle(state, batch, pulled)
   }
@@ -369,7 +400,10 @@ fn dispatch(state: State) -> State {
         process.send(state.self, Finished(row:, verdict: Refused))
       })
 
-      start_batch(list.fold(chosen, state, track), live)
+      let expiring =
+        list.fold(expired, state, fn(acc, row) { track(acc, row, Expiring) })
+
+      start_batch(expiring, live)
     }
 
     True, Error(_) | False, _ -> state
@@ -386,8 +420,10 @@ fn start_batch(state: State, rows: List(store.OutboxRow)) -> State {
     [_, ..] -> {
       let sink = process.new_subject()
       let _relay = send_batch(state.config, rows, sink)
+      let claimed =
+        list.fold(rows, state, fn(acc, row) { track(acc, row, Sending(sink)) })
 
-      State(..state, batches: [Batch(rows:, sink:), ..state.batches])
+      State(..claimed, batches: [Batch(rows:, sink:), ..state.batches])
     }
   }
 }
@@ -417,11 +453,24 @@ pub fn send_batch(
   |> weft.start_relayed(sink)
 }
 
-/// Remembers that a row is being sent.
-fn track(state: State, row: store.OutboxRow) -> State {
+/// Remembers that a row is claimed, and by whom.
+fn track(state: State, row: store.OutboxRow, claim: Claim) -> State {
   State(
     ..state,
-    in_flight: dict.insert(state.in_flight, envelope_key(row), Nil),
+    in_flight: dict.insert(state.in_flight, envelope_key(row), claim),
+  )
+}
+
+/// Ends the claims that wait for a `Tick`.
+fn release_held(state: State) -> State {
+  State(
+    ..state,
+    in_flight: dict.filter(state.in_flight, fn(_, claim) {
+      case claim {
+        Held -> False
+        Expiring | Sending(_) -> True
+      }
+    }),
   )
 }
 
@@ -537,18 +586,23 @@ fn conclude(
   }
 }
 
-/// Forgets a run that is over, and releases any of its rows that never got
-/// an outcome so a later dispatch can send them.
+/// Forgets a run that is over, and releases the rows it still claims, which
+/// are the ones that never got an outcome, so a later dispatch can send
+/// them. A row that a newer run claimed since, or that is `Held`, is not
+/// this run's to release.
 fn close(state: State, batch: Batch) -> State {
-  let released =
-    list.fold(batch.rows, state.in_flight, fn(in_flight, row) {
-      dict.delete(in_flight, envelope_key(row))
+  let kept =
+    dict.filter(state.in_flight, fn(_, claim) {
+      case claim {
+        Sending(sink:) -> sink != batch.sink
+        Expiring | Held -> True
+      }
     })
 
   dispatch(
     State(
       ..state,
-      in_flight: released,
+      in_flight: kept,
       batches: list.filter(state.batches, fn(other) { other.sink != batch.sink }),
     ),
   )
@@ -573,15 +627,21 @@ fn finish(state: State, row: store.OutboxRow, verdict: Verdict) -> State {
   }
 
   // An engine that cannot record leaves the row `queued` and due, so the
-  // send is simply repeated; the mailbox answers the same receipt.
-  case engine.record_send(state.config.engine, row.envelope, outcome) {
-    Ok(Nil) -> Nil
-    Error(_) -> log.line("scheduler", "could not record a send outcome")
+  // send is repeated; the mailbox answers the same receipt. The repeat waits
+  // for the next `Tick`: dispatching at once would resend a still-due row as
+  // fast as the record fails.
+  let in_flight = case
+    engine.record_send(state.config.engine, row.envelope, outcome)
+  {
+    Ok(Nil) -> dict.delete(state.in_flight, envelope_key(row))
+
+    Error(_) -> {
+      log.line("scheduler", "could not record a send outcome")
+      dict.insert(state.in_flight, envelope_key(row), Held)
+    }
   }
 
-  dispatch(
-    State(..state, in_flight: dict.delete(state.in_flight, envelope_key(row))),
-  )
+  dispatch(State(..state, in_flight:))
 }
 
 fn envelope_key(row: store.OutboxRow) -> BitArray {
