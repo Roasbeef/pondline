@@ -100,6 +100,7 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
       "application/octet-stream",
       InputFile("p.bin"),
       None,
+      None,
     )
 
   let assert Ok(Client(action:, ..)) =
@@ -120,6 +121,7 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
       "text/plain",
       InputStdin,
       Some(identifier(hex2)),
+      None,
     )
 
   assert parse(["send", "--contact", hex, ..common])

@@ -369,7 +369,10 @@ fn await_file(
 }
 
 /// Imports an invitation file. The relationship starts `Joining`; its queue
-/// is created and its first message sent in the background.
+/// is created and its first message sent in the background. Accepting an
+/// invitation this daemon already accepted returns that first relationship
+/// and starts nothing new (ADR-011), so a retry after `Unavailable` is
+/// safe.
 ///
 /// ## Examples
 ///
@@ -472,7 +475,40 @@ pub fn send(
   payload: BitArray,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), ApiError) {
-  engine.send(daemon.engine, contact, content_type, payload, in_reply_to)
+  engine.send(daemon.engine, contact, None, content_type, payload, in_reply_to)
+  |> result.map_error(from_failure)
+}
+
+/// `send` under a caller's idempotency key, so a retry after an answer the
+/// caller never saw (`Unavailable` after the commit landed) cannot queue
+/// the message twice (ADR-011). The key is scoped to the contact and
+/// remembered for `limits.send_key_seconds`; it is 1 to
+/// `limits.max_send_key_bytes` bytes. The same key with the same content
+/// type, payload and reply target answers with the first message's
+/// identifier and queues nothing; with anything else it is `Refused`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.send_with_key(daemon, contact, "order-17", "text/plain", <<"hi">>, None)
+/// // -> Ok(message)
+/// ```
+pub fn send_with_key(
+  daemon: Daemon,
+  contact: Id(Contact),
+  key: String,
+  content_type: String,
+  payload: BitArray,
+  in_reply_to: Option(Id(MessageKind)),
+) -> Result(Id(MessageKind), ApiError) {
+  engine.send(
+    daemon.engine,
+    contact,
+    Some(key),
+    content_type,
+    payload,
+    in_reply_to,
+  )
   |> result.map_error(from_failure)
 }
 

@@ -137,6 +137,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import weft/actor
 
 /// How long a caller waits for the engine before the call is reported
@@ -523,23 +524,43 @@ pub fn accept(
         "the file is not a valid invitation",
       )),
     )
-    use inbox <- result.try(new_inbox(state))
-
-    let terms =
-      relationship.Terms(inbox:, description:, budget: state.accept_budget)
-    use made <- result.try(
-      relationship.join(state.suite, invite, state.policy, terms, state.clock())
-      |> result.map_error(join_failure),
+    use earlier <- result.try(
+      fault(store.contact_by_invitation(state.store, invite.id)),
     )
 
-    use _ <- result.try(commit_change(
-      state,
-      store.Started(made, description),
-      Some(made.state.contact),
-    ))
-
-    Ok(made.state.contact)
+    // An invitation is redeemed once (ADR-011): accepting it again, as a
+    // caller retrying an answer it never saw does, returns the relationship
+    // it started and starts no second joiner, until that one is closed.
+    case earlier {
+      Some(contact) -> Ok(contact)
+      None -> join(state, invite, description)
+    }
   })
+}
+
+/// Starts a joiner for an invitation not redeemed before: a fresh identity
+/// and inbox, committed as `Joining`.
+fn join(
+  state: State,
+  invite: invitation.Invitation,
+  description: String,
+) -> Result(Id(Contact), Failure) {
+  use inbox <- result.try(new_inbox(state))
+
+  let terms =
+    relationship.Terms(inbox:, description:, budget: state.accept_budget)
+  use made <- result.try(
+    relationship.join(state.suite, invite, state.policy, terms, state.clock())
+    |> result.map_error(join_failure),
+  )
+
+  use _ <- result.try(commit_change(
+    state,
+    store.Started(made, description),
+    Some(made.state.contact),
+  ))
+
+  Ok(made.state.contact)
 }
 
 /// The mailbox created this queue. An offer opens, or a joiner's session
@@ -738,38 +759,142 @@ pub fn raise_budget(
 /// commit together, and the message identifier is returned. Nothing has been
 /// sent when this returns; the scheduler transmits the committed row.
 ///
+/// With a caller's idempotency `key` (ADR-011) a send is safe to retry
+/// after an answer the caller never saw: a key already used on this
+/// relationship for the same request answers with the first message and
+/// queues nothing, and one used for a different request is refused. The key
+/// commits in the send's own transaction, so it exists exactly when the
+/// message does. Without a key every call is a new message.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// engine.send(name, contact, "text/plain", <<"hi">>, None)
+/// engine.send(name, contact, Some("order-17"), "text/plain", <<"hi">>, None)
 /// // -> Ok(message_id)
 /// ```
 pub fn send(
   name: Handle(Message),
   contact: Id(Contact),
+  key: Option(String),
   content_type: String,
   payload: BitArray,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), Failure) {
   run(name, Send, fn(state) {
-    use made <- result.try(
-      revise(state, contact, fn(current) {
-        relationship.send(
-          state.suite,
-          current,
-          state.clock(),
-          content_type,
-          payload,
-          in_reply_to,
-          None,
-        )
-      }),
-    )
+    let suite = state.suite
+    let clock = state.clock
+    let step = fn(current) {
+      relationship.send(
+        suite,
+        current,
+        clock(),
+        content_type,
+        payload,
+        in_reply_to,
+        None,
+      )
+    }
 
-    // The message identifier exists only inside the outbox record the plan
-    // carries.
-    sent_message(made.records)
+    // An unkeyed send is always new; a keyed one may be a retry.
+    case key {
+      None -> {
+        use made <- result.try(revise(state, contact, step))
+
+        // The message identifier exists only inside the outbox record the
+        // plan carries.
+        sent_message(made.records)
+      }
+
+      Some(key) -> {
+        let digest =
+          request_digest(state.suite, content_type, payload, in_reply_to)
+        keyed_send(state, contact, key, digest, step)
+      }
+    }
   })
+}
+
+/// A send under an idempotency key: the first message under the key on this
+/// relationship, a refusal for a key reused on another request, or a new
+/// send that commits the key with it.
+fn keyed_send(
+  state: State,
+  contact: Id(Contact),
+  key: String,
+  digest: BitArray,
+  step: fn(Relationship) -> Result(Plan(Relationship), relationship.Refusal),
+) -> Result(Id(MessageKind), Failure) {
+  use Nil <- result.try(check_send_key(key))
+  use prior <- result.try(
+    fault(store.send_by_key(state.store, contact, key, state.clock())),
+  )
+
+  // A remembered key answers for its first message, and only for it.
+  case prior {
+    Some(found) ->
+      case state.suite.constant_time_equal(found.digest, digest) {
+        True -> Ok(found.message)
+        False ->
+          Error(Refused("the idempotency key was used for a different message"))
+      }
+
+    None -> {
+      use found <- result.try(
+        fault(store.relationship_by_contact(state.store, contact)),
+      )
+      use record <- result.try(option.to_result(found, NotFound))
+      use made <- result.try(
+        step(record.relationship) |> result.map_error(refused),
+      )
+      use message <- result.try(sent_message(made.records))
+
+      let change =
+        store.KeyedSend(
+          plan: made,
+          version: record.version,
+          key: store.SendKey(key:, message:, digest:),
+        )
+      use _ <- result.try(commit_change(state, change, Some(contact)))
+
+      Ok(message)
+    }
+  }
+}
+
+/// Refuses an idempotency key that is empty or longer than
+/// `limits.max_send_key_bytes`.
+fn check_send_key(key: String) -> Result(Nil, Failure) {
+  let size = string.byte_size(key)
+
+  // The bound is in bytes, as the store and the wire count them.
+  case size >= 1 && size <= limits.max_send_key_bytes {
+    True -> Ok(Nil)
+    False -> Error(Refused("the idempotency key is empty or too long"))
+  }
+}
+
+/// SHA-256 over what a send asks for, each field framed so no two requests
+/// share an encoding: the content type with its length, whether a reply
+/// target follows and the target, then the payload.
+fn request_digest(
+  suite: Suite,
+  content_type: String,
+  payload: BitArray,
+  in_reply_to: Option(Id(MessageKind)),
+) -> BitArray {
+  // A tag byte says whether a reply target follows, so no request without
+  // one encodes like a request with one.
+  let reply = case in_reply_to {
+    Some(target) -> <<1, id.to_bytes(target):bits>>
+    None -> <<0>>
+  }
+
+  suite.sha256(<<
+    string.byte_size(content_type):32,
+    content_type:utf8,
+    reply:bits,
+    payload:bits,
+  >>)
 }
 
 /// The identifier of the application message a plan queued.

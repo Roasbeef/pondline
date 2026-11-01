@@ -369,7 +369,7 @@ pub fn backend_errors_map_to_stable_categories_test() {
       ..fixture.backend(fake),
       approve: fn(_) { Error(local_api_types.NotFound) },
       accept: fn(_, _) { Error(local_api_types.InvalidInvitation("expired")) },
-      send: fn(_, _, _, _) { Error(local_api_types.Refused("budget spent")) },
+      send: fn(_, _, _, _, _) { Error(local_api_types.Refused("budget spent")) },
       status: fn(_) { Error(local_api_types.Unavailable) },
     )
   }

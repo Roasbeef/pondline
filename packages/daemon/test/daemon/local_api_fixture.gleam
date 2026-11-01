@@ -227,7 +227,14 @@ pub fn backend(fake: Fake) -> Backend {
       record("raise_budget " <> id.to_hex(c) <> " " <> string.inspect(by))
       Ok(Nil)
     },
-    send: fn(c, content_type, payload, reply) {
+    send: fn(c, key, content_type, payload, reply) {
+      // A key is named only when one was given, so unkeyed calls read as
+      // they always did.
+      let keyed = case key {
+        Some(key) -> " key=" <> key
+        None -> ""
+      }
+
       record(
         "send "
         <> id.to_hex(c)
@@ -236,7 +243,8 @@ pub fn backend(fake: Fake) -> Backend {
         <> " "
         <> bit_array.base16_encode(payload)
         <> " "
-        <> string.inspect(option.map(reply, id.to_hex)),
+        <> string.inspect(option.map(reply, id.to_hex))
+        <> keyed,
       )
       Ok(message())
     },

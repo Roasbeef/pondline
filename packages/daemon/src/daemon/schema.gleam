@@ -3,7 +3,7 @@
 //// truth; run `make gen-sql` after changing one.
 
 /// The schema version the migrations reach.
-pub const version = 4
+pub const version = 5
 
 /// The migrations in order: entry `n` (from zero) is `sql/` file number
 /// `n + 1` and moves a database from version `n` to version `n + 1`.
@@ -128,5 +128,21 @@ CREATE INDEX fingerprints_by_expiry ON fingerprints (expires_at);
   count INTEGER NOT NULL,
   PRIMARY KEY (queue, envelope)
 ) STRICT, WITHOUT ROWID;
+",
+  "ALTER TABLE relationships ADD COLUMN invitation BLOB;
+
+CREATE UNIQUE INDEX relationships_by_invitation ON relationships (invitation)
+  WHERE invitation IS NOT NULL AND phase <> 'closed';
+
+CREATE TABLE send_keys (
+  contact BLOB NOT NULL,
+  key TEXT NOT NULL,
+  message_id BLOB NOT NULL,
+  digest BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,
+  PRIMARY KEY (contact, key)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX send_keys_by_expiry ON send_keys (expires_at);
 ",
 ]

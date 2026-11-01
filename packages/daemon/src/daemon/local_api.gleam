@@ -138,6 +138,7 @@ type Call {
   RaiseBudget(contact: Id(Contact), by: Int)
   Send(
     contact: Id(Contact),
+    key: Option(String),
     content_type: String,
     payload: BitArray,
     in_reply_to: Option(Id(Message)),
@@ -533,7 +534,9 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
 }
 
 /// Reads a `send`: the payload is base64 and is bounded by the protocol's
-/// body limit once decoded.
+/// body limit once decoded. An optional `idempotency_key` makes a retry of
+/// the same send answer with the first message (ADR-011); the daemon checks
+/// its bounds.
 fn parse_send(args: Dynamic) -> Result(Call, Failure) {
   use contact <- result.try(contact_id(args))
   use content_type <- result.try(optional(
@@ -545,6 +548,12 @@ fn parse_send(args: Dynamic) -> Result(Call, Failure) {
   use text <- result.try(required(args, "payload", decode.string))
   use payload <- result.try(base64(text, "payload"))
   use in_reply_to <- result.try(optional_id(args, "in_reply_to"))
+  use key <- result.try(optional(
+    args,
+    "idempotency_key",
+    decode.optional(decode.string),
+    None,
+  ))
 
   // The bound is checked after decoding so that padding does not count.
   case bit_array.byte_size(payload) > limits.max_body_bytes {
@@ -556,7 +565,7 @@ fn parse_send(args: Dynamic) -> Result(Call, Failure) {
           <> " bytes",
       ))
 
-    False -> Ok(Send(contact:, content_type:, payload:, in_reply_to:))
+    False -> Ok(Send(contact:, key:, content_type:, payload:, in_reply_to:))
   }
 }
 
@@ -680,8 +689,8 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
     Close(contact:) -> unit(backend.close(contact))
     RaiseBudget(contact:, by:) -> unit(backend.raise_budget(contact, by))
 
-    Send(contact:, content_type:, payload:, in_reply_to:) ->
-      backend.send(contact, content_type, payload, in_reply_to)
+    Send(contact:, key:, content_type:, payload:, in_reply_to:) ->
+      backend.send(contact, key, content_type, payload, in_reply_to)
       |> lift
       |> result.map(fn(message) {
         json.object([#("message", json.string(id.to_hex(message)))])

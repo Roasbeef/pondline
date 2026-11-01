@@ -89,6 +89,9 @@ pub fn a_populated_first_schema_migrates_test() {
        DROP TABLE fingerprints;
        DROP TABLE incidents;
        DROP TABLE attempts;
+       DROP INDEX relationships_by_invitation;
+       ALTER TABLE relationships DROP COLUMN invitation;
+       DROP TABLE send_keys;
        PRAGMA user_version=1;",
       connection,
     )

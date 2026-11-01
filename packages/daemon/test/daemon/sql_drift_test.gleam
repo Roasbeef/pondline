@@ -73,6 +73,10 @@ const shipped = [
     "004_attempts.sql",
     "788636B0CB6C977D8CD0127CC2A8E79B7BC2DE86CE31D829A0BDA3C78A9FD30D",
   ),
+  #(
+    "005_idempotency.sql",
+    "EF053C3374F13302473DF7751256CB28F9C7DC0E6D297CE54FDCB594E8E9BAFB",
+  ),
 ]
 
 pub fn shipped_migrations_never_change_test() {

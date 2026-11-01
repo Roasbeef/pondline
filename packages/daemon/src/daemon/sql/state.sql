@@ -2,12 +2,19 @@
 -- shell finds work by, and the inboxes the fetchers and the provisioner read.
 -- daemon/store runs every write here inside the commit that owns it, and a
 -- state update names the version it read, so an update that returns no row
--- lost a race (ADR-007 has how this file becomes daemon/sql).
+-- lost a race (ADR-007 has how this file becomes daemon/sql). A joiner's
+-- relationship names the invitation it redeemed, so a retried accept of the
+-- same invitation finds it (ADR-011) until it closes; an inviter's names
+-- none.
 
 -- name: InsertRelationship :exec
 INSERT INTO relationships
-  (contact, version, phase, description, inbox_queue, inbox, blob)
-VALUES (?, 1, ?, ?, ?, ?, ?);
+  (contact, version, phase, description, inbox_queue, inbox, blob, invitation)
+VALUES (?, 1, ?, ?, ?, ?, ?, ?);
+
+-- name: RelationshipByInvitation :one
+SELECT contact FROM relationships
+WHERE invitation = ? AND phase <> 'closed';
 
 -- name: UpdateRelationship :many
 UPDATE relationships

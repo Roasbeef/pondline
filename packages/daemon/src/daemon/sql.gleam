@@ -703,6 +703,53 @@ pub fn pending_count_decoder() -> decode.Decoder(PendingCount) {
   decode.success(PendingCount(pending:))
 }
 
+pub type SendByKey {
+  SendByKey(message_id: BitArray, digest: BitArray)
+}
+
+pub fn send_by_key(contact contact: BitArray, key key: String, now now: Int) {
+  let sql =
+    "
+SELECT message_id, digest FROM send_keys
+WHERE contact = ?1 AND key = ?2
+  AND expires_at >= ?3"
+  #(
+    sql,
+    [dev.ParamBitArray(contact), dev.ParamString(key), dev.ParamInt(now)],
+    send_by_key_decoder(),
+  )
+}
+
+pub fn send_by_key_decoder() -> decode.Decoder(SendByKey) {
+  use message_id <- decode.field(0, decode.bit_array)
+  use digest <- decode.field(1, decode.bit_array)
+  decode.success(SendByKey(message_id:, digest:))
+}
+
+pub fn prune_send_keys(now now: Int) {
+  let sql = "DELETE FROM send_keys WHERE expires_at < ?1"
+  #(sql, [dev.ParamInt(now)])
+}
+
+pub fn put_send_key(
+  contact contact: BitArray,
+  key key: String,
+  message_id message_id: BitArray,
+  digest digest: BitArray,
+  expires_at expires_at: Int,
+) {
+  let sql =
+    "INSERT INTO send_keys (contact, key, message_id, digest, expires_at)
+VALUES (?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(contact),
+    dev.ParamString(key),
+    dev.ParamBitArray(message_id),
+    dev.ParamBitArray(digest),
+    dev.ParamInt(expires_at),
+  ])
+}
+
 pub fn insert_relationship(
   contact contact: BitArray,
   phase phase: String,
@@ -710,12 +757,13 @@ pub fn insert_relationship(
   inbox_queue inbox_queue: BitArray,
   inbox inbox: BitArray,
   blob blob: BitArray,
+  invitation invitation: Option(BitArray),
 ) {
   let sql =
     "
 INSERT INTO relationships
-  (contact, version, phase, description, inbox_queue, inbox, blob)
-VALUES (?, 1, ?, ?, ?, ?, ?)"
+  (contact, version, phase, description, inbox_queue, inbox, blob, invitation)
+VALUES (?, 1, ?, ?, ?, ?, ?, ?)"
   #(sql, [
     dev.ParamBitArray(contact),
     dev.ParamString(phase),
@@ -723,7 +771,30 @@ VALUES (?, 1, ?, ?, ?, ?, ?)"
     dev.ParamBitArray(inbox_queue),
     dev.ParamBitArray(inbox),
     dev.ParamBitArray(blob),
+    dev.ParamNullable(option.map(invitation, fn(v) { dev.ParamBitArray(v) })),
   ])
+}
+
+pub type RelationshipByInvitation {
+  RelationshipByInvitation(contact: BitArray)
+}
+
+pub fn relationship_by_invitation(invitation invitation: Option(BitArray)) {
+  let sql =
+    "SELECT contact FROM relationships
+WHERE invitation = ? AND phase <> 'closed'"
+  #(
+    sql,
+    [dev.ParamNullable(option.map(invitation, fn(v) { dev.ParamBitArray(v) }))],
+    relationship_by_invitation_decoder(),
+  )
+}
+
+pub fn relationship_by_invitation_decoder() -> decode.Decoder(
+  RelationshipByInvitation,
+) {
+  use contact <- decode.field(0, decode.bit_array)
+  decode.success(RelationshipByInvitation(contact:))
 }
 
 pub type UpdateRelationship {

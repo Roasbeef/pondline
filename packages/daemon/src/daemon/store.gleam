@@ -227,6 +227,11 @@ pub type Commit {
   /// A transition of an existing relationship, computed from `version`.
   Revised(plan: Plan(Relationship), version: Int)
 
+  /// A send under a caller's idempotency key (ADR-011): `Revised`, and the
+  /// key remembered with the message it produced in the same transaction,
+  /// so a retry that finds the key finds a message that is committed.
+  KeyedSend(plan: Plan(Relationship), version: Int, key: SendKey)
+
   /// An invitation consumed: the offer is replaced and the relationship it
   /// produced is inserted, atomically, under the offer's label.
   Redeemed(
@@ -370,6 +375,21 @@ pub type IncidentRecord {
     attempts: Option(Int),
     /// When it was recorded.
     at: Instant,
+  )
+}
+
+/// A caller's idempotency key for one send on one relationship, with what
+/// it produced (ADR-011).
+pub type SendKey {
+  SendKey(
+    /// The caller's key, 1 to `limits.max_send_key_bytes` bytes.
+    key: String,
+    /// The message the first send under the key queued.
+    message: Id(MessageKind),
+    /// SHA-256 over the request the key named (content type, payload and
+    /// reply target), so a reuse of the key for another message is told
+    /// apart from a retry.
+    digest: BitArray,
   )
 }
 
@@ -655,6 +675,14 @@ fn apply(
       settle(store, now, plan)
     }
 
+    KeyedSend(plan:, version:, key:) -> {
+      use _ <- result.try(update_relationship(store, plan.state, version))
+      use committed <- result.try(settle(store, now, plan))
+      use _ <- result.try(put_send_key(store, now, plan.state.contact, key))
+
+      Ok(committed)
+    }
+
     Redeemed(offer:, offer_version:, description:, plan:) -> {
       use _ <- result.try(update_offer(store, offer, offer_version))
       use _ <- result.try(insert_relationship(store, plan.state, description))
@@ -748,12 +776,45 @@ fn settle(
   Ok(Committed(effects: plan.effects))
 }
 
+/// Remembers a send's key, after dropping the keys whose window passed, so
+/// the table holds at most the keys of `limits.send_key_seconds` of sends.
+fn put_send_key(
+  store: Store,
+  now: Instant,
+  contact: Id(Contact),
+  key: SendKey,
+) -> Result(Nil, Error) {
+  use _ <- result.try(write(store, sql.prune_send_keys(now: now.unix_seconds)))
+
+  write(
+    store,
+    sql.put_send_key(
+      contact: id.to_bytes(contact),
+      key: key.key,
+      message_id: id.to_bytes(key.message),
+      digest: key.digest,
+      expires_at: now.unix_seconds + limits.send_key_seconds,
+    ),
+  )
+}
+
 /// Inserts a new relationship at version 1.
 fn insert_relationship(
   store: Store,
   relationship: Relationship,
   description: String,
 ) -> Result(Nil, Error) {
+  // A joiner names the invitation it redeems, which is what makes a retried
+  // accept find it (ADR-011); a relationship an offer produced names none.
+  let invitation = case relationship.phase {
+    relationship.Joining(invitation:, ..) -> Some(id.to_bytes(invitation.id))
+
+    relationship.AwaitingAccept(_)
+    | relationship.PendingApproval(_)
+    | relationship.Active(_)
+    | relationship.Closed(_) -> None
+  }
+
   write(
     store,
     sql.insert_relationship(
@@ -763,6 +824,7 @@ fn insert_relationship(
       inbox_queue: id.to_bytes(relationship.inbox.queue),
       inbox: route.encode_inbox(relationship.inbox),
       blob: secret.expose(snapshot.encode_relationship(relationship)),
+      invitation:,
     ),
   )
 }
@@ -1564,6 +1626,73 @@ pub fn message_history(
   case rows {
     [] -> Ok(relationship.FreshId)
     [_, ..] -> Ok(relationship.UsedId)
+  }
+}
+
+/// The relationship a joiner started by redeeming `invitation` and has not
+/// closed, if any (ADR-011). A closed one releases its invitation, so an
+/// operator can close a joiner that cannot move (its `Hello` was quarantined
+/// at the inviter, say) and accept the invitation again while the offer is
+/// open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.contact_by_invitation(store, invitation)
+/// // -> Ok(Some(contact))
+/// ```
+pub fn contact_by_invitation(
+  store: Store,
+  invitation: Id(InvitationKind),
+) -> Result(Option(Id(Contact)), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.relationship_by_invitation(invitation: Some(id.to_bytes(invitation))),
+  ))
+
+  // The partial unique index admits one open row at most.
+  case rows {
+    [] -> Ok(None)
+
+    [row, ..] ->
+      id.from_bytes(row.contact)
+      |> result.map(Some)
+      |> result.map_error(fn(_) { corrupt("relationships") })
+  }
+}
+
+/// What a send under `key` on a relationship produced, while the key is
+/// remembered (ADR-011).
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.send_by_key(store, contact, "order-17", now)
+/// // -> Ok(Some(SendKey(..)))
+/// ```
+pub fn send_by_key(
+  store: Store,
+  contact: Id(Contact),
+  key: String,
+  now: Instant,
+) -> Result(Option(SendKey), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.send_by_key(contact: id.to_bytes(contact), key:, now: now.unix_seconds),
+  ))
+
+  // The primary key admits one row at most.
+  case rows {
+    [] -> Ok(None)
+
+    [row, ..] -> {
+      use message <- result.try(
+        id.from_bytes(row.message_id)
+        |> result.map_error(fn(_) { corrupt("send_keys") }),
+      )
+
+      Ok(Some(SendKey(key:, message:, digest: row.digest)))
+    }
   }
 }
 
