@@ -109,11 +109,16 @@ pub type Health {
   Health(fields: List(#(String, String)))
 }
 
-/// One function per API operation.
+/// One function per API operation. `invite_ticket` returns the invitation
+/// file and the ticket's text, and `accept_ticket` takes the text, both as
+/// in `daemon/api` (ADR-009); the text is a `Secret` either way.
 pub type Backend {
   Backend(
     invite: fn(String, Approval, Int) -> Result(BitArray, ApiError),
+    invite_ticket: fn(String, Approval, Int) ->
+      Result(#(BitArray, Secret), ApiError),
     accept: fn(BitArray, String) -> Result(Id(Contact), ApiError),
+    accept_ticket: fn(Secret, String) -> Result(Id(Contact), ApiError),
     contacts: fn() -> Result(List(ContactView), ApiError),
     approve: fn(Id(Contact)) -> Result(Nil, ApiError),
     decline: fn(Id(Contact)) -> Result(Nil, ApiError),

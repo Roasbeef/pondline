@@ -58,7 +58,7 @@
 import core/id.{type Contact, type Id, type Message}
 import core/limits
 import core/offer.{type Approval, AutoApprove, OperatorApproves}
-import core/secret
+import core/secret.{type Secret}
 import daemon/credential.{type Credentials, type Scope, Agent, Operator}
 import daemon/internal/ffi_local_socket.{type Socket}
 import daemon/internal/ffi_local_system
@@ -123,10 +123,20 @@ type Operation {
   HealthOp
 }
 
+/// Whether `invite` also stores the invitation for a ticket (ADR-009).
+type InviteForm {
+  /// The invitation file alone.
+  FileOnly
+
+  /// The file and a ticket for it.
+  WithTicket
+}
+
 /// An operation with its arguments.
 type Call {
-  Invite(description: String, approval: Approval, budget: Int)
+  Invite(description: String, approval: Approval, budget: Int, form: InviteForm)
   Accept(invitation: BitArray, description: String)
+  AcceptTicket(ticket: Secret, description: String)
   ListContacts
   Approve(contact: Id(Contact))
   Decline(contact: Id(Contact))
@@ -462,22 +472,18 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
       use description <- result.try(required(args, "description", decode.string))
       use approval <- result.try(approval(args))
       use budget <- result.try(positive(args, "budget"))
+      use ticket <- result.try(optional(args, "ticket", decode.bool, False))
 
-      Ok(Invite(description:, approval:, budget:))
+      // The wire's boolean becomes the form here, at the boundary.
+      let form = case ticket {
+        True -> WithTicket
+        False -> FileOnly
+      }
+
+      Ok(Invite(description:, approval:, budget:, form:))
     }
 
-    AcceptOp -> {
-      use text <- result.try(required(args, "invitation", decode.string))
-      use invitation <- result.try(base64(text, "invitation"))
-      use description <- result.try(optional(
-        args,
-        "description",
-        decode.string,
-        "",
-      ))
-
-      Ok(Accept(invitation:, description:))
-    }
+    AcceptOp -> parse_accept(args)
 
     ContactsOp -> Ok(ListContacts)
     ApproveOp -> result.map(contact_id(args), Approve)
@@ -516,6 +522,29 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
     }
 
     HealthOp -> Ok(Health)
+  }
+}
+
+/// Reads `accept`'s arguments: exactly one of an invitation file (base64)
+/// and a ticket's text, and an optional description. The ticket goes
+/// straight into a `Secret`, and no failure names its value.
+fn parse_accept(args: Dynamic) -> Result(Call, Failure) {
+  use file <- result.try(optional(args, "invitation", decode.string, ""))
+  use ticket <- result.try(optional(args, "ticket", decode.string, ""))
+  use description <- result.try(optional(args, "description", decode.string, ""))
+
+  // Exactly one source: both would be ambiguous and neither is nothing.
+  case file, ticket {
+    "", "" -> Error(invalid("give exactly one of invitation and ticket"))
+
+    "", _ -> Ok(AcceptTicket(ticket: secret.new(<<ticket:utf8>>), description:))
+
+    _, "" -> {
+      use invitation <- result.try(base64(file, "invitation"))
+      Ok(Accept(invitation:, description:))
+    }
+
+    _, _ -> Error(invalid("give exactly one of invitation and ticket"))
   }
 }
 
@@ -641,19 +670,36 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
 
   // Each call goes to its backend function, and the result is encoded for the wire.
   case call {
-    Invite(description:, approval:, budget:) ->
+    Invite(description:, approval:, budget:, form: FileOnly) ->
       backend.invite(description, approval, budget)
       |> lift
       |> result.map(fn(invitation) {
         json.object([#("invitation", json.string(encode64(invitation)))])
       })
 
+    Invite(description:, approval:, budget:, form: WithTicket) ->
+      backend.invite_ticket(description, approval, budget)
+      |> lift
+      |> result.map(fn(issued) {
+        let #(invitation, ticket) = issued
+
+        // The ticket leaves the daemon here, in the answer to the operator
+        // who asked for it, and nowhere else.
+        json.object([
+          #("invitation", json.string(encode64(invitation))),
+          #("ticket", json.string(secret_text(ticket))),
+        ])
+      })
+
     Accept(invitation:, description:) ->
       backend.accept(invitation, description)
       |> lift
-      |> result.map(fn(contact) {
-        json.object([#("contact", json.string(id.to_hex(contact)))])
-      })
+      |> result.map(contact_json_of)
+
+    AcceptTicket(ticket:, description:) ->
+      backend.accept_ticket(ticket, description)
+      |> lift
+      |> result.map(contact_json_of)
 
     ListContacts ->
       backend.contacts()
@@ -829,6 +875,20 @@ fn take_within(
         False -> take_within(rest, size, total, [item, ..kept])
       }
     }
+  }
+}
+
+/// The JSON of an accepted contact.
+fn contact_json_of(contact: Id(Contact)) -> Json {
+  json.object([#("contact", json.string(id.to_hex(contact)))])
+}
+
+/// A ticket's text for the answer to `invite`. A ticket is ASCII by
+/// construction, so the fallback is unreachable and prints nothing.
+fn secret_text(ticket: Secret) -> String {
+  case bit_array.to_string(secret.expose(ticket)) {
+    Ok(text) -> text
+    Error(Nil) -> ""
   }
 }
 

@@ -147,6 +147,64 @@ pub fn invite_accept_reads_the_file_test() {
   assert list.contains(fixture.calls(f.fake), "accept 010203 al")
 }
 
+/// `--ticket` prints the ticket alone on standard output, so a script can
+/// capture it; with `--out` the file is written too and its path goes to
+/// standard error. Neither mode prints the invitation file (ADR-009).
+pub fn invite_create_with_a_ticket_prints_the_ticket_test() {
+  use f <- fixture.with_server
+
+  let base = ["invite", "create", "--description", "t", "--budget", "2"]
+
+  let alone = run(f, list.append(base, ["--ticket"]))
+  assert alone.status == 0
+  assert stdout(alone) == fixture.fake_ticket <> "\n"
+  assert alone.stderr == ""
+
+  let out = f.dir <> "/both.invite"
+  let both = run(f, list.append(base, ["--ticket", "--out", out]))
+  assert both.status == 0
+  assert stdout(both) == fixture.fake_ticket <> "\n"
+  assert both.stderr == "wrote " <> out
+  assert simplifile.read_bits(out) == Ok(<<"INVITATION-BYTES", 255, 0>>)
+  assert ffi_local_system.file_mode(out) == Ok(0o600)
+
+  let json = run(f, list.append(base, ["--ticket", "--json"]))
+  assert json.status == 0
+  assert stdout(json)
+    == "{\"ok\":true,\"result\":{\"ticket\":\""
+    <> fixture.fake_ticket
+    <> "\",\"out\":null}}\n"
+  assert !string.contains(stdout(json), "SU5WSVRBVElPTi")
+
+  assert list.length(
+      list.filter(fixture.calls(f.fake), string.starts_with(_, "invite_ticket")),
+    )
+    == 3
+}
+
+/// `invite accept --ticket` reads the ticket from its file, drops the
+/// trailing newline a paste leaves, and sends it as a ticket.
+pub fn invite_accept_with_a_ticket_reads_the_file_test() {
+  use f <- fixture.with_server
+
+  let path = f.dir <> "/ticket.txt"
+  let assert Ok(Nil) = simplifile.write(path, "rw1abc\n")
+  let outcome =
+    run(f, [
+      "invite",
+      "accept",
+      "--ticket",
+      "--file",
+      path,
+      "--description",
+      "al",
+    ])
+
+  assert outcome.status == 0
+  assert stdout(outcome) == contact_hex() <> "\n"
+  assert list.contains(fixture.calls(f.fake), "accept_ticket rw1abc al")
+}
+
 pub fn the_agent_credential_cannot_run_operator_commands_test() {
   use f <- fixture.with_server
 

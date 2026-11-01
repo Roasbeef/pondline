@@ -462,3 +462,55 @@ pub fn the_credential_files_are_private_and_never_in_output_test() {
   assert list.sort(entries, string.compare)
     == ["agent.cred", "api.sock", "operator.cred"]
 }
+
+/// `invite` with `"ticket": true` answers the file and the ticket, and
+/// `accept` takes a ticket in place of a file (ADR-009). The agent scope
+/// can do neither, as for the plain forms.
+pub fn invite_and_accept_carry_a_ticket_test() {
+  use f <- fixture.with_server
+
+  let invited =
+    ask(f, f.operator, "invite", [
+      #("description", json.string("t")),
+      #("budget", json.int(2)),
+      #("ticket", json.bool(True)),
+    ])
+    |> succeeded
+  assert string_at(invited, ["ticket"]) == fixture.fake_ticket
+  assert string_at(invited, ["invitation"])
+    == bit_array.base64_encode(<<"INVITATION-BYTES", 255, 0>>, True)
+
+  let accepted =
+    ask(f, f.operator, "accept", [
+      #("ticket", json.string("rw1abc")),
+      #("description", json.string("al")),
+    ])
+    |> succeeded
+  assert string_at(accepted, ["contact"]) == contact_hex()
+
+  assert category(
+      ask(f, f.agent, "accept", [#("ticket", json.string("rw1abc"))]),
+    )
+    == protocol.Forbidden
+
+  assert fixture.calls(f.fake)
+    == ["invite_ticket t OperatorApproves 2", "accept_ticket rw1abc al"]
+}
+
+/// `accept` takes exactly one of an invitation and a ticket, and its
+/// refusal does not repeat the ticket.
+pub fn accept_takes_exactly_one_source_test() {
+  use f <- fixture.with_server
+
+  let both =
+    ask(f, f.operator, "accept", [
+      #("invitation", json.string("AAAA")),
+      #("ticket", json.string("rw1secretticket")),
+    ])
+  let neither = ask(f, f.operator, "accept", [])
+
+  assert category(both) == protocol.Invalid
+  assert category(neither) == protocol.Invalid
+  assert !string.contains(string.inspect(both), "rw1secretticket")
+  assert fixture.calls(f.fake) == []
+}

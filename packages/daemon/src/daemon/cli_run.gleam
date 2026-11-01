@@ -18,9 +18,11 @@
 //// 3. It sends one request and maps the answer to output and an exit
 ////    status: a failed response to its category's code, an unreachable
 ////    daemon to 6.
-//// 4. `save_invitation` writes the invitation `invite create` got back to
-////    its file with mode 0600 and prints only the path, so the invitation
-////    never reaches a terminal or a log.
+//// 4. `hand_out_invitation` writes the invitation `invite create` got back
+////    to its file with mode 0600 and prints only the path, so the
+////    invitation never reaches a terminal or a log. With `--ticket` it
+////    prints the ticket instead (ADR-009): the short string is meant to be
+////    copied, and standard output is the operator's own, not argv or a log.
 ////
 //// The daemon command goes through `run_daemon`, which starts the runtime
 //// by way of the backend module, serves the local API and then waits
@@ -43,6 +45,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process
 import gleam/io
 import gleam/json
+import gleam/option.{None, Some}
 import gleam/result
 import simplifile
 
@@ -144,11 +147,18 @@ fn attempt(
 
 /// Refuses an invitation output file that already exists.
 fn check_output_file(action: Action) -> Result(Nil, Outcome) {
+  // Only `invite create` writes a file, and only when it was given one.
   case action {
-    CreateInvite(out:, ..) ->
-      case simplifile.is_file(out) {
-        Ok(False) -> Ok(Nil)
-        _ -> Error(failure(cli.exit_refused, "refusing to overwrite " <> out))
+    CreateInvite(output:, ..) ->
+      case cli.invitation_path(output) {
+        Some(out) ->
+          case simplifile.is_file(out) {
+            Ok(False) -> Ok(Nil)
+            _ ->
+              Error(failure(cli.exit_refused, "refusing to overwrite " <> out))
+          }
+
+        None -> Ok(Nil)
       }
 
     _ -> Ok(Nil)
@@ -235,7 +245,8 @@ fn succeeded(
   result: Dynamic,
 ) -> Result(Outcome, Outcome) {
   case action, output {
-    CreateInvite(out:, ..), _ -> save_invitation(output, out, result)
+    CreateInvite(output: handed, ..), _ ->
+      hand_out_invitation(output, handed, result)
 
     _, JsonOutput -> Ok(Outcome(cli.exit_ok, <<line:utf8, "\n">>, ""))
 
@@ -245,6 +256,71 @@ fn succeeded(
         Outcome(cli.exit_ok, rendered.stdout, rendered.stderr)
       })
       |> result.map_error(failure(cli.exit_unavailable, _))
+  }
+}
+
+/// Hands out what `invite create` asked for: the file, the ticket, or
+/// both. The ticket is printed on standard output, alone on its line in
+/// human mode, and when a file is also written its path goes to standard
+/// error so the ticket can be captured by itself.
+fn hand_out_invitation(
+  output: Output,
+  handed: cli.InviteOutput,
+  result: Dynamic,
+) -> Result(Outcome, Outcome) {
+  // A file that was asked for is written before the ticket is printed, so
+  // a failed write prints nothing.
+  case handed {
+    cli.InvitationFile(path:) -> save_invitation(output, path, result)
+
+    cli.TicketOnly -> {
+      use ticket <- result.try(read_ticket(result))
+      Ok(ticket_outcome(output, ticket, None))
+    }
+
+    cli.TicketAndFile(path:) -> {
+      use ticket <- result.try(read_ticket(result))
+      use _ <- result.try(save_invitation(output, path, result))
+      Ok(ticket_outcome(output, ticket, Some(path)))
+    }
+  }
+}
+
+/// The ticket of a result, or the outcome of a malformed one.
+fn read_ticket(result: Dynamic) -> Result(String, Outcome) {
+  cli_render.ticket(result)
+  |> result.map_error(failure(cli.exit_unavailable, _))
+}
+
+/// What a command that printed a ticket answers: in JSON the ticket and
+/// any written path; in human mode the ticket alone on standard output and
+/// the path, if any, on standard error.
+fn ticket_outcome(
+  output: Output,
+  ticket: String,
+  path: option.Option(String),
+) -> Outcome {
+  // JSON carries both facts in one answer; human output separates them so
+  // `$(reedwire invite create ... --ticket)` captures the ticket alone.
+  case output {
+    JsonOutput -> {
+      let fields = [
+        #("ticket", json.string(ticket)),
+        #("out", json.nullable(path, json.string)),
+      ]
+
+      Outcome(
+        cli.exit_ok,
+        <<protocol.success_json(json.object(fields)):utf8, "\n">>,
+        "",
+      )
+    }
+
+    _ ->
+      Outcome(cli.exit_ok, <<ticket:utf8, "\n">>, case path {
+        Some(written) -> "wrote " <> written
+        None -> ""
+      })
   }
 }
 

@@ -10,7 +10,9 @@
 //// - `daemon --state-dir D --mailbox HOST:PORT --provision-file F
 ////   [--carrier tor|loopback] [--tor-bin PATH]` runs the daemon.
 //// - `invite create --description TEXT --budget N [--auto-approve]
-////   --out FILE` and `invite accept --file FILE [--description TEXT]`.
+////   [--out FILE] [--ticket]` (at least one of the two) and `invite accept
+////   [--ticket] (--file FILE | --stdin) [--description TEXT]`. With
+////   `--ticket`, create prints a ticket (ADR-009) and accept reads one.
 //// - `contacts list`, `contact approve|decline|close --contact HEX` and
 ////   `contact budget --contact HEX --add N`.
 //// - `send --contact HEX [--content-type T] (--file F | --stdin)
@@ -32,11 +34,13 @@
 ////
 //// ## What argv never carries
 ////
-//// A payload and a credential are secrets, and a command line is visible to
-//// every process on the machine and kept in shell history. So no option
-//// takes one: payloads come from `--file` or `--stdin`, credentials from a
-//// file. An option such as `--payload` or `--credential` is unknown and
-//// fails as a usage error.
+//// A payload, a credential and a ticket are secrets, and a command line is
+//// visible to every process on the machine and kept in shell history. So no
+//// option takes one: payloads and tickets come from `--file` or `--stdin`,
+//// credentials from a file. An option such as `--payload` or `--credential`
+//// is unknown and fails as a usage error, and `--ticket` is a flag, so a
+//// ticket typed after it is a stray word. A stray word is refused without
+//// being repeated, since it may be exactly the secret that was misplaced.
 
 import core/id.{type Contact, type Id, type Message}
 import core/offer.{type Approval, AutoApprove, OperatorApproves}
@@ -78,8 +82,9 @@ pub const usage =
 commands:
   daemon --state-dir D --mailbox HOST:PORT --provision-file F
          [--carrier tor|loopback] [--tor-bin PATH]
-  invite create --description TEXT --budget N [--auto-approve] --out FILE
-  invite accept --file FILE [--description TEXT]
+  invite create --description TEXT --budget N [--auto-approve]
+                [--out FILE] [--ticket]
+  invite accept [--ticket] (--file FILE | --stdin) [--description TEXT]
   contacts list
   contact approve|decline|close --contact HEX
   contact budget --contact HEX --add N
@@ -130,6 +135,29 @@ pub type Input {
   InputStdin
 }
 
+/// What `invite create` hands the operator: the invitation file, a ticket
+/// printed on standard output (ADR-009), or both. Asking for neither is a
+/// usage error, so there is no variant for it.
+pub type InviteOutput {
+  /// Write the invitation file.
+  InvitationFile(path: String)
+
+  /// Print the ticket.
+  TicketOnly
+
+  /// Write the file and print the ticket.
+  TicketAndFile(path: String)
+}
+
+/// What `invite accept` reads from its input.
+pub type AcceptForm {
+  /// The bytes of an invitation file.
+  FromInvitation
+
+  /// A ticket's text, fetched and opened by the daemon.
+  FromTicket
+}
+
 /// How `receive` prints a payload.
 pub type PayloadView {
   /// Base64 inside the output, with the delivery's metadata.
@@ -145,9 +173,9 @@ pub type Action {
     description: String,
     approval: Approval,
     budget: Int,
-    out: String,
+    output: InviteOutput,
   )
-  AcceptInvite(file: String, description: String)
+  AcceptInvite(source: Input, form: AcceptForm, description: String)
   ListContacts
   ApproveContact(contact: Id(Contact))
   DeclineContact(contact: Id(Contact))
@@ -213,16 +241,14 @@ pub fn parse(
         rest,
         env_credential_file,
         ["--description", "--budget", "--out"],
-        [
-          "--auto-approve",
-        ],
+        ["--auto-approve", "--ticket"],
         fn(options) {
           use description <- result.try(required(options, "--description"))
           use budget <- result.try(number(options, "--budget", 1, 1_000_000))
-          use out <- result.try(required(options, "--out"))
+          use output <- result.try(invite_output(options))
           let approval = approval_of(options)
 
-          Ok(CreateInvite(description:, approval:, budget:, out:))
+          Ok(CreateInvite(description:, approval:, budget:, output:))
         },
       )
 
@@ -231,12 +257,18 @@ pub fn parse(
         rest,
         env_credential_file,
         ["--file", "--description"],
-        [],
+        ["--stdin", "--ticket"],
         fn(options) {
-          use file <- result.try(required(options, "--file"))
+          use source <- result.try(one_source(options))
           let description = dict_get(options, "--description", "")
 
-          Ok(AcceptInvite(file:, description:))
+          // `--ticket` says what the input is; it never carries it.
+          let form = case has_flag(options, "--ticket") {
+            True -> FromTicket
+            False -> FromInvitation
+          }
+
+          Ok(AcceptInvite(source:, form:, description:))
         },
       )
 
@@ -314,6 +346,29 @@ fn approval_of(options: Options) -> Approval {
   case has_flag(options, "--auto-approve") {
     True -> AutoApprove
     False -> OperatorApproves
+  }
+}
+
+/// Where `invite create` puts the invitation: a file, a ticket, or both.
+fn invite_output(options: Options) -> Result(InviteOutput, String) {
+  // The two choices are independent flags; asking for neither is the one
+  // combination with nothing to hand out.
+  case dict.get(options.values, "--out"), has_flag(options, "--ticket") {
+    Ok(path), False -> Ok(InvitationFile(path))
+    Ok(path), True -> Ok(TicketAndFile(path))
+    Error(Nil), True -> Ok(TicketOnly)
+    Error(Nil), False -> Error("give --out FILE, --ticket, or both")
+  }
+}
+
+/// The one input of a command that reads from exactly one of `--file`
+/// and `--stdin`.
+fn one_source(options: Options) -> Result(Input, String) {
+  // With both the input would be ambiguous, and with neither there is none.
+  case dict.get(options.values, "--file"), has_flag(options, "--stdin") {
+    Ok(path), False -> Ok(InputFile(path))
+    Error(Nil), True -> Ok(InputStdin)
+    _, _ -> Error("give exactly one of --file and --stdin")
   }
 }
 
@@ -533,8 +588,19 @@ fn read_loop(
       case list.contains(flags, name), list.contains(values, name) {
         True, _ -> take_flag(name, rest, values, flags, found)
         False, True -> take_value(name, rest, values, flags, found)
-        False, False -> Error("unknown option " <> name)
+        False, False -> Error(unknown(name))
       }
+  }
+}
+
+/// The refusal of a word no command takes. An option name is repeated so
+/// the user can see the typo; a stray word is not, because a stray word
+/// is often a secret typed where a flag stood (`--ticket rw1...`).
+fn unknown(name: String) -> String {
+  case string.starts_with(name, "-") {
+    True -> "unknown option " <> name
+    False ->
+      "unexpected argument; secrets are read from a file or standard input"
   }
 }
 
@@ -682,18 +748,18 @@ fn hex(text: String, name: String) -> Result(Id(kind), String) {
   |> result.map_error(fn(_) { name <> " must be a 32-digit hex identifier" })
 }
 
-/// Where an action reads its one input from: the invitation file of
-/// `invite accept` or the payload of `send`.
+/// Where an action reads its one input from: the invitation or ticket of
+/// `invite accept`, or the payload of `send`.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// cli.input_of(AcceptInvite(file: "bob.invite", description: ""))
+/// cli.input_of(AcceptInvite(InputFile("bob.invite"), FromInvitation, ""))
 /// // -> InputFile("bob.invite")
 /// ```
 pub fn input_of(action: Action) -> Input {
   case action {
-    AcceptInvite(file:, ..) -> InputFile(file)
+    AcceptInvite(source:, ..) -> source
     SendMessage(source:, ..) -> source
 
     CreateInvite(..)
@@ -737,19 +803,36 @@ pub fn timeout_ms(action: Action) -> Int {
 /// ```
 pub fn request(action: Action, input: BitArray) -> #(String, Json) {
   case action {
-    CreateInvite(description:, approval:, budget:, ..) -> #(
+    CreateInvite(description:, approval:, budget:, output:) -> #(
       "invite",
       json.object([
         #("description", json.string(description)),
         #("approval", json.string(approval_name(approval))),
         #("budget", json.int(budget)),
+        #("ticket", json.bool(wants_ticket(output))),
       ]),
     )
 
-    AcceptInvite(description:, ..) -> #(
+    AcceptInvite(form: FromInvitation, description:, ..) -> #(
       "accept",
       json.object([
         #("invitation", json.string(bit_array.base64_encode(input, True))),
+        #("description", json.string(description)),
+      ]),
+    )
+
+    // A ticket pasted into a file or piped in usually ends in a newline,
+    // which is not part of it. Bytes that are not text send an empty
+    // ticket, which the daemon refuses as invalid without echoing it.
+    AcceptInvite(form: FromTicket, description:, ..) -> #(
+      "accept",
+      json.object([
+        #(
+          "ticket",
+          json.string(
+            string.trim(result.unwrap(bit_array.to_string(input), "")),
+          ),
+        ),
         #("description", json.string(description)),
       ]),
     )
@@ -798,6 +881,29 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     )
 
     ShowHealth -> #("health", json.object([]))
+  }
+}
+
+/// Whether an invite output includes a ticket.
+fn wants_ticket(output: InviteOutput) -> Bool {
+  case output {
+    InvitationFile(..) -> False
+    TicketOnly | TicketAndFile(..) -> True
+  }
+}
+
+/// The file an invite output writes, if any.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.invitation_path(TicketAndFile("a.invite"))
+/// // -> Some("a.invite")
+/// ```
+pub fn invitation_path(output: InviteOutput) -> Option(String) {
+  case output {
+    InvitationFile(path:) | TicketAndFile(path:) -> Some(path)
+    TicketOnly -> None
   }
 }
 

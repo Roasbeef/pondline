@@ -46,8 +46,21 @@ pub fn invitation(result: Dynamic) -> Result(BitArray, String) {
   |> result.replace_error("the daemon sent a malformed invitation")
 }
 
-/// Renders a result for human reading. `CreateInvite` renders only its
-/// confirmation, because the caller writes the file.
+/// The ticket's text of a `create invite --ticket` result (ADR-009).
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_render.ticket(result)
+/// // -> Ok("rw1...")
+/// ```
+pub fn ticket(result: Dynamic) -> Result(String, String) {
+  field(result, "ticket", decode.string)
+}
+
+/// Renders a result for human reading. `CreateInvite` renders only what
+/// it prints, the ticket or the file's path, because the caller writes the
+/// file.
 ///
 /// ## Examples
 ///
@@ -57,7 +70,13 @@ pub fn invitation(result: Dynamic) -> Result(BitArray, String) {
 /// ```
 pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
   case action {
-    CreateInvite(out:, ..) -> Ok(text("wrote " <> out))
+    CreateInvite(output: cli.InvitationFile(path:), ..) ->
+      Ok(text("wrote " <> path))
+
+    CreateInvite(output: cli.TicketOnly, ..)
+    | CreateInvite(output: cli.TicketAndFile(..), ..) ->
+      result.map(ticket(result), text)
+
     AcceptInvite(..) -> contact_line(result)
     ListContacts -> contacts(result)
 
