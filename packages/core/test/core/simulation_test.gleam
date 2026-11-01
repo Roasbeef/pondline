@@ -1,15 +1,18 @@
 //// The invariants of spec §13.1, checked over random schedules of a pure
 //// world (`core/world`): two or three parties, a mailbox that duplicates,
 //// reorders, drops and corrupts, a clock that moves, and crashes that
-//// discard a computed plan at any point.
+//// discard a computed plan at any point, outbound operations included.
 ////
 //// The properties are checked where the event happens and collected as
 //// violations: no send before commit, no ack before commit, no
 //// replay-driven redelivery, no invitation double consumption, no
-//// application message before `Active`, and never more `Ready` deliveries
-//// than the budget allows. A second group runs the same schedules through
-//// deliberately broken shells and requires the checks to notice, so a green
-//// run means the checks can fail.
+//// application message before `Active`, never more `Ready` deliveries than
+//// the budget allows, and no message key used twice (the same ratchet
+//// header committed with different bytes). A second property runs benign
+//// schedules to quiescence and requires every committed application
+//// message to be delivered once and receipted once. A third group runs the
+//// same schedules through deliberately broken shells and requires the
+//// checks to notice, so a green run means the checks can fail.
 
 import core/offer
 import core/plan
@@ -17,11 +20,15 @@ import core/world
 import gleam/list
 import qcheck
 
-const property_count = 60
+const property_count = 25
+
+/// Benign cases settle to quiescence, which costs several times a walk, and
+/// each test has five seconds.
+const benign_count = 8
+
+const sample_size = 40
 
 const schedule_length = 160
-
-const property_seed = 20_261_031
 
 const sharpness_seed = 31
 
@@ -50,71 +57,117 @@ fn approval(choice: Int) -> offer.Approval {
   }
 }
 
-fn play(bug: world.Bug, case_: Case) -> world.World {
+fn play(bug: world.Bug, mode: world.Mode, case_: Case) -> world.World {
   let #(approval_choice, budget, picks) = case_
 
-  world.walk(world.new(bug, approval(approval_choice), budget), picks)
+  world.walk(world.new(bug, approval(approval_choice), budget), picks, mode)
 }
 
-pub fn invariants_hold_over_random_schedules_test() {
+fn check(seed: Int, count: Int, run: fn(Case) -> List(String)) -> Nil {
   qcheck.default_config()
-  |> qcheck.with_test_count(property_count)
-  |> qcheck.with_seed(qcheck.seed(property_seed))
+  |> qcheck.with_test_count(count)
+  |> qcheck.with_seed(qcheck.seed(seed))
   |> qcheck.run(cases(), fn(case_) {
-    assert world.violations_of(play(world.Correct, case_)) == []
+    assert run(case_) == []
   })
 }
 
-/// Counts the schedules whose final world satisfies `reached`, over a fixed
-/// sample, so a property that holds vacuously (no schedule gets anywhere)
-/// is caught.
-fn count_reaching(bug: world.Bug, reached: fn(world.World) -> Bool) -> Int {
-  let #(sample, _) =
-    qcheck.generate(cases(), property_count, qcheck.seed(sharpness_seed))
+fn chaotic(case_: Case) -> List(String) {
+  world.violations_of(play(world.Correct, world.Chaotic, case_))
+}
 
-  sample
-  |> list.map(fn(case_) { play(bug, case_) })
-  |> list.filter(reached)
-  |> list.length
+/// Benign schedules, then a fault-free settle with the operator approving:
+/// every committed application message must be delivered and receipted once.
+fn benign_delivery(case_: Case) -> List(String) {
+  play(world.Correct, world.Benign, case_)
+  |> world.settle(4)
+  |> world.run([world.Approve(0, world.Commit)])
+  |> world.settle(5)
+  |> world.audit_delivery
+  |> world.violations_of
+}
+
+pub fn invariants_hold_over_random_schedules_a_test() {
+  check(20_261_031, property_count, chaotic)
+}
+
+pub fn invariants_hold_over_random_schedules_b_test() {
+  check(20_261_101, property_count, chaotic)
+}
+
+pub fn invariants_hold_over_random_schedules_c_test() {
+  check(20_261_102, property_count, chaotic)
+}
+
+pub fn every_committed_message_is_delivered_and_receipted_once_a_test() {
+  check(41, benign_count, benign_delivery)
+}
+
+pub fn every_committed_message_is_delivered_and_receipted_once_b_test() {
+  check(42, benign_count, benign_delivery)
+}
+
+pub fn every_committed_message_is_delivered_and_receipted_once_c_test() {
+  check(43, benign_count, benign_delivery)
+}
+
+pub fn every_committed_message_is_delivered_and_receipted_once_d_test() {
+  check(44, benign_count, benign_delivery)
+}
+
+/// A fixed sample of generated cases, so the reach and sharpness tests see
+/// the same schedules every run.
+fn sample() -> List(Case) {
+  qcheck.generate(cases(), sample_size, qcheck.seed(sharpness_seed)).0
+}
+
+fn total_delivered(w: world.World, status: plan.DeliveryStatus) -> Int {
+  world.count_delivered(w, 0, status)
+  + world.count_delivered(w, 1, status)
+  + world.count_delivered(w, 2, status)
+}
+
+fn count(worlds: List(world.World), reached: fn(world.World) -> Bool) -> Int {
+  list.length(list.filter(worlds, reached))
 }
 
 pub fn schedules_reach_the_interesting_states_test() {
-  let paired = fn(w: world.World) { w.redeemed == 1 }
-  let delivered = fn(w: world.World) {
-    world.count_delivered(w, 0, plan.Ready)
-    + world.count_delivered(w, 1, plan.Ready)
-    + world.count_delivered(w, 2, plan.Ready)
-    > 0
-  }
-  let held = fn(w: world.World) {
-    world.count_delivered(w, 0, plan.Held)
-    + world.count_delivered(w, 1, plan.Held)
-    + world.count_delivered(w, 2, plan.Held)
-    > 0
-  }
-  let expired = fn(w: world.World) {
-    world.count_delivered(w, 0, plan.Expired)
-    + world.count_delivered(w, 1, plan.Expired)
-    + world.count_delivered(w, 2, plan.Expired)
-    > 0
-  }
+  let worlds =
+    list.map(sample(), fn(case_) { play(world.Correct, world.Chaotic, case_) })
 
-  assert count_reaching(world.Correct, paired) > 10
-  assert count_reaching(world.Correct, delivered) > 5
-  assert count_reaching(world.Correct, held) > 0
-  assert count_reaching(world.Correct, expired) > 0
+  assert count(worlds, fn(w) { w.redeemed == 1 }) > 10
+  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 5
+  assert count(worlds, fn(w) { total_delivered(w, plan.Held) > 0 }) > 0
+  assert count(worlds, fn(w) { world.saw(w, "expired-message") }) > 0
+  assert count(worlds, fn(w) { world.saw(w, "offer-expired") }) > 0
+  assert count(worlds, fn(w) { world.saw(w, "close-from-joining") }) > 0
+  assert count(worlds, fn(w) { world.saw(w, "close-from-awaiting") }) > 0
+  assert count(worlds, fn(w) { world.saw(w, "decline") }) > 0
+
+  // The joiner race: both joiners have a relationship and one invitation
+  // was consumed.
+  assert count(worlds, fn(w) {
+      w.redeemed == 1
+      && world.party(w, 1).relationship != world.party(w, 0).relationship
+      && world.party(w, 1).queue != world.party(w, 2).queue
+      && world.relationship(w, 1) != world.relationship(w, 2)
+      && world.party(w, 2).queue != world.party(w, 0).queue
+      && world.relationship(w, 2) != world.relationship(w, 0)
+    })
+    > 0
+}
+
+/// How many sampled schedules a broken shell is flagged on.
+fn flagged(bug: world.Bug, violation: String) -> Int {
+  sample()
+  |> list.map(fn(case_) { play(bug, world.Chaotic, case_) })
+  |> count(fn(w) { list.contains(world.violations_of(w), violation) })
 }
 
 pub fn a_shell_that_sends_before_commit_is_caught_test() {
-  assert count_reaching(world.SendBeforeCommit, fn(w) {
-      list.contains(world.violations_of(w), "sent before commit")
-    })
-    > 0
+  assert flagged(world.SendBeforeCommit, "sent before commit") > 0
 }
 
 pub fn a_shell_that_acks_before_commit_is_caught_test() {
-  assert count_reaching(world.AckBeforeCommit, fn(w) {
-      list.contains(world.violations_of(w), "acknowledged before commit")
-    })
-    > 0
+  assert flagged(world.AckBeforeCommit, "acknowledged before commit") > 0
 }
