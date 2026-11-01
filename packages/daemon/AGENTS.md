@@ -30,8 +30,10 @@ processes.
 Depends on `core` (the state machines, codec, typed protocol, snapshots,
 endpoints and limits), `primitives` (the real `Suite`), `tor` (the sidecar and
 onion streams, wrapped as a `transport.Connection` only in `daemon/carrier`),
-`sqlight`, `simplifile`, `gleam_json` (the local API), `gleam_stdlib`,
-`gleam_erlang`, `gleam_otp` and `mug` (loopback TCP). Dev: `glisten` runs the
+`sqlight`, `parrot` (only its small `parrot/dev` runtime, which the
+generated `daemon/sql` imports; ADR-007), `simplifile`, `gleam_json` (the
+local API), `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and `mug` (loopback
+TCP). Dev: `glisten` runs the
 test fake server and `mailbox` runs a real mailbox node in the end-to-end
 tests. `transport` itself still takes the onion carrier as a function.
 
@@ -65,7 +67,17 @@ The daemon's processes and the store they share (spec §8, §10.2, §12). Read
 this before changing any of them.
 
 - `daemon/store`: the one SQLite file (WAL, `synchronous=FULL`, `fullfsync`,
-  `user_version` migrations, a newer schema refused) and every SQL string.
+  `user_version` migrations, a newer schema refused) and every statement the
+  daemon runs. The SQL text is generated (ADR-007): the migrations are
+  `sql/NNN_<name>.sql`, one per schema version, which
+  `dev/embed_schema.gleam` embeds in `daemon/schema` (`version`,
+  `migrations`); the statements are named queries in `src/daemon/sql/*.sql`
+  (`state`, `outbox`, `inbound`, `agent`, `meta`), which parrot generates
+  into `daemon/sql`. The store's `query`, `write` and `bind` bridge binds the
+  generated parameters as sqlight values; only the pragmas, the transaction
+  statements and the migration runner are hand-written. After editing any
+  `.sql` file run `make gen-sql` (needs `sqlite3`, and the network once for
+  sqlc) and commit the regenerated modules; `.sql` files are ASCII only.
   `commit(store, now, Commit)` writes a whole `Plan` (state blob with a
   version check, every record, the `Processed` row) in one `BEGIN IMMEDIATE`
   transaction and returns `Committed`, which only this module can build and
@@ -186,6 +198,12 @@ Invariants:
   code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
+- `daemon/schema` and `daemon/sql` are generated and never edited by hand,
+  and a migration file that has shipped never changes: a schema change is a
+  new `sql/NNN_*.sql`. `test/daemon/sql_drift_test.gleam` checks offline that
+  the embedded migrations equal the files (numbered from `001` without a
+  gap) and that `daemon/sql` holds every query file's statement as sqlc
+  emits it, with no `Dynamic` parameter.
 - End-to-end retransmission (ADR-006) is tested against a real mailbox whose
   database the test damages after `Appended`
   (`test/daemon/retransmit_test.gleam`): a corrupted message is delivered

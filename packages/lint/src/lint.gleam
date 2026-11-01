@@ -300,12 +300,11 @@ const header_prefix: Int = 400
 /// Whether a generator wrote this source rather than a person.
 ///
 /// Every rule here advises an edit, and the literate rules bind whoever
-/// writes the source. For these files that is `scripts/gen-sql.sh`,
-/// `packages/storage/dev/embed_schema.gleam` and
-/// `packages/tools/dev/gen_prelude.gleam`, so a finding
-/// in one asks for a change the next `make gen-sql` would discard — and
-/// `make check` re-derives and compares them precisely so that nobody makes
-/// it. That is noise which never clears, and R1's and R5's promotion cases
+/// writes the source. For these files that is `scripts/gen-sql.sh`, through
+/// parrot and each package's `dev/embed_schema.gleam` (ADR-007), so a finding
+/// in one asks for a change the next `make gen-sql` would discard, and each
+/// package's `sql_drift_test` compares them with their sources precisely so
+/// that nobody makes it. That is noise which never clears, and R1's and R5's promotion cases
 /// rest on a census where every line is actionable (issue loom#73,
 /// housekeeping). `lint/cli` drops these before scanning; nothing in the
 /// rules themselves knows about the exemption.
@@ -313,8 +312,8 @@ const header_prefix: Int = 400
 /// The marker is the `DO NOT EDIT.` header each of those generators emits,
 /// and it counts only in the leading comment block: a hand-written module
 /// that quotes the phrase in prose further down is still hand-written.
-/// Five files in the tree carry it — `storage/sql`, `storage/sql_schema`,
-/// `storage/session_schema`, `events/sql` and `tools/prelude`.
+/// Four files in the tree carry it: `daemon/sql`, `daemon/schema`,
+/// `mailbox/sql` and `mailbox/schema`.
 ///
 /// ## Examples
 ///
