@@ -64,8 +64,9 @@ pub fn a_newer_schema_is_refused_test() {
   let assert Ok(Nil) = sqlight.exec("PRAGMA user_version=99", connection)
   let assert Ok(Nil) = sqlight.close(connection)
 
-  let assert Error(store.FutureSchema(found: 99, supported: 1)) =
+  let assert Error(store.FutureSchema(found: 99, supported:)) =
     store.open(path, suite.suite())
+  assert supported == store.schema_version
 }
 
 pub fn the_state_directory_and_files_are_private_test() {

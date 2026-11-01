@@ -32,6 +32,15 @@
 //// was dropped cannot cause a good retransmit under the same identifier to
 //// be dropped as a duplicate.
 ////
+//// A `Remembered` record is the receiver's half of end-to-end retransmission
+//// (`docs/adr/006-end-to-end-retransmit.md`). A sender that hears no receipt
+//// sends the same committed ciphertext again under a new envelope
+//// identifier, and the ratchet has already spent that message's key if the
+//// first copy arrived, so the copy cannot be decrypted a second time. The
+//// receiver therefore remembers the digest of every ciphertext it stored a
+//// message from, and the shell answers a later envelope carrying the same
+//// ciphertext by regenerating the receipt instead of delivering again.
+////
 //// A transition that refuses returns an error and no plan, which is how
 //// "a refusal changes nothing" is typed: there is no state to commit. For
 //// an envelope the core refused to process, the shell writes the `Processed`
@@ -71,6 +80,27 @@ pub type EnvelopeRef {
     envelope: Id(Envelope),
     /// SHA-256 of the stored padded bytes, computed by the shell.
     digest: BitArray,
+  )
+}
+
+/// What a receiver keeps about a ciphertext it stored an application message
+/// from, so the same ciphertext arriving again is recognised without
+/// decrypting it (spec §7.3).
+pub type Fingerprint {
+  Fingerprint(
+    /// SHA-256 of the ratchet message inside the padding
+    /// (`relationship.fingerprint`), so a copy padded or enveloped
+    /// differently still matches.
+    digest: BitArray,
+    /// The message it carried, which a regenerated receipt names.
+    message: Id(MessageKind),
+    /// The message's own expiry. No honest sender retransmits past it, so
+    /// the fingerprint is useless afterwards and may be forgotten.
+    expires_at: Instant,
+    /// How many receipts this ciphertext has been answered with, the first
+    /// included. Bounded by `limits.max_retransmits` plus one, so a mailbox
+    /// replaying the ciphertext cannot make the receiver answer forever.
+    receipts: Int,
   )
 }
 
@@ -139,6 +169,17 @@ pub type Record {
     contact: Id(Contact),
     /// The outbound messages the peer says it stored.
     messages: List(Id(MessageKind)),
+  )
+
+  /// The fingerprint of a ciphertext an application message was stored
+  /// from, written when it is first stored and rewritten each time a copy
+  /// of it is answered with a receipt again. Replaces any earlier
+  /// fingerprint with the same digest on the same relationship.
+  Remembered(
+    /// The relationship.
+    contact: Id(Contact),
+    /// What is remembered.
+    fingerprint: Fingerprint,
   )
 
   /// An entry in the plaintext audit log the operator reads. Written for
@@ -261,6 +302,7 @@ fn is_outbound(record: Record) -> Bool {
     | Delivered(..)
     | Released(..)
     | PeerReceived(..)
+    | Remembered(..)
     | Audit(..) -> False
   }
 }
@@ -275,6 +317,7 @@ fn is_visible(record: Record) -> Bool {
     | Outbound(..)
     | Processed(..)
     | PeerReceived(..)
+    | Remembered(..)
     | Audit(..) -> False
   }
 }

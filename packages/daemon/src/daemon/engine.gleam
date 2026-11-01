@@ -54,6 +54,13 @@
 //// processed-and-dropped, so the mailbox can still be acknowledged once the
 //// drop is durable.
 ////
+//// A `Ratchet` frame is first looked up by its fingerprint
+//// (`relationship.fingerprint`, `store.fingerprint`). A ciphertext the
+//// relationship already stored a message from is a sender's retransmit or a
+//// mailbox's replay: its key is spent, so it goes to
+//// `relationship.resend_receipt`, which queues the same logical receipt
+//// again and delivers nothing (ADR-006, spec §7.3).
+////
 //// ## Job kinds and the fault hook
 ////
 //// Every job is labelled with a `JobKind`, one per public function, which
@@ -743,6 +750,7 @@ fn sent_message(
         | plan.Delivered(..)
         | plan.Released(..)
         | plan.PeerReceived(..)
+        | plan.Remembered(..)
         | plan.Audit(..) -> Error(Nil)
       }
     })
@@ -945,22 +953,44 @@ fn receive(
   case found {
     None -> drop(state, ref)
 
-    Some(record) ->
-      case
-        relationship.receive(
-          state.suite,
-          record.relationship,
-          state.clock(),
-          ref,
-          bytes,
-        )
-      {
+    Some(record) -> {
+      let current = record.relationship
+
+      use known <- result.try(
+        fault(store.fingerprint(
+          state.store,
+          current.contact,
+          relationship.fingerprint(state.suite, bytes),
+        )),
+      )
+
+      // A ciphertext a message was already stored from is answered with its
+      // receipt again and never decrypted; anything else goes through the
+      // session.
+      let outcome = case known {
+        Some(fingerprint) ->
+          relationship.resend_receipt(
+            state.suite,
+            current,
+            state.clock(),
+            ref,
+            fingerprint,
+          )
+
+        None ->
+          relationship.receive(state.suite, current, state.clock(), ref, bytes)
+      }
+
+      // A plan commits with the relationship's new state; a refusal is
+      // committed as a drop so the mailbox can still be acknowledged.
+      case outcome {
         Ok(made) ->
           revise_with(state, made, record.version)
           |> result.replace(Fresh)
 
         Error(_) -> drop(state, ref)
       }
+    }
   }
 }
 
@@ -1215,7 +1245,8 @@ fn join_failure(refusal: relationship.Refusal) -> Failure {
     | relationship.ContentTypeTooLong
     | relationship.NotPositive
     | relationship.HeldFull
-    | relationship.DescriptionTooLong -> refused(refusal)
+    | relationship.DescriptionTooLong
+    | relationship.DuplicateIgnored -> refused(refusal)
   }
 }
 
@@ -1239,6 +1270,7 @@ fn refused(refusal: relationship.Refusal) -> Failure {
     relationship.NotPositive -> "the amount must be positive"
     relationship.HeldFull -> "too many messages are held"
     relationship.DescriptionTooLong -> "the description is too long"
+    relationship.DuplicateIgnored -> "a repeated message was ignored"
   })
 }
 

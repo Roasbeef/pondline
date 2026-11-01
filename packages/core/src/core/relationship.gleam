@@ -32,13 +32,13 @@
 ////
 //// <!-- transitions: relationship.Phase -->
 ////
-//// | state | joined | approve or decline | send | receive | close | raise_budget |
-//// | --- | --- | --- | --- | --- | --- | --- |
-//// | `Joining` | opens the session: queues the `Initial` frame, becomes `AwaitingAccept` | refused | refused | refused (no session) | `Closed(ClosedLocally)`, nothing to send | refused |
-//// | `AwaitingAccept` | refused | refused | refused | `Accept` makes it `Active`; `Reject` and `Close` close it; an application message is an implicit `Accept` (ADR-004): it makes the relationship `Active` and is then handled as in `Active`; receipts are ignored | queues a `Close`, `Closed(ClosedLocally)` | refused |
-//// | `PendingApproval` | refused | approve queues `Accept` and becomes `Active`; decline queues `Reject` and becomes `Closed(Declined)` | refused | `Close` closes it; everything else is ignored | queues a `Close`, `Closed(ClosedLocally)` | refused |
-//// | `Active` | refused | refused | queues the message | application messages are delivered, held or recorded expired; receipts mark messages received; `Close` closes it; `Accept` and `Reject` are ignored | queues a `Close`, `Closed(ClosedLocally)` | releases held messages the new budget admits |
-//// | `Closed` | refused | refused | refused | refused (no session) | refused | refused |
+//// | state | joined | approve or decline | send | receive | resend_receipt | close | raise_budget |
+//// | --- | --- | --- | --- | --- | --- | --- | --- |
+//// | `Joining` | opens the session: queues the `Initial` frame, becomes `AwaitingAccept` | refused | refused | refused (no session) | refused (no session) | `Closed(ClosedLocally)`, nothing to send | refused |
+//// | `AwaitingAccept` | refused | refused | refused | `Accept` makes it `Active`; `Reject` and `Close` close it; an application message is an implicit `Accept` (ADR-004): it makes the relationship `Active` and is then handled as in `Active`; receipts are ignored | refused (nothing was stored before `Active`) | queues a `Close`, `Closed(ClosedLocally)` | refused |
+//// | `PendingApproval` | refused | approve queues `Accept` and becomes `Active`; decline queues `Reject` and becomes `Closed(Declined)` | refused | `Close` closes it; everything else is ignored | refused (nothing was stored before `Active`) | queues a `Close`, `Closed(ClosedLocally)` | refused |
+//// | `Active` | refused | refused | queues the message | application messages are delivered, held or recorded expired; receipts mark messages received; `Close` closes it; `Accept` and `Reject` are ignored | queues the same logical receipt again, unless the message expired or was answered `max_retransmits` times already | queues a `Close`, `Closed(ClosedLocally)` | releases held messages the new budget admits |
+//// | `Closed` | refused | refused | refused | refused (no session) | refused (no session) | refused | refused |
 ////
 //// "Ignored" means the session advanced and the envelope is recorded as
 //// processed, but nothing reached the agent: application messages must not
@@ -53,6 +53,32 @@
 //// `raise_budget`. The held queue is itself bounded; a message past
 //// `max_held_messages` is refused without advancing the ratchet, so the
 //// sender never gets a receipt for it, which is accurate.
+////
+//// ## A ciphertext that arrives again
+////
+//// A sender that hears no receipt for a stored message sends the same
+//// committed ciphertext again under a new envelope identifier
+//// (`core/retransmit`). If the first copy reached us, the ratchet has spent
+//// its key and the copy cannot be decrypted, which is what keeps a message
+//// from being delivered twice; but the receipt the sender is missing would
+//// then never come. So `store_application` remembers the fingerprint of
+//// every ciphertext it stored a message from (a `Remembered` record), the
+//// shell looks a ratchet message's fingerprint up before calling `receive`,
+//// and a known one goes to `resend_receipt` instead: the same logical
+//// receipt, naming the same message, encrypted afresh, and never a second
+//// delivery (spec §7.3).
+////
+//// ## Flow
+////
+//// 1. `join` starts a joiner's relationship, and `joined` opens its session
+////    once its queue exists; an inviter's starts in `core/offer`.
+//// 2. `approve` or `decline` settles a pending one.
+//// 3. `send` seals an application message; `receive` reads an inbound one
+////    and hands it to `in_active`, `in_awaiting` or `in_pending`, and
+////    `store_application` stores and receipts it.
+//// 4. `resend_receipt` answers a ciphertext that arrives again, looked up by
+////    `fingerprint`.
+//// 5. `raise_budget` releases held messages, and `close` ends it.
 ////
 //// ## What the shell does with the result
 ////
@@ -77,9 +103,9 @@ import core/message.{
   type Message, Accept, Application, Close, Hello, Receipt, Reject,
 }
 import core/plan.{
-  type EnvelopeRef, type Plan, type Record, Audit, ControlOut, CreateQueue,
-  Delivered, Held, In, Out, Outbound, PeerReceived, Plan, Ready, ReceiptOut,
-  Released,
+  type EnvelopeRef, type Fingerprint, type Plan, type Record, Audit, ControlOut,
+  CreateQueue, Delivered, Fingerprint, Held, In, Out, Outbound, PeerReceived,
+  Plan, Ready, ReceiptOut, Released, Remembered,
 }
 import core/route.{type Inbox, type Route}
 import core/secret
@@ -244,6 +270,12 @@ pub type Refusal {
   /// front, because the snapshot and invitation decoders enforce the same
   /// bound and would otherwise refuse the row or file we wrote.
   DescriptionTooLong
+
+  /// A known ciphertext arrived again, but its receipt may not be
+  /// regenerated: the message expired, so no honest sender still sends it,
+  /// or it was already answered as often as an honest sender retransmits,
+  /// so this copy is a mailbox's replay. The shell drops and acknowledges.
+  DuplicateIgnored
 }
 
 /// A budget granting `granted` messages, none used. A negative grant is
@@ -553,6 +585,7 @@ type Arrival {
     relationship: Relationship,
     link: Link,
     records: List(Record),
+    digest: BitArray,
   )
 }
 
@@ -569,7 +602,7 @@ type Arrival {
 ///
 /// ```gleam
 /// relationship.receive(suite, active, now, envelope_ref, ratchet_bytes)
-/// // -> Ok(Plan(_, [Processed(..), Delivered(..), Audit(..), Outbound(..)], _))
+/// // -> Ok(Plan(_, [Processed(..), Delivered(..), Audit(..), Outbound(..), Remembered(..)], _))
 /// ```
 pub fn receive(
   suite: Suite,
@@ -578,37 +611,115 @@ pub fn receive(
   envelope: EnvelopeRef,
   ratchet_bytes: BitArray,
 ) -> Result(Plan(Relationship), Refusal) {
+  let arrival = fn(link) {
+    Arrival(
+      suite:,
+      now:,
+      relationship:,
+      link:,
+      records: [plan.applied(envelope)],
+      digest: fingerprint(suite, ratchet_bytes),
+    )
+  }
+
   // The phase is matched once. Only the three phases that hold a session
   // can receive, and each brings its own reading of the body.
   case relationship.phase {
-    Active(link) ->
-      arrive(
-        Arrival(suite:, now:, relationship:, link:, records: [
-          plan.applied(envelope),
-        ]),
-        ratchet_bytes,
-        in_active,
-      )
+    Active(link) -> arrive(arrival(link), ratchet_bytes, in_active)
 
-    AwaitingAccept(link) ->
-      arrive(
-        Arrival(suite:, now:, relationship:, link:, records: [
-          plan.applied(envelope),
-        ]),
-        ratchet_bytes,
-        in_awaiting,
-      )
+    AwaitingAccept(link) -> arrive(arrival(link), ratchet_bytes, in_awaiting)
 
-    PendingApproval(link) ->
-      arrive(
-        Arrival(suite:, now:, relationship:, link:, records: [
-          plan.applied(envelope),
-        ]),
-        ratchet_bytes,
-        in_pending,
-      )
+    PendingApproval(link) -> arrive(arrival(link), ratchet_bytes, in_pending)
 
     Joining(..) | Closed(_) -> Error(NoSession)
+  }
+}
+
+/// The fingerprint of a ratchet message: SHA-256 of the bytes inside the
+/// padding. It is what `receive` remembers and what the shell looks up, so
+/// both must compute it here. Hashing inside the padding means a copy that
+/// a mailbox damaged only in the zero tail still matches.
+///
+/// ## Examples
+///
+/// ```gleam
+/// relationship.fingerprint(suite, ratchet_bytes)
+/// // -> <<32 bytes>>
+/// ```
+pub fn fingerprint(suite: Suite, ratchet_bytes: BitArray) -> BitArray {
+  suite.sha256(ratchet_bytes)
+}
+
+/// A ciphertext this relationship already stored a message from arrived
+/// again, under another envelope: a sender's retransmit, because our
+/// receipt never reached it, or a mailbox's replay. Its key is spent, so it
+/// is never decrypted; instead the same logical receipt is queued again,
+/// naming the remembered message, and the fingerprint's receipt count goes
+/// up. The message is not delivered a second time.
+///
+/// Refused, so that the shell drops and acknowledges the envelope, outside
+/// `Active` (no session, or nothing stored yet), once the message has
+/// expired, and once the ciphertext has been answered `max_retransmits`
+/// times beyond the first receipt, which is the most an honest sender asks
+/// for.
+///
+/// ## Examples
+///
+/// ```gleam
+/// relationship.resend_receipt(suite, active, now, envelope_ref, known)
+/// // -> Ok(Plan(_, [Processed(..), Outbound(..), Remembered(..)], [Transmit]))
+/// ```
+pub fn resend_receipt(
+  suite: Suite,
+  relationship: Relationship,
+  now: Instant,
+  envelope: EnvelopeRef,
+  known: Fingerprint,
+) -> Result(Plan(Relationship), Refusal) {
+  use link <- result.try(receiving_link(relationship))
+  use Nil <- result.try(check_answerable(known, now))
+  use #(link, receipt, _) <- result.try(seal_message(
+    suite,
+    link,
+    Receipt([known.message]),
+    now,
+    limits.message_retention_seconds,
+  ))
+
+  let remembered =
+    Remembered(
+      relationship.contact,
+      Fingerprint(..known, receipts: known.receipts + 1),
+    )
+
+  Ok(
+    plan.build(
+      Relationship(..relationship, phase: Active(link)),
+      relationship.contact,
+      [plan.applied(envelope), receipt, remembered],
+    ),
+  )
+}
+
+/// The session of a relationship that may have stored a message: only an
+/// `Active` one, since storing is what an `AwaitingAccept` joiner becomes
+/// `Active` by.
+fn receiving_link(relationship: Relationship) -> Result(Link, Refusal) {
+  case relationship.phase {
+    Active(link) -> Ok(link)
+    AwaitingAccept(_) | PendingApproval(_) -> Error(WrongPhase)
+    Joining(..) | Closed(_) -> Error(NoSession)
+  }
+}
+
+/// Whether a remembered ciphertext may still be answered with a receipt.
+fn check_answerable(known: Fingerprint, now: Instant) -> Result(Nil, Refusal) {
+  case
+    time.is_past(now, known.expires_at)
+    || known.receipts > limits.max_retransmits
+  {
+    True -> Error(DuplicateIgnored)
+    False -> Ok(Nil)
   }
 }
 
@@ -755,7 +866,21 @@ fn store_application(
           at: now,
         )
 
-      Ok(stay(arrival, Active, [stored(status), audit, receipt]))
+      // The fingerprint commits with the delivery, so a copy of this
+      // ciphertext arriving later is answered with a receipt and never
+      // delivered again.
+      let remembered =
+        Remembered(
+          contact,
+          Fingerprint(
+            digest: arrival.digest,
+            message: message_id,
+            expires_at: incoming.expires_at,
+            receipts: 1,
+          ),
+        )
+
+      Ok(stay(arrival, Active, [stored(status), audit, receipt, remembered]))
     }
   }
 }

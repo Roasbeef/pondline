@@ -1,6 +1,6 @@
 //// End-to-end retransmission (ADR-006), case by case: the schedule
-//// `retransmit.due_at` gives and the refusals `retransmit.retransmit`
-//// makes.
+//// `retransmit.due_at` gives, and the refusals `retransmit.retransmit`
+//// and `relationship.resend_receipt` make.
 
 import core/crypto/fake_suite
 import core/id
@@ -141,4 +141,42 @@ pub fn the_retransmit_refusals_test() {
     == Error(retransmit.Exhausted)
   assert retransmit.retransmit(suite, rel, application, Instant(10_001))
     == Error(retransmit.Expired)
+}
+
+pub fn a_known_ciphertext_is_answered_not_delivered_test() {
+  let w = active()
+  let suite = fake_suite.suite()
+  let assert Some(rel) = world.relationship(w, 0)
+  let assert Ok(queue) = id.from_bytes(fake_suite.fresh(id.id_bytes))
+  let assert Ok(envelope) = id.from_bytes(fake_suite.fresh(id.id_bytes))
+  let ref = plan.EnvelopeRef(queue:, envelope:, digest: <<1>>)
+  let message = message_id()
+  let known =
+    plan.Fingerprint(
+      digest: <<2>>,
+      message:,
+      expires_at: Instant(10_000),
+      receipts: 1,
+    )
+
+  let assert Ok(made) =
+    relationship.resend_receipt(suite, rel, Instant(2000), ref, known)
+  let assert [
+    plan.Processed(outcome: plan.Applied, ..),
+    plan.Outbound(kind: plan.ReceiptOut(_), ..),
+    plan.Remembered(fingerprint: again, ..),
+  ] = made.records
+  assert again == plan.Fingerprint(..known, receipts: 2)
+
+  // Expired, or answered as often as an honest sender asks: dropped.
+  assert relationship.resend_receipt(suite, rel, Instant(10_001), ref, known)
+    == Error(relationship.DuplicateIgnored)
+  assert relationship.resend_receipt(
+      suite,
+      rel,
+      Instant(2000),
+      ref,
+      plan.Fingerprint(..known, receipts: limits.max_retransmits + 1),
+    )
+    == Error(relationship.DuplicateIgnored)
 }

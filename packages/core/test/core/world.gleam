@@ -1323,6 +1323,8 @@ fn apply_record(mine: Party, record: plan.Record, now: Int) -> Party {
         ),
       )
 
+    plan.Remembered(..) -> mine
+
     plan.Audit(..) -> mine
   }
 }

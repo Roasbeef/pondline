@@ -90,7 +90,7 @@ import gleam/result
 import sqlight
 
 /// The schema version this build writes and understands.
-pub const schema_version = 1
+pub const schema_version = 2
 
 /// How long SQLite waits on a locked database before giving up. Only an
 /// outside process can contend with the engine, so this is a courtesy.
@@ -384,6 +384,24 @@ CREATE TABLE audit (
   payload BLOB NOT NULL,
   at INTEGER NOT NULL
 ) STRICT;
+",
+  "
+ALTER TABLE outbox ADD COLUMN retransmits INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE outbox ADD COLUMN retransmit_at INTEGER;
+
+CREATE INDEX outbox_retransmit ON outbox (retransmit_at)
+  WHERE retransmit_at IS NOT NULL;
+
+CREATE TABLE fingerprints (
+  contact BLOB NOT NULL,
+  digest BLOB NOT NULL,
+  message_id BLOB NOT NULL,
+  expires_at INTEGER NOT NULL,
+  receipts INTEGER NOT NULL,
+  PRIMARY KEY (contact, digest)
+) STRICT, WITHOUT ROWID;
+
+CREATE INDEX fingerprints_by_expiry ON fingerprints (expires_at);
 ",
 ]
 
@@ -903,6 +921,31 @@ fn put_record(
         )
       })
 
+    // A fingerprint replaces the one with the same digest, which is how a
+    // regenerated receipt counts. Expired fingerprints are pruned in the
+    // same transaction, so the table holds only messages still alive.
+    plan.Remembered(contact:, fingerprint:), _ -> {
+      use _ <- result.try(
+        write(
+          store,
+          "INSERT OR REPLACE INTO fingerprints
+           (contact, digest, message_id, expires_at, receipts)
+         VALUES (?, ?, ?, ?, ?)",
+          [
+            sqlight.blob(id.to_bytes(contact)),
+            sqlight.blob(fingerprint.digest),
+            sqlight.blob(id.to_bytes(fingerprint.message)),
+            sqlight.int(fingerprint.expires_at.unix_seconds),
+            sqlight.int(fingerprint.receipts),
+          ],
+        ),
+      )
+
+      write(store, "DELETE FROM fingerprints WHERE expires_at < ?", [
+        sqlight.int(now.unix_seconds),
+      ])
+    }
+
     plan.Audit(direction:, contact:, message:, content_type:, payload:, at:), _
     ->
       write(
@@ -1351,6 +1394,57 @@ pub fn processed_digest(
   ))
 
   Ok(first(rows))
+}
+
+/// The fingerprint a relationship remembers for a ratchet message's digest,
+/// if any. Expiry is the core's to judge (`relationship.resend_receipt`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.fingerprint(store, contact, digest)
+/// // -> Ok(Some(plan.Fingerprint(..)))
+/// ```
+pub fn fingerprint(
+  store: Store,
+  contact: Id(Contact),
+  digest: BitArray,
+) -> Result(Option(plan.Fingerprint), Error) {
+  let row = {
+    use message <- decode.field(0, decode.bit_array)
+    use expires_at <- decode.field(1, decode.int)
+    use receipts <- decode.field(2, decode.int)
+    decode.success(#(message, expires_at, receipts))
+  }
+
+  use rows <- result.try(query(
+    store,
+    "SELECT message_id, expires_at, receipts FROM fingerprints
+     WHERE contact = ? AND digest = ?",
+    [sqlight.blob(id.to_bytes(contact)), sqlight.blob(digest)],
+    row,
+  ))
+
+  // The primary key admits one row at most.
+  case rows {
+    [] -> Ok(None)
+
+    [#(message, expires_at, receipts), ..] -> {
+      use message <- result.try(
+        id.from_bytes(message)
+        |> result.map_error(fn(_) { corrupt("fingerprints") }),
+      )
+
+      Ok(
+        Some(plan.Fingerprint(
+          digest:,
+          message:,
+          expires_at: Instant(expires_at),
+          receipts:,
+        )),
+      )
+    }
+  }
 }
 
 /// The envelopes of `queue` that are processed and committed but not yet
