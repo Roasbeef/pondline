@@ -98,8 +98,11 @@ trap 'exit 130' INT
 
 # The deadline. The watchdog signals this shell, then every child it has,
 # so a hung foreground command does not keep the trap from running.
+# The sleep's output goes nowhere: killing the subshell orphans it, and an
+# orphan holding this script's stdout would keep a pipe reader (| tail,
+# $(...), CI capture) waiting the full timeout after a pass.
 (
-  sleep "$TIMEOUT"
+  sleep "$TIMEOUT" >/dev/null 2>&1
   echo "release-smoke: timed out after ${TIMEOUT}s" >&2
   kill -TERM $$ 2>/dev/null
   pkill -TERM -P $$ 2>/dev/null
@@ -142,8 +145,12 @@ mailbox() { scrubbed "$MAILBOX" "$@"; }
 # --------------------------------------------------------------- 1. tree
 
 step "release: $REL"
-scrubbed sh -c 'command -v erl || command -v gleam || command -v cargo' >/dev/null \
-  && die "the scrubbed PATH still finds erl, gleam or cargo"
+# A distribution Erlang lives in /usr/bin, which the scrubbed PATH keeps.
+# That is only worth a note: the launchers name the VM by BINDIR and never
+# search PATH, which the VM's own command line shows.
+if found=$(scrubbed sh -c 'command -v erl || command -v gleam || command -v cargo'); then
+  step "note: the scrubbed PATH has $found; the launchers do not use PATH"
+fi
 
 [ -f "$REL/BUILD" ] || die "no BUILD file"
 VERSION=$(sed -n 's/^version=//p' "$REL/BUILD")
@@ -181,7 +188,7 @@ step "ok   --version of both launchers is the BUILD identity; the sidecar starts
 # than 3.5 can do.
 ERTS_BIN=$(echo "$REL"/erts-*/bin)
 kem=$(scrubbed OPENSSL_CONF=/dev/null OPENSSL_MODULES="$REL/lib/ossl-modules" \
-  ROOTDIR="$REL" BINDIR="$ERTS_BIN" EMU=beam PROGNAME=erl \
+  ROOTDIR="$REL" BINDIR="$ERTS_BIN" EMU=beam PROGNAME=erl ERL_CRASH_DUMP_SECONDS=0 \
   "$ERTS_BIN/erlexec" -boot "$REL/bin/no_dot_erlang" -noshell -noinput -eval '
     [{_, _, Version}] = crypto:info_lib(),
     true = lists:member(mlkem1024, proplists:get_value(kems, crypto:supports())),

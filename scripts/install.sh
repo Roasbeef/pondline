@@ -89,7 +89,14 @@ if [ ! -d "$PREFIX" ]; then
 fi
 PREFIX=$(cd "$PREFIX" && pwd -P)
 BIN="$PREFIX/bin"
-LIB="$PREFIX/lib/reedwire"
+
+# The lib directory by its physical path. A running VM names its tree by
+# the physical path (the launcher resolves it with pwd -P), so if the
+# operator's $PREFIX/lib is a symlink to another volume, the in-use check
+# below must compare the same spelling or it would miss a live tree.
+LIBROOT="$PREFIX/lib"
+if [ -d "$LIBROOT" ]; then LIBROOT=$(cd "$LIBROOT" && pwd -P); fi
+LIB="$LIBROOT/reedwire"
 MARKER="$LIB/.reedwire-install"
 
 # The two commands, as "installed name:launcher in the tree".
@@ -141,7 +148,7 @@ switch_link() {
 # --------------------------------------------------------------- preflight
 
 # Everything that could make us refuse is checked before anything changes.
-if [ -e "$LIB" ] && [ ! -f "$MARKER" ]; then
+if [ -L "$LIB" ] || { [ -e "$LIB" ] && [ ! -f "$MARKER" ]; }; then
   echo "install.sh: $LIB exists and was not made by this script; refusing to touch it" >&2
   exit 1
 fi
@@ -209,13 +216,13 @@ touch "$MARKER"
 # the same name is kept when it is the same build: always for a clean
 # commit, whose sources the name pins (a rebuild is not byte-identical,
 # since the build re-links the sqlite NIF and copies whatever library the
-# host has now), and only when identical for a -dirty one, whose sources
-# the name does not pin. A dirty tree that differs is replaced only if
-# nothing runs from it.
+# host has now), and only when identical for a -dirty or unknown one, whose
+# sources the name does not pin. Such a tree that differs is replaced only
+# if nothing runs from it.
 same_build() {
   [ -d "$TREE" ] || return 1
   case $COMMIT in
-    *-dirty) diff -rq "$FROM" "$TREE" >/dev/null 2>&1 ;;
+    *-dirty | unknown) diff -rq "$FROM" "$TREE" >/dev/null 2>&1 ;;
     *) return 0 ;;
   esac
 }
