@@ -129,9 +129,35 @@ make check
 That's the full gate: formatting, a warning-free build of every
 package, every test suite, the lint and the documentation check. `make
 help` lists the rest, among them `make sidecar` to build the Tor
-sidecar on its own (`make test` builds it first) and `make release` to
-assemble a self-contained mailbox release with its own ERTS and
-OpenSSL (macOS today).
+sidecar on its own (`make test` builds it first).
+
+## Install
+
+`make install` builds a self-contained release (its own Erlang runtime,
+OpenSSL and Tor sidecar, so the machine running it needs none of the
+build tools) and installs two commands:
+
+```bash
+make install                        # PREFIX defaults to ~/.local
+make install PREFIX=/opt/reedwire
+reedwire --version                  # reedwire 0.1.0 (commit <sha>)
+```
+
+That puts the release tree in `$PREFIX/lib/reedwire/` and the
+`reedwire` and `reedwire-mailbox` commands in `$PREFIX/bin`; it never
+replaces a file it did not create, and never touches a running build's
+tree or your state directories. `make uninstall` (with the same `PREFIX`)
+removes it. The pieces are separate targets too: `make release` builds
+the tree into `build/release/<platform>/reedwire`, `make release-smoke`
+boots it with no Erlang on the `PATH` and pairs two daemons through a
+mailbox, and `make dist` packs it into a tarball with a SHA-256, which
+installs itself with `PREFIX=... ./install.sh` once unpacked. Releases are
+built and tested on macOS on Apple silicon only; the Linux recipe in
+[ADR-003](docs/adr/003-packaging.md) is written but has never been run.
+
+Installed, the walkthrough below is the same with `reedwire` and
+`reedwire-mailbox` in place of `gleam run -m reedwire --` and `gleam run
+-m mailbox --`, run from any directory.
 
 The Tor tests talk to the live network, so they're off by default:
 

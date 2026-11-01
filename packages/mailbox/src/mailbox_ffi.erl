@@ -1,5 +1,5 @@
 -module(mailbox_ffi).
--export([unix_seconds/0, monotonic_ms/0, create_private_file/2]).
+-export([unix_seconds/0, monotonic_ms/0, create_private_file/2, getenv/1]).
 
 %% Whole seconds since the Unix epoch. `erlang:system_time/1` takes the unit
 %% as an atom, which Gleam cannot build without creating one.
@@ -30,6 +30,14 @@ write_private(Fd, Path, Bytes) ->
             end;
         {error, Reason} ->
             reason(Reason)
+    end.
+
+%% The value of an environment variable. The name and value are binaries
+%% on the Gleam side; an unset variable is an error.
+getenv(Name) ->
+    case os:getenv(binary_to_list(Name)) of
+        false -> {error, nil};
+        Value -> {ok, unicode:characters_to_binary(Value)}
     end.
 
 reason(Reason) when is_atom(Reason) ->

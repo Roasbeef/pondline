@@ -6,7 +6,7 @@
 # the shipment `gleam export erlang-shipment` writes, and the sandbox profile
 # lets the agent read that one directory.
 #
-# REEDWIRE_RUNTIME is the shipment directory. The wrapper adds the two
+# REEDWIRE_RUNTIME is the shipment directory, or a release tree. The wrapper adds the two
 # options every agent command needs, the daemon's socket and the agent's own
 # credential, so the agent scripts cannot forget them and never name the
 # operator credential.
@@ -16,6 +16,13 @@ set -eu
 : "${REEDWIRE_RUNTIME:?REEDWIRE_RUNTIME is not set}"
 : "${API_SOCK:?API_SOCK is not set}"
 : "${AGENT_DIR:?AGENT_DIR is not set}"
+
+# A release tree (demo.sh --release) has its own launcher, which runs the
+# bundled VM; the options are the same.
+if [ -x "$REEDWIRE_RUNTIME/bin/reedwire" ]; then
+  exec "$REEDWIRE_RUNTIME/bin/reedwire" \
+    "$@" --socket "$API_SOCK" --credential-file "$AGENT_DIR/agent.cred"
+fi
 
 # `erl` starts the VM, runs the CLI's main, and halts with the CLI's own
 # exit status (the CLI halts the VM itself on a failure). Standard output is

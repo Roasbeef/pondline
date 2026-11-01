@@ -18,6 +18,7 @@
 //// - `receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]`.
 //// - `ack --message HEX`, `status --message HEX`, `audit [--contact HEX]
 ////   [--limit N]` and `health`.
+//// - `--version` prints the build's version and commit.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
 //// the daemon, `--credential-file F` to name the credential (default
@@ -89,6 +90,7 @@ commands:
   status --message HEX
   audit [--contact HEX] [--limit N]
   health
+  --version
 
 client options: --state-dir D | --socket P, --credential-file F, --json
 exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
@@ -176,6 +178,9 @@ pub type Command {
   RunDaemon(DaemonOptions)
   Client(target: Target, output: Output, action: Action)
   Help
+
+  /// Print the build's version and commit (`daemon/build`) and exit.
+  Version
 }
 
 /// The options found on a command line.
@@ -205,6 +210,8 @@ pub fn parse(
   // rest.
   case arguments {
     ["help"] | ["--help"] -> Ok(Help)
+
+    ["--version"] | ["version"] -> Ok(Version)
 
     ["daemon", ..rest] -> parse_daemon(rest)
 
