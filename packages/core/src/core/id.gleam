@@ -41,6 +41,11 @@ pub type Message
 /// A single-use pairing offer (`InvitationId`).
 pub type Invitation
 
+/// A sealed invitation a mailbox holds for a ticket, named by its locator
+/// (ADR-009). The locator is derived from the ticket's secret, so only the
+/// ticket's holder and the inviter can name it.
+pub type Blob
+
 /// Builds an identifier from exactly `id_bytes` bytes, which a caller
 /// draws from the injected randomness source or decodes from the wire.
 ///

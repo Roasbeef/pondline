@@ -1,4 +1,5 @@
 import core/limits
+import core/ticket
 import gleam/list
 import qcheck
 
@@ -37,4 +38,12 @@ pub fn padded_size_is_the_smallest_holding_bucket_property_test() {
 /// a ciphertext the mailbox would refuse, nor refuses one it would store.
 pub fn the_largest_bucket_is_the_ciphertext_limit_test() {
   assert list.last(limits.padding_buckets) == Ok(limits.max_ciphertext_bytes)
+}
+
+/// A sealed invitation of the largest size fits the mailbox's blob bound,
+/// and the longest ticket fits the decoder's text bound (ADR-009).
+pub fn the_ticket_bounds_hold_the_largest_ticket_and_blob_test() {
+  assert limits.max_ticket_blob_bytes
+    >= limits.max_invitation_bytes + ticket.blob_overhead_bytes
+  assert limits.max_ticket_bytes >= 130
 }

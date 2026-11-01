@@ -131,6 +131,18 @@ pub const max_hello_bytes = 1024
 /// codecs can produce is about 14.6 KB.
 pub const max_invitation_bytes = 16_384
 
+/// The largest sealed invitation a mailbox holds for a ticket
+/// (ADR-009): an invitation file of `max_invitation_bytes` plus the blob's
+/// version byte, its 32-byte commitment and the 16-byte AEAD tag (49
+/// bytes), rounded up to 16.25 KiB. It is charged to the inviter's queue
+/// like any stored envelope.
+pub const max_ticket_blob_bytes = 16_640
+
+/// The longest ticket text a decoder reads (192 bytes). An onion ticket is
+/// 130 characters and a loopback one 74; the bound only stops a decoder
+/// from walking a pasted document.
+pub const max_ticket_bytes = 192
+
 /// The largest encoded route: an onion hostname, a port, a queue identifier
 /// and a capability, with framing (512 bytes).
 pub const max_route_bytes = 512
