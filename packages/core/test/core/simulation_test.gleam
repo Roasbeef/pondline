@@ -8,9 +8,15 @@
 //// replay-driven redelivery, no invitation double consumption, no
 //// application message before `Active`, never more `Ready` deliveries than
 //// the budget allows, and no message key used twice (the same ratchet
-//// header committed with different bytes). A second property runs benign
-//// schedules to quiescence and requires every committed application
-//// message to be delivered once and receipted once. A third group runs the
+//// header committed with different bytes), a relationship phase never goes
+//// backwards, a receipt names only messages that were sent, and a raise
+//// releases the oldest held messages.
+////
+//// A second property runs benign schedules, and a third chaotic ones, through
+//// the heal phase (`world.heal`, which only turns faults off and lets time
+//// pass) and requires quiescence, delivery and receipt of every committed
+//// message, every close to reach its peer, and no message left held. Where a
+//// state cannot deliver, the audit records a named excuse. A final group runs the
 //// same schedules through deliberately broken shells and requires the
 //// checks to notice, so a green run means the checks can fail.
 
@@ -26,7 +32,7 @@ const property_count = 25
 /// each test has five seconds.
 const benign_count = 8
 
-const sample_size = 40
+const sample_size = 150
 
 const schedule_length = 160
 
@@ -76,14 +82,23 @@ fn chaotic(case_: Case) -> List(String) {
   world.violations_of(play(world.Correct, world.Chaotic, case_))
 }
 
-/// Benign schedules, then a fault-free settle with the operator approving:
-/// every committed application message must be delivered and receipted once.
+/// Benign schedules, then the heal phase and every audit: each committed
+/// application message is delivered and receipted once, and the world is
+/// quiescent. The audits excuse only the named states in
+/// `world.audit_delivery`.
 fn benign_delivery(case_: Case) -> List(String) {
   play(world.Correct, world.Benign, case_)
-  |> world.settle(4)
-  |> world.run([world.Approve(0, world.Commit)])
-  |> world.settle(5)
-  |> world.audit_delivery
+  |> world.heal
+  |> world.audit_all
+  |> world.violations_of
+}
+
+/// Chaotic schedules (closes, declines, the clock) healed and audited: the
+/// liveness that is well defined once faults stop, with its excuses.
+fn chaotic_healed(case_: Case) -> List(String) {
+  play(world.Correct, world.Chaotic, case_)
+  |> world.heal
+  |> world.audit_all
   |> world.violations_of
 }
 
@@ -97,6 +112,14 @@ pub fn invariants_hold_over_random_schedules_b_test() {
 
 pub fn invariants_hold_over_random_schedules_c_test() {
   check(20_261_102, property_count, chaotic)
+}
+
+pub fn a_healed_chaotic_world_is_live_a_test() {
+  check(20_261_201, benign_count, chaotic_healed)
+}
+
+pub fn a_healed_chaotic_world_is_live_b_test() {
+  check(20_261_202, benign_count, chaotic_healed)
 }
 
 pub fn every_committed_message_is_delivered_and_receipted_once_a_test() {

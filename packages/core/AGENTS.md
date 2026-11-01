@@ -83,6 +83,28 @@ None. `core` sends no messages and owns no processes.
   a stored count over the bound.
 - The fake `Suite` used by tests lives under `test/` only, so it cannot be
   compiled into a release (spec §13.3).
+- The pure simulation (`test/core/world.gleam`, §13.1) models the shell as
+  production behaves: an outbox row stops being resent once the mailbox
+  answered it, and the mailbox keeps a tombstone for every acknowledged
+  envelope. The heal phase (`world.heal`) only turns faults off and lets
+  time pass; it never retransmits a stored row, so a mailbox that corrupts
+  the only copy of a message loses it, and the delivery audit records that as
+  the counted excuse `message-corrupted-in-mailbox` (a policy gap, not a
+  pass). Other excuses are `receiver-closed`, `message-expired`,
+  `sender-closed` and the corrupted close and receipt twins. HeldFull is
+  reached by `held_full_test`, not by random schedules.
+- Swarm seeds (`test/core/swarm.gleam`): byte 0 mode (chaotic or benign,
+  approval, budget), bytes 1..2 the fault mask (one bit per `world.Fault`),
+  then three-byte ops. `swarm_test` plays 40 generated seeds and checks that
+  a seed replays to an identical world. For a campaign, build with
+  `gleam test` once, then
+  `erl -noshell -pa build/dev/erlang/*/ebin -eval 'core@swarm:campaign(5000, 7), halt().'`
+  (prints the seed and run index of the first failure); replay one seed
+  with `REEDWIRE_REPLAY=<hex> gleam test` or
+  `core@swarm:replay("<hex>")`.
+- `fake_suite.seeded(n)` draws identifiers from a seeded counter, so a
+  simulation run depends only on its seed; `fake_suite.suite()` keeps a
+  process-wide counter for tests that build several suites.
 
 ## Deep Docs
 
