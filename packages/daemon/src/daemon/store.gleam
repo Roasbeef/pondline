@@ -1751,6 +1751,37 @@ pub fn mark_acked(
   })
 }
 
+/// Records that an acknowledged envelope is owed an acknowledgement again,
+/// because the mailbox served it once more under the same identifier and
+/// bytes: a mailbox restored from a backup taken before the
+/// acknowledgement, or a sender's late retry stored again after the
+/// tombstone was swept (ADR-010, addendum). The processed row, and with it
+/// the digest that makes the envelope a repeat, stays; only `acked` goes
+/// back to zero, so `unacked` lists it and the fetcher's next round names
+/// it to the mailbox. A row that was never acknowledged is unchanged.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.mark_unacked(store, queue, envelope)
+/// // -> Ok(Nil)
+/// ```
+pub fn mark_unacked(
+  store: Store,
+  queue: Id(Queue),
+  envelope: Id(Envelope),
+) -> Result(Nil, Error) {
+  transaction(store, fn() {
+    write(
+      store,
+      sql.mark_unacked(
+        queue: id.to_bytes(queue),
+        envelope: id.to_bytes(envelope),
+      ),
+    )
+  })
+}
+
 // ------------------------------------------------- what the agent reads
 
 /// Ready deliveries, oldest first, for one contact or for all of them.

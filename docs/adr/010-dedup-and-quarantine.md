@@ -147,3 +147,88 @@ What is implemented and tested:
   cap. The daemon never deletes a queue, so this needs an operator's hand.
 - Revisit if a production deployment shows quarantines of honest traffic, or
   if the inbound commit rate makes the extra transaction measurable.
+
+## Addendum (2026-11-01): a repeat served after its acknowledgement
+
+The ruling says one envelope cannot block its queue. A repeat could. The
+engine answered an envelope whose identifier and digest match its
+`Processed` row `Repeat` and committed nothing, and the fetcher
+acknowledges only `store.unacked`, the rows with `acked = 0`. That is right
+for the usual repeat, an envelope served again before the round that
+acknowledges it. It is wrong for one the mailbox serves again after the
+acknowledgement, which happens two ways:
+
+- **A restore.** The mailbox's database is restored from a backup taken
+  before the acknowledgement (or a lagging replica is promoted). The
+  envelope comes back at its old place, at the head of its queue, and its
+  tombstone was never written.
+- **A late retry.** The sender's append was stored but its answer lost.
+  ADR-008 has the mailbox hold the envelope, and then its tombstone, only
+  until the retention deadline, up to `retention_slack_seconds` before the
+  message expires, while the sender retries until the expiry. A retry in
+  that last stretch finds neither and `insert_new` stores the envelope
+  again.
+
+The row was already acknowledged, so nothing ever named the envelope in an
+`Ack` again. The mailbox served it until its retention deadline (up to a
+week for a restore), the fetcher looped on it with no pause (a finished
+round starts the next at once), and sixteen of them at the head of a queue
+(`limits.fetch_batch_envelopes`) filled every fetch, so messages behind
+them could expire undelivered, past the 31 hours of retransmits. Safety
+held; liveness did not.
+
+The P model of end-to-end delivery (`formal/p`, `docs/formal/p.md`) found
+it with no fault aimed at it: its design case `tcExpiry` reached the late
+retry. The `cx*` cases in `formal/p/PTst/judge.p` reproduce both paths and
+the generic fault mix of `tcAll`. Neither earlier judge saw it: the pure
+simulation's honest shell acknowledges every matching stored envelope with
+no acknowledged flag, and no fault class of the shell DST served an
+acknowledged envelope again.
+
+**Decision.** A `Repeat` marks its processed row unacknowledged
+(`store.mark_unacked`, the `MarkUnacked` query), so the next round's
+acknowledgement names it, and the mailbox deletes it and writes a fresh
+tombstone. For a repeat that was never acknowledged the update changes
+nothing. This keeps the fetcher's one rule, acknowledge exactly what the
+store says is committed and unacknowledged:
+
+- The processed row and its digest stay, so the envelope is never
+  processed or delivered again.
+- No attempt is counted: the repeat check comes before `count_attempt`, and
+  a repeat is not a failure.
+- A queue that retires between the repeat and the next round still has an
+  unacknowledged row, so `draining_inboxes` gives it a fetcher that
+  acknowledges and stops. A retired queue is never polled, so it cannot be
+  handed a repeat in the first place.
+- It cannot loop: a round acknowledges before it polls, so the repeat is
+  gone from the mailbox before the next fetch. A mailbox that keeps
+  restoring is a mailbox serving byzantine answers, which it can do anyway.
+
+The other shape, the fetcher acknowledging every `Repeat` from the batch it
+fetched, was rejected. It gives the fetcher a second source of
+acknowledgements beside the store, which the no-acknowledgement-before-
+commit tests mutate against, and the intent lives only in the fetcher's
+memory: a fetcher that crashes, or whose queue retires, before it names
+the repeat leaves it at the mailbox.
+
+**Verification.**
+
+- `daemon/test/daemon/reack_test.gleam`, two real daemons and a real
+  mailbox: B delivers and acknowledges sixteen messages; the mailbox brings
+  them back by a restore (the rows under their old `seq`, tombstones gone,
+  bytes counted again) or by A's own appends after the tombstones are
+  swept; a seventeenth must arrive, the queue drain and the agent see each
+  message once. Without the unack both time out waiting for the
+  seventeenth.
+- `sim`: a `restore` fault class (`sim/restore`). A trigger in the
+  mailbox's database keeps a backup of every envelope it stores, and the
+  `RestoreMailbox` op puts back every one it has since tombstoned. On the
+  pre-fix code the blind swarm finds the defect (`queues_drained`: the
+  mailbox still holds them; and the runner's livelock check on the spin).
+  `--seed 1 --runs 200 --keep-going` first fails at run 23 (4 of 200
+  seeds) and `--seed 2` at run 9 (9 of 200). With the fix, `--seed 1` and
+  `--seed 2` at 1000 runs each, every class on, find nothing (three
+  `lied_append` excuses). The corpus's last seed is a minimal restore.
+- The P model's `reackRepeat` is on in `Base()`, so every design case runs
+  the fixed rule; the `cx*` cases keep it off and stay in the judge as
+  recall cases.

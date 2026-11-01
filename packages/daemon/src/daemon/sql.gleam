@@ -185,6 +185,13 @@ pub fn mark_acked(queue queue: BitArray, envelope envelope: BitArray) {
   #(sql, [dev.ParamBitArray(queue), dev.ParamBitArray(envelope)])
 }
 
+pub fn mark_unacked(queue queue: BitArray, envelope envelope: BitArray) {
+  let sql =
+    "
+UPDATE processed SET acked = 0 WHERE queue = ? AND envelope = ?"
+  #(sql, [dev.ParamBitArray(queue), dev.ParamBitArray(envelope)])
+}
+
 pub fn put_fingerprint(
   contact contact: BitArray,
   digest digest: BitArray,

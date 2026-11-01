@@ -36,8 +36,10 @@ import gleam/string
 /// The most ops one seed runs.
 pub const max_ops = 48
 
-/// How many distinct ops the op byte selects among.
-pub const op_count = 20
+/// How many distinct ops the op byte selects among. Every corpus seed's op
+/// bytes are below 20, so raising this from 20 to 21 for `RestoreMailbox`
+/// kept their meaning.
+pub const op_count = 21
 
 /// One of the two daemons.
 pub type Party {
@@ -109,6 +111,10 @@ pub type FaultClass {
 
   /// One process of a tree killed and restarted by its supervisor.
   Kills
+
+  /// The mailbox restored from a backup, serving acknowledged envelopes
+  /// again.
+  Restore
 }
 
 /// Every fault class, in bit order.
@@ -126,6 +132,7 @@ pub fn classes() -> List(FaultClass) {
     Limits,
     Restarts,
     Kills,
+    Restore,
   ]
 }
 
@@ -151,6 +158,7 @@ pub fn class_name(class: FaultClass) -> String {
     Limits -> "limits"
     Restarts -> "restarts"
     Kills -> "kills"
+    Restore -> "restore"
   }
 }
 
@@ -359,6 +367,11 @@ pub type Op {
 
   /// One process is killed and its supervisor restarts it.
   Kill(victim: Victim)
+
+  /// The mailbox is restored from a backup taken before its
+  /// acknowledgements: every envelope it has tombstoned comes back at its
+  /// old place in its queue (`sim/restore`).
+  RestoreMailbox
 }
 
 /// A decoded seed.
@@ -466,7 +479,8 @@ fn op_of(op: Int, arg: Int, enabled: List(FaultClass)) -> Op {
     16 -> gated(Peer, fn() { Forge(party:, forgery: forgery_of(arg / 2)) })
     17 -> gated(Limits, fn() { Exceed(party:, limit: limit_of(arg / 2)) })
     18 -> gated(Restarts, fn() { Restart(party:) })
-    _ -> gated(Kills, fn() { Kill(victim: victim_of(arg)) })
+    19 -> gated(Kills, fn() { Kill(victim: victim_of(arg)) })
+    _ -> gated(Restore, fn() { RestoreMailbox })
   }
 }
 

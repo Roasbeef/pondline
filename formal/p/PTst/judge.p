@@ -8,8 +8,9 @@
 // - calib*: the fault budget one spoiling fault past maxRetx. The design
 //   cases claim liveness up to the bound; these show the bound is tight and
 //   that the liveness monitor is sharp at its edge.
-// - cx*: the counterexample against the current design found by this
-//   model (docs/formal/p.md), reproduced with the code's behaviour.
+// - cx*: the counterexample this model found (docs/formal/p.md), with
+//   reackRepeat off: the code before its fix (ADR-010, addendum). They are
+//   recall cases now, and document the defect the fix removed.
 
 // ------------------------------------------------------------- mutants
 
@@ -199,7 +200,7 @@ machine DrvCalibQuarantine {
 
 // ----------------------------------------------------- counterexamples
 
-// The design case tcAll with the code's Repeat handling: a generic fault
+// The design case tcAll with the pre-fix Repeat handling: a generic fault
 // mix, no fault aimed at the defect.
 machine DrvCxGeneric {
   start state S {

@@ -109,7 +109,8 @@ this before changing any of them.
   runs each operation as a job: load state, run the pure transition with the
   real `Suite` and injected clock, commit, then call `notify`. It never touches
   the network. `process` applies the id-and-digest rule before opening a
-  frame, then counts the attempt (`store.count_attempt`, its own
+  frame (a repeat marks its processed row unacknowledged,
+  `store.mark_unacked`), then counts the attempt (`store.count_attempt`, its own
   transaction) and quarantines an envelope past
   `limits.max_process_attempts` (`store.Quarantined`: dropped, acknowledged,
   an incident; ADR-010). It looks a `Ratchet` frame's fingerprint up before
@@ -236,6 +237,15 @@ Invariants:
   code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
+- A repeat is owed an acknowledgement: `process` marks its processed row
+  unacknowledged, so an envelope the mailbox serves again after it was
+  acknowledged (a restored backup, a sender's retry stored again once its
+  tombstone was swept) is named in the next round's `Ack` and leaves the
+  queue, without a second delivery or a counted attempt (ADR-010,
+  addendum; found by the P model, `docs/formal/p.md`).
+  `test/daemon/reack_test.gleam` stages both paths with sixteen zombies
+  and a message behind them. Mutation-checked: answering `Repeat` without
+  the unack fails both tests (the seventeenth message never arrives).
 - A repeated message identifier from an authenticated peer is ignored, not
   delivered, and recorded as an incident, and the queue moves on
   (`test/daemon/dedup_test.gleam`, two real daemons and a real mailbox, the
