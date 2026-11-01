@@ -59,7 +59,7 @@
 //// 3. `sweep` is the one maintenance change, a transaction of its own.
 
 import core/envelope.{type StoredEnvelope, StoredEnvelope}
-import core/id.{type Envelope, type Id, type Queue}
+import core/id.{type Blob, type Envelope, type Id, type Queue}
 import core/time.{type Instant, Instant}
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -164,9 +164,21 @@ pub type Tombstone {
   Tombstone(digest: BitArray, deadline: Instant)
 }
 
+/// What the mailbox remembers of a sealed invitation when it decides a
+/// `PutBlob` retry or a `GetBlob` (ADR-009): the queue that paid for it,
+/// the hash of its retrieve capability, its digest and its deadline.
+pub type BlobRecord {
+  BlobRecord(
+    queue: Id(Queue),
+    retrieve_hash: BitArray,
+    digest: BitArray,
+    deadline: Instant,
+  )
+}
+
 /// What a sweep removed.
 pub type SweepReport {
-  SweepReport(envelopes: Int, tombstones: Int)
+  SweepReport(envelopes: Int, tombstones: Int, blobs: Int)
 }
 
 // -------------------------------------------------------------- lifecycle
@@ -697,18 +709,121 @@ pub fn remove_envelope(
   }
 }
 
+// ------------------------------------------------------------------ blobs
+
+/// The bookkeeping row of a stored blob, expired or not, if its locator is
+/// taken.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.blob_record(store, blob)
+/// // -> Ok(None)
+/// ```
+pub fn blob_record(
+  store: Store,
+  blob: Id(Blob),
+) -> Result(Option(BlobRecord), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.blob_record(blob_id: id.to_bytes(blob)),
+  ))
+
+  // A queue identifier that no longer decodes is damage, never a blob.
+  case rows {
+    [] -> Ok(None)
+
+    [row, ..] ->
+      case id.from_bytes(row.queue_id) {
+        Ok(queue) ->
+          Ok(
+            Some(BlobRecord(
+              queue:,
+              retrieve_hash: row.retrieve_hash,
+              digest: row.digest,
+              deadline: Instant(row.deadline),
+            )),
+          )
+
+        Error(Nil) -> Error(Corrupt("a blob row does not decode"))
+      }
+  }
+}
+
+/// Reserves the sealed bytes of the queue's quota and inserts the blob, the
+/// same atomic pair as `put_envelope`. The caller has checked the quota and
+/// holds the transaction.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.put_blob(store, queue, blob, retrieve_hash, digest, deadline, sealed)
+/// // -> Ok(Nil)
+/// ```
+pub fn put_blob(
+  store: Store,
+  queue: Id(Queue),
+  blob: Id(Blob),
+  retrieve_hash: BitArray,
+  digest: BitArray,
+  deadline: Instant,
+  sealed: BitArray,
+) -> Result(Nil, Error) {
+  let size = bit_array.byte_size(sealed)
+
+  use _ <- result.try(adjust_bytes(store, queue, size))
+
+  write(
+    store,
+    sql.insert_blob(
+      blob_id: id.to_bytes(blob),
+      queue_id: id.to_bytes(queue),
+      retrieve_hash:,
+      digest:,
+      deadline: deadline.unix_seconds,
+      size:,
+      sealed:,
+    ),
+  )
+}
+
+/// The hash of a live blob's retrieve capability and its sealed bytes. A
+/// blob whose deadline is before `now` is not live, swept or not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.live_blob(store, blob, now)
+/// // -> Ok(Some(#(retrieve_hash, sealed)))
+/// ```
+pub fn live_blob(
+  store: Store,
+  blob: Id(Blob),
+  now: Instant,
+) -> Result(Option(#(BitArray, BitArray)), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.live_blob(blob_id: id.to_bytes(blob), now: now.unix_seconds),
+  ))
+
+  rows
+  |> list.map(fn(row) { #(row.retrieve_hash, row.sealed) })
+  |> first
+  |> Ok
+}
+
 // ------------------------------------------------------------ maintenance
 
-/// Deletes every envelope whose deadline is before `now`, releasing each
-/// queue's bytes, and every tombstone past its deadline. Expired envelopes
-/// leave no tombstone: the tombstone would carry the same deadline, so it
-/// would already be worthless.
+/// Deletes every envelope and every sealed blob whose deadline is before
+/// `now`, releasing each queue's bytes, and every tombstone past its
+/// deadline. Expired envelopes leave no tombstone: the tombstone would
+/// carry the same deadline, so it would already be worthless.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// store.sweep(store, now)
-/// // -> Ok(SweepReport(envelopes: 0, tombstones: 0))
+/// // -> Ok(SweepReport(envelopes: 0, tombstones: 0, blobs: 0))
 /// ```
 pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
   let cutoff = now.unix_seconds
@@ -731,9 +846,26 @@ pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
     use stale <- result.try(query(store, sql.stale_tombstones(now: cutoff)))
     use _ <- result.try(write(store, sql.delete_stale_tombstones(now: cutoff)))
 
+    // Expired blobs give their bytes back the same way, so an invitation
+    // nobody fetched costs its queue nothing once its deadline passes.
+    use blobs <- result.try(query(
+      store,
+      sql.expired_blobs_per_queue(now: cutoff),
+    ))
+    use _ <- result.try(
+      list.try_each(blobs, fn(entry) {
+        write(
+          store,
+          sql.adjust_bytes(delta: -entry.bytes, queue_id: entry.queue_id),
+        )
+      }),
+    )
+    use _ <- result.try(write(store, sql.delete_expired_blobs(now: cutoff)))
+
     Ok(SweepReport(
       envelopes: list.fold(expired, 0, fn(sum, entry) { sum + entry.envelopes }),
       tombstones: list.fold(stale, 0, fn(sum, row) { sum + row.stale }),
+      blobs: list.fold(blobs, 0, fn(sum, entry) { sum + entry.blobs }),
     ))
   })
 }

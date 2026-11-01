@@ -43,7 +43,9 @@ import gleam/string
 pub fn unavailable() -> Backend {
   Backend(
     invite: fn(_, _, _) { Error(Unavailable) },
+    invite_ticket: fn(_, _, _) { Error(Unavailable) },
     accept: fn(_, _) { Error(Unavailable) },
+    accept_ticket: fn(_, _) { Error(Unavailable) },
     contacts: fn() { Error(Unavailable) },
     approve: fn(_) { Error(Unavailable) },
     decline: fn(_) { Error(Unavailable) },
@@ -110,8 +112,16 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     invite: fn(description, approval, budget) {
       api.invite(daemon, description, approval, budget) |> map_error
     },
+    invite_ticket: fn(description, approval, budget) {
+      api.invite_ticket(daemon, description, approval, budget)
+      |> result.map(fn(issued) { #(issued.file, issued.ticket) })
+      |> map_error
+    },
     accept: fn(file, description) {
       api.accept(daemon, file, description) |> map_error
+    },
+    accept_ticket: fn(text, description) {
+      api.accept_ticket(daemon, text, description) |> map_error
     },
     contacts: fn() {
       api.contacts(daemon)

@@ -1402,6 +1402,8 @@ fn appended(read: net.Read) -> Result(BitArray, Nil) {
     | net.Decoded(protocol.Fetch(..))
     | net.Decoded(protocol.Ack(..))
     | net.Decoded(protocol.DeleteQueue(..))
+    | net.Decoded(protocol.PutBlob(..))
+    | net.Decoded(protocol.GetBlob(..))
     | net.Undecodable(_) -> Error(Nil)
   }
 }
@@ -1416,6 +1418,8 @@ fn batch_envelopes(response: Response) -> List(BitArray) {
     | protocol.Appended(..)
     | protocol.Acked
     | protocol.QueueDeleted
+    | protocol.BlobStored(..)
+    | protocol.SealedBlob(..)
     | protocol.Refused(..) -> []
   }
 }
@@ -1441,6 +1445,8 @@ fn response_name(response: Response) -> String {
       "batch " <> int.to_string(list.length(envelopes))
     protocol.Acked -> "acked"
     protocol.QueueDeleted -> "deleted"
+    protocol.BlobStored(..) -> "blob_stored"
+    protocol.SealedBlob(..) -> "sealed_blob"
     protocol.Refused(reason:) -> "refused " <> string.inspect(reason)
   }
 }

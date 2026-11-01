@@ -253,7 +253,9 @@ fn create(data: Data, inbox: Inbox) -> Bool {
     Ok(protocol.Appended(_))
     | Ok(protocol.Batch(_))
     | Ok(protocol.Acked)
-    | Ok(protocol.QueueDeleted) -> False
+    | Ok(protocol.QueueDeleted)
+    | Ok(protocol.BlobStored(_))
+    | Ok(protocol.SealedBlob(_)) -> False
 
     Error(_) -> {
       status.set_mailbox(data.config.status, status.MailboxUnreachable)

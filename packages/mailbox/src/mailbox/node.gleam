@@ -234,7 +234,9 @@ pub fn handle(node: Node, request: Request) -> Response {
     | protocol.Append(..)
     | protocol.Fetch(..)
     | protocol.Ack(..)
-    | protocol.DeleteQueue(..) -> run(node, request)
+    | protocol.DeleteQueue(..)
+    | protocol.PutBlob(..)
+    | protocol.GetBlob(..) -> run(node, request)
   }
 }
 

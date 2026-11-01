@@ -200,6 +200,8 @@ An invitation is a bearer credential. Whoever obtains it may attempt to redeem i
 
 The human-readable description is informational, not independently verified identity.
 
+*Added by ADR-009.* An invitation may also travel as a **ticket**: a checksummed `rw1` string of 130 characters (74 for a loopback mailbox) carrying only the inviter mailbox's endpoint and a fresh 32-byte secret `K`. The invitation itself is stored at that mailbox sealed under keys derived from `K` (ChaCha20-Poly1305 plus an HMAC commitment to the plaintext), named by a locator and fetched with a capability also derived from `K`; the mailbox sees only the locator, the capability's hash and ciphertext. The joiner MUST check the AEAD and the commitment, and that the invitation names the ticket's mailbox, before using it. A ticket is a bearer credential exactly as the file is, and MUST NOT appear in argv, logs or errors. `docs/adr/009-invitation-tickets.md` has the format and `docs/crypto-profile-v1.md` §11 the derivations.
+
 ## 4.3 Establishment flow
 
 ### Step 1: Inviter prepares
@@ -207,6 +209,8 @@ The human-readable description is informational, not independently verified iden
 Daemon A creates its relationship-specific identity, private prekey material, and inbound queue.
 
 It uploads only the public bundle, records the invitation locally, and exports the invitation file.
+
+*Added by ADR-009.* With a ticket, A also stores the sealed invitation at its own mailbox with `PutBlob`, under the invitation's deadline and charged to the inbound queue's quota, and exports the ticket only after the mailbox has stored it.
 
 A may include a narrowly scoped provisioning grant allowing B to create a return queue without establishing a separate service account.
 
@@ -217,6 +221,8 @@ Daemon B validates the invitation format, deadline, transport policy, and suppor
 It persists its own pairing attempt, identity material, and request identifiers **before** making retriable network operations.
 
 B then creates its return queue and fetches the public bundle.
+
+*Added by ADR-009.* Given a ticket, B first fetches the sealed invitation with `GetBlob` and opens and checks it before anything is persisted; from there the flow is the file's. Fetching does not consume the blob, as fetching a bundle does not consume the invitation.
 
 The bundle MUST match the identity and bundle commitments in the invitation.
 
@@ -352,6 +358,7 @@ Unknown required features fail closed. Unknown optional fields must not grant au
 | `Fetch` | Retrieve a bounded batch; optionally wait for activity. |
 | `Ack` | Acknowledge specific envelopes after local durable processing. |
 | `UpdatePolicy` / `Revoke` | Change queue limits or credentials under administration authority. |
+| `PutBlob` / `GetBlob` | *Added by ADR-009.* Store a sealed invitation under a ticket's locator until a deadline, authorized by a queue's admin capability and charged to its quota; fetch it, without deleting it, with the ticket's retrieve capability. |
 
 The network binding should translate into typed domain commands. Storage logic must not depend on HTTP objects.
 
@@ -614,6 +621,8 @@ reedwire contact close --contact customer
 
 Secrets should be passed through protected files, descriptors, or standard input—not exposed in command-line arguments.
 
+*Added by ADR-009.* `reedwire invite create ... --ticket` prints a ticket on standard output (and still writes the file with `--out`); `reedwire invite accept --ticket (--file F | --stdin)` redeems one. `--ticket` is a flag and never takes the ticket as a value.
+
 Machine-readable output and stable exit/error categories are required.
 
 MCP and Loom integrations should invoke this same local API rather than implementing independent protocol logic.
@@ -767,6 +776,8 @@ These are engineering starting points, not measured optimal values.
 | End-to-end retransmits per message | At most 5 (ADR-006) |
 | Retention slack below the mailbox's maximum | 1 hour (ADR-008) |
 | Retention deadlines offered per append | At most 4, each halving the lifetime (ADR-008) |
+| Sealed invitation held for a ticket | At most 16 640 bytes, charged to the inviter's queue, deadline within the message retention bound (ADR-009) |
+| Ticket text | At most 192 bytes read; tickets are 130 (onion) or 74 (loopback) characters (ADR-009) |
 | Processing attempts before an envelope is quarantined | 5 (ADR-010) |
 | Send idempotency key | 1 to 128 bytes, remembered 7 days (ADR-011) |
 | Initial queue capacity | 64 MiB, with separate message/rate limits |

@@ -89,6 +89,8 @@ pub fn describe(request: Request) -> String {
     protocol.Ack(queue:, envelopes:, ..) ->
       "ack/" <> hex(queue) <> "/" <> int.to_string(count(envelopes, 0))
     protocol.DeleteQueue(queue:, ..) -> "delete/" <> hex(queue)
+    protocol.PutBlob(blob:, ..) -> "put_blob/" <> hex(blob)
+    protocol.GetBlob(blob:, ..) -> "get_blob/" <> hex(blob)
   }
 }
 
@@ -192,6 +194,8 @@ fn wrong_kind(response: Response) -> Response {
     | protocol.Appended(..)
     | protocol.Batch(..)
     | protocol.QueueDeleted
+    | protocol.BlobStored(..)
+    | protocol.SealedBlob(..)
     | protocol.Refused(..) -> protocol.Acked
   }
 }

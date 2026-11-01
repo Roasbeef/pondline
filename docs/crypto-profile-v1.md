@@ -239,6 +239,7 @@ public key matches its secret.
 | Skipped keys retained in total | 2000 | `limits.max_skipped_message_keys` |
 | Largest message number | 2^32 - 1 | `limits.max_message_number` |
 | Largest invitation file | 16 384 | `limits.max_invitation_bytes` |
+| Largest sealed invitation for a ticket (§11) | 16 640 | `limits.max_ticket_blob_bytes` |
 
 ### Sizes
 
@@ -282,6 +283,12 @@ the transcript signature in the first message of a relationship. The
 initial frame always pads to the 16 KiB bucket (§6), so its padded size
 reveals nothing about the `Hello` inside it. Header encryption is deliberately left
 for a later profile.
+
+For an invitation redeemed by ticket (§11), the inviter's mailbox also
+holds the sealed invitation: it sees the locator, the hash of the retrieve
+capability, the ciphertext's length and its deadline, and which
+connection fetched it, but not `K` or anything derived from it that could
+open the blob.
 
 ## 8. Guarantees, stated honestly
 
@@ -342,6 +349,12 @@ What v1 does not provide:
 | `Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1` | handshake HKDF info |
 | `Reedwire_Ratchet_v1` | root-key HKDF info |
 | `Reedwire_MessageKeys_v1` | message-key HKDF info |
+| `Reedwire_Ticket_v1` | ticket HKDF-Extract salt (§11) |
+| `Reedwire_TicketLocator_v1` | ticket blob locator HKDF info (§11) |
+| `Reedwire_TicketCapability_v1` | ticket retrieve capability HKDF info (§11) |
+| `Reedwire_TicketKey_v1` | ticket AEAD key and nonce HKDF info (§11) |
+| `Reedwire_TicketCommitment_v1` | ticket commitment key HKDF info (§11) |
+| `Reedwire_TicketBlob_v1` | prefix of the sealed invitation's associated data (§11) |
 
 All are ASCII, with no terminator or length prefix. Each signature input is
 the string followed immediately by fixed-size fields; only the transcript
@@ -365,3 +378,33 @@ external test vectors for PQXDH or this ratchet, so correctness rests on the
 round-trip, tamper, replay, bound and persistence tests, a property suite
 over a deterministic fake, mutation checks, and review. Cross-implementation
 vectors remain to be produced if a second implementation is ever written.
+
+## 11. Invitation tickets
+
+*Added by ADR-009.* A ticket carries a mailbox endpoint and a 32-byte
+secret `K` from the CSPRNG; its text form is in
+`docs/adr/009-invitation-tickets.md`. Everything else comes from `K`:
+
+```text
+PRK        = HKDF-Extract(salt = "Reedwire_Ticket_v1", ikm = K)
+locator    = HKDF-Expand(PRK, "Reedwire_TicketLocator_v1", 16)
+retrieve   = HKDF-Expand(PRK, "Reedwire_TicketCapability_v1", 32)
+key, nonce = HKDF-Expand(PRK, "Reedwire_TicketKey_v1", 44)        32 then 12
+commit_key = HKDF-Expand(PRK, "Reedwire_TicketCommitment_v1", 32)
+
+blob       = 0x01 || commitment (32) || ChaCha20-Poly1305(key, nonce,
+               aad = "Reedwire_TicketBlob_v1" || locator, invitation file)
+commitment = HMAC-SHA-256(commit_key, invitation file)
+```
+
+Each output has its own label, so none is a prefix of another; the
+mailbox sees the locator and `SHA-256(retrieve)`, and they reveal nothing
+about the key or the commitment key. One key seals exactly one invitation,
+so the derived nonce is never reused; sealing the same invitation again
+under the same ticket gives the same bytes. Opening checks the version,
+the AEAD, and then the commitment in constant time, and returns nothing
+unless all pass. The commitment makes the blob key-committing: no one,
+including a holder of `K`, can make one blob open to two invitations under
+two tickets, which Poly1305 alone does not prevent. A holder of `K` can
+seal an invitation of its own, as a holder of an invitation file can hand
+on a different file; the ticket is a bearer credential.

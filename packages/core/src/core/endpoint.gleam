@@ -13,16 +13,22 @@
 //// Another carrier, Lightning onion messages first, is a new variant here
 //// and a new transport behind the mailbox command boundary (spec §6.2).
 
+import gleam/bit_array
 import gleam/list
 import gleam/string
 
 /// A syntactically valid v3 onion service hostname, lowercase, with the
 /// `.onion` suffix. Arti verifies the embedded checksum when it connects;
 /// this type guarantees the shape, which is all `core` can check without
-/// SHA3.
+/// SHA3. `bytes` is the label decoded: the 32-byte service key, the two
+/// checksum bytes and the version byte, the form a ticket carries
+/// (ADR-009). It is a function of `host`, so equality is unchanged.
 pub opaque type OnionAddress {
-  OnionAddress(host: String)
+  OnionAddress(host: String, bytes: BitArray)
 }
+
+/// The size of a v3 onion address's decoded label: key, checksum, version.
+pub const onion_address_bytes = 35
 
 /// A TCP port, 1 to 65535.
 pub opaque type Port {
@@ -79,20 +85,75 @@ pub fn parse_onion(text: String) -> Result(OnionAddress, EndpointError) {
   // version); version 3 always encodes to a trailing "d". Every base32
   // character is one byte, so the byte size is the character count.
   case string.split(host, ".") {
-    [label, "onion"] ->
-      case
-        string.byte_size(label) == 56
-        && string.ends_with(label, "d")
-        && list.all(string.to_graphemes(label), string.contains(
-          base32_alphabet,
-          _,
-        ))
-      {
-        True -> Ok(OnionAddress(host:))
-        False -> Error(NotAnOnionAddress)
+    [label, "onion"] -> {
+      let shaped = string.byte_size(label) == 56 && string.ends_with(label, "d")
+
+      // The characters decode only if every one is in the alphabet, and
+      // 56 of them are exactly 280 bits, so no padding is involved.
+      case shaped, list.try_map(string.to_graphemes(label), base32_value) {
+        True, Ok(values) ->
+          Ok(OnionAddress(
+            host:,
+            bytes: list.fold(values, <<>>, fn(acc, value) {
+              <<acc:bits, value:size(5)>>
+            }),
+          ))
+
+        _, _ -> Error(NotAnOnionAddress)
       }
+    }
+
     _ -> Error(NotAnOnionAddress)
   }
+}
+
+/// The decoded label: the service's 32-byte key, the two checksum bytes
+/// and the version byte, `onion_address_bytes` in all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bit_array.byte_size(endpoint.onion_bytes(address))
+/// // -> 35
+/// ```
+pub fn onion_bytes(address: OnionAddress) -> BitArray {
+  address.bytes
+}
+
+/// The address whose decoded label is `bytes`: the inverse of
+/// `onion_bytes`. Bytes whose version does not encode to the trailing `d`
+/// of a v3 label are refused, as `parse_onion` refuses the text.
+///
+/// ## Examples
+///
+/// ```gleam
+/// endpoint.onion_from_bytes(endpoint.onion_bytes(address))
+/// // -> Ok(address)
+/// ```
+pub fn onion_from_bytes(
+  bytes: BitArray,
+) -> Result(OnionAddress, EndpointError) {
+  case bit_array.byte_size(bytes) == onion_address_bytes {
+    True -> parse_onion(base32_text(bytes, "") <> ".onion")
+    False -> Error(NotAnOnionAddress)
+  }
+}
+
+/// RFC 4648 base32, lowercase and unpadded, of bits whose length is a
+/// multiple of five.
+fn base32_text(bits: BitArray, acc: String) -> String {
+  case bits {
+    <<value:size(5), rest:bits>> ->
+      base32_text(rest, acc <> string.slice(base32_alphabet, value, 1))
+    _ -> acc
+  }
+}
+
+/// The value of one base32 character: its position in the alphabet.
+fn base32_value(character: String) -> Result(Int, Nil) {
+  string.to_graphemes(base32_alphabet)
+  |> list.index_map(fn(letter, index) { #(letter, index) })
+  |> list.key_find(character)
 }
 
 /// The hostname, `<56 chars>.onion`.

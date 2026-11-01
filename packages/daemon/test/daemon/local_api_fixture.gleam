@@ -175,6 +175,10 @@ pub fn deliver(fake: Fake, delivery: Delivery) -> Nil {
   actor.send(fake, Announce(local_api_types.MessagesReady(delivery.contact)))
 }
 
+/// The ticket the fake backend issues. Not a valid ticket: the fake only
+/// carries it through.
+pub const fake_ticket = "rw1faketicketfortheapitests"
+
 /// A backend that records each call and answers with fixed values.
 pub fn backend(fake: Fake) -> Backend {
   let record = fn(call) { actor.send(fake, Record(call)) }
@@ -191,10 +195,26 @@ pub fn backend(fake: Fake) -> Backend {
       )
       Ok(<<"INVITATION-BYTES", 255, 0>>)
     },
+    invite_ticket: fn(description, approval, budget) {
+      record(
+        "invite_ticket "
+        <> description
+        <> " "
+        <> string.inspect(approval)
+        <> " "
+        <> string.inspect(budget),
+      )
+      Ok(#(<<"INVITATION-BYTES", 255, 0>>, secret.new(<<fake_ticket:utf8>>)))
+    },
     accept: fn(invitation, description) {
       record(
         "accept " <> bit_array.base16_encode(invitation) <> " " <> description,
       )
+      Ok(contact())
+    },
+    accept_ticket: fn(ticket, description) {
+      let assert Ok(text) = bit_array.to_string(secret.expose(ticket))
+      record("accept_ticket " <> text <> " " <> description)
       Ok(contact())
     },
     contacts: fn() {

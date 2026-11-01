@@ -26,6 +26,31 @@
 //// the committed offer with `weft/poll` until it opens, for at most
 //// `invite_wait_ms`.
 ////
+//// ## Tickets
+////
+//// `invite_ticket` and `accept_ticket` are the short-string form of the same
+//// pair (ADR-009). They are the only calls here that reach a mailbox
+//// themselves, in the caller's process: the inviter stores the sealed
+//// invitation at its own mailbox before the ticket is returned, so a ticket
+//// that exists always names a stored blob, and the joiner fetches and opens
+//// it before anything is committed. Each mailbox call is retried with
+//// `weft/poll` for at most `ticket_wait_ms`, because a first onion
+//// connection can fail while circuits build. Neither writes durable state of
+//// its own; a ticket whose store failed leaves an offer that was never
+//// handed out, as a timed-out `invite` does, and the operator asks again.
+////
+//// ## Flow
+////
+//// 1. `assemble` builds the handle, for `daemon/node` alone.
+//// 2. Pairing: `invite` (and `await_file`), `accept`; by ticket,
+////    `invite_ticket` (`offer_inbox`, `store_blob`) and `accept_ticket`
+////    (`fetch_blob`), both through `ticket_call`.
+//// 3. Relationships: `contacts`, `approve`, `decline`, `close`,
+////    `raise_budget`.
+//// 4. Messages: `send` and `send_with_key`, `receive`, `acknowledge`,
+////    `status`; the operator's trail: `audit` and `incidents`.
+//// 5. `subscribe` and `health` for adapters and monitoring.
+////
 //// ## Why the types are repeated
 ////
 //// The engine and the store define their own record types and this module
@@ -37,21 +62,28 @@
 
 import core/crypto/identity
 import core/crypto/suite.{type Suite}
-import core/endpoint.{type CarrierPolicy}
+import core/endpoint.{type CarrierPolicy, type Endpoint}
 import core/id.{
   type Contact, type Id, type Invitation as InvitationKind,
-  type Message as MessageKind,
+  type Message as MessageKind, type Queue,
 }
+import core/invitation
+import core/mailbox/protocol
 import core/offer.{type Approval}
 import core/relationship
+import core/route.{type Inbox}
 import core/secret.{type Secret}
+import core/ticket
 import core/time.{type Instant}
 import daemon/engine
 import daemon/events
 import daemon/mail.{type Handle}
+import daemon/mailbox_client
 import daemon/status
 import daemon/store
+import daemon/transport.{type Dialer}
 import gleam/bit_array
+import gleam/bool
 import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
@@ -65,6 +97,17 @@ pub const invite_wait_ms = 30_000
 /// How often `invite` looks at the committed offer while it waits.
 pub const invite_poll_ms = 50
 
+/// How long `invite_ticket` keeps trying to store the sealed invitation,
+/// and `accept_ticket` to fetch it (ADR-009).
+pub const ticket_wait_ms = 60_000
+
+/// The budget of one mailbox call made for a ticket, dial included. A
+/// first onion connection builds a rendezvous circuit, which takes seconds.
+pub const ticket_call_ms = 30_000
+
+/// How long a ticket's mailbox call waits before it is tried again.
+pub const ticket_retry_ms = 1000
+
 /// A running daemon, as its callers hold it. Built only by `node`.
 pub opaque type Daemon {
   Daemon(
@@ -76,7 +119,15 @@ pub opaque type Daemon {
     supervisor: Pid,
     state_dir: String,
     poll_clock: poll.Clock,
+    dialer: Dialer,
   )
+}
+
+/// What `invite_ticket` hands back: the invitation file, for an operator
+/// who also wants it, and the ticket's text, a `Secret` because it is the
+/// authority to fetch and open the invitation.
+pub type IssuedTicket {
+  IssuedTicket(file: BitArray, ticket: Secret)
 }
 
 /// Why a call did not do what was asked.
@@ -225,12 +276,13 @@ pub type Health {
 
 /// Assembles the handle `node.start` returns. Not for other callers: the
 /// handles must belong to a running tree. `poll_clock` is what `invite` and
-/// `node.stop` wait on.
+/// `node.stop` wait on; `dialer` is what the ticket calls reach a mailbox
+/// through, the same one the tree's workers use.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// api.assemble(engine, events, status, suite, policy, supervisor, dir, clock)
+/// api.assemble(engine, events, status, suite, policy, pid, dir, clock, dialer)
 /// ```
 pub fn assemble(
   engine: Handle(engine.Message),
@@ -241,6 +293,7 @@ pub fn assemble(
   supervisor: Pid,
   state_dir: String,
   poll_clock: poll.Clock,
+  dialer: Dialer,
 ) -> Daemon {
   Daemon(
     engine:,
@@ -251,6 +304,7 @@ pub fn assemble(
     supervisor:,
     state_dir:,
     poll_clock:,
+    dialer:,
   )
 }
 
@@ -387,6 +441,251 @@ pub fn accept(
 ) -> Result(Id(Contact), ApiError) {
   engine.accept(daemon.engine, invitation, description)
   |> result.map_error(from_failure)
+}
+
+/// Creates an invitation, stores it sealed at the inviter's mailbox and
+/// returns its ticket (ADR-009). The ticket is returned only once the
+/// mailbox has stored the blob, so a ticket always names a stored
+/// invitation; the blob's deadline is the invitation's own.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.invite_ticket(daemon, "vendor support", offer.OperatorApproves, 10)
+/// // -> Ok(IssuedTicket(file: <<...>>, ticket: secret))
+/// ```
+pub fn invite_ticket(
+  daemon: Daemon,
+  description: String,
+  approval: Approval,
+  budget: Int,
+) -> Result(IssuedTicket, ApiError) {
+  use file <- result.try(invite(daemon, description, approval, budget))
+
+  // The file came from this daemon a moment ago, so a decode failure is
+  // the engine misbehaving, not the caller.
+  use offered <- result.try(
+    invitation.decode(daemon.suite, file) |> result.replace_error(Unavailable),
+  )
+  use inbox <- result.try(offer_inbox(daemon, offered.route.queue))
+  use made <- result.try(
+    ticket.generate(daemon.suite, offered.route.endpoint)
+    |> result.replace_error(Refused("the ticket could not be created")),
+  )
+  use keys <- result.try(
+    ticket.keys(daemon.suite, made)
+    |> result.replace_error(Refused("the ticket could not be created")),
+  )
+  use sealed <- result.try(
+    ticket.seal(daemon.suite, keys, file)
+    |> result.replace_error(Refused("the invitation could not be sealed")),
+  )
+
+  let request =
+    protocol.PutBlob(
+      queue: inbox.queue,
+      admin: inbox.admin,
+      blob: keys.locator,
+      retrieve: keys.retrieve,
+      retention_deadline: offered.expires_at,
+      sealed:,
+    )
+  use Nil <- result.try(store_blob(daemon, inbox, request))
+
+  Ok(IssuedTicket(file:, ticket: ticket.encode(made)))
+}
+
+/// Redeems a ticket: fetches the sealed invitation from the mailbox it
+/// names, opens it (the AEAD, then the commitment), checks that the
+/// invitation names the ticket's own mailbox, and then imports it exactly
+/// as `accept` does. Surrounding whitespace is ignored; the ticket itself
+/// must be exact.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.accept_ticket(daemon, ticket_text, "vendor support")
+/// // -> Ok(contact)
+/// ```
+pub fn accept_ticket(
+  daemon: Daemon,
+  text: Secret,
+  description: String,
+) -> Result(Id(Contact), ApiError) {
+  let invalid = InvalidInvitation("the ticket is not valid")
+
+  // The ticket is exposed only to be decoded; no error repeats it.
+  use spelled <- result.try(
+    bit_array.to_string(secret.expose(text)) |> result.replace_error(invalid),
+  )
+  use made <- result.try(
+    ticket.decode(string.trim(spelled)) |> result.replace_error(invalid),
+  )
+  use mailbox <- result.try(
+    endpoint.admit(ticket.endpoint(made), daemon.carrier)
+    |> result.replace_error(Refused(
+      "the carrier policy does not permit the ticket's mailbox",
+    )),
+  )
+  use keys <- result.try(
+    ticket.keys(daemon.suite, made) |> result.replace_error(Unavailable),
+  )
+  use sealed <- result.try(fetch_blob(daemon, mailbox, keys))
+  use file <- result.try(
+    ticket.open(daemon.suite, keys, sealed)
+    |> result.replace_error(InvalidInvitation(
+      "the mailbox returned an invitation this ticket does not open",
+    )),
+  )
+  use offered <- result.try(
+    invitation.decode(daemon.suite, file)
+    |> result.replace_error(InvalidInvitation(
+      "the file is not a valid invitation",
+    )),
+  )
+
+  // The invitation's route and the ticket name the same mailbox; one that
+  // does not is not the invitation this ticket was issued for.
+  use <- bool.guard(
+    offered.route.endpoint != mailbox,
+    Error(InvalidInvitation(
+      "the invitation names a different mailbox than its ticket",
+    )),
+  )
+
+  accept(daemon, file, description)
+}
+
+/// The inbox behind an offer's queue, whose admin capability pays for the
+/// sealed invitation.
+fn offer_inbox(daemon: Daemon, queue: Id(Queue)) -> Result(Inbox, ApiError) {
+  use inboxes <- result.try(
+    engine.live_inboxes(daemon.engine) |> result.map_error(from_failure),
+  )
+
+  list.find(inboxes, fn(inbox) { inbox.queue == queue })
+  |> result.replace_error(NotFound)
+}
+
+/// Stores the sealed invitation at the offer's mailbox, retrying what may
+/// pass on a second try. The request is the same bytes every time, so a
+/// retry after a lost answer is answered `BlobStored` by the mailbox.
+fn store_blob(
+  daemon: Daemon,
+  inbox: Inbox,
+  request: protocol.Request,
+) -> Result(Nil, ApiError) {
+  ticket_call(
+    daemon,
+    inbox.endpoint,
+    mailbox_client.isolation_group(inbox.queue),
+    request,
+    fn(response) {
+      // Only a stored blob ends the wait; a refusal the mailbox will repeat
+      // ends it with that refusal, and everything else is tried again.
+      case response {
+        protocol.BlobStored(_) -> poll.Done(Nil)
+
+        protocol.Refused(protocol.BadDeadline) ->
+          poll.Fail(Refused(
+            "the mailbox refused the invitation's deadline; check the clock",
+          ))
+
+        protocol.Refused(protocol.QuotaExceeded) ->
+          poll.Fail(Refused("the mailbox queue's quota is exhausted"))
+
+        protocol.Refused(protocol.Unavailable) -> poll.Retry
+
+        protocol.Refused(_)
+        | protocol.QueueCreated(_)
+        | protocol.Appended(_)
+        | protocol.Batch(_)
+        | protocol.Acked
+        | protocol.QueueDeleted
+        | protocol.SealedBlob(_) ->
+          poll.Fail(Refused("the mailbox did not store the invitation"))
+      }
+    },
+  )
+}
+
+/// Fetches a ticket's sealed invitation. `Unauthorized` is final: the
+/// mailbox has no live blob for this ticket, because it expired, was never
+/// stored, or the ticket was mistyped in a way the checksum could not see.
+fn fetch_blob(
+  daemon: Daemon,
+  mailbox: Endpoint,
+  keys: ticket.Keys,
+) -> Result(BitArray, ApiError) {
+  ticket_call(
+    daemon,
+    mailbox,
+    id.to_hex(keys.locator),
+    protocol.GetBlob(blob: keys.locator, retrieve: keys.retrieve),
+    fn(response) {
+      // A sealed blob ends the wait; a missing one is final, and a busy
+      // mailbox is tried again.
+      case response {
+        protocol.SealedBlob(sealed:) -> poll.Done(sealed)
+
+        protocol.Refused(protocol.Unauthorized) ->
+          poll.Fail(InvalidInvitation(
+            "the mailbox holds no invitation for this ticket; it may have expired",
+          ))
+
+        protocol.Refused(protocol.Unavailable) -> poll.Retry
+
+        protocol.Refused(_)
+        | protocol.QueueCreated(_)
+        | protocol.Appended(_)
+        | protocol.Batch(_)
+        | protocol.Acked
+        | protocol.QueueDeleted
+        | protocol.BlobStored(_) ->
+          poll.Fail(Refused("the mailbox did not return the invitation"))
+      }
+    },
+  )
+}
+
+/// One ticket request, retried with `weft/poll` on the daemon's clock until
+/// `judge` settles it or `ticket_wait_ms` runs out. A call that did not
+/// reach the mailbox is always tried again.
+fn ticket_call(
+  daemon: Daemon,
+  mailbox: Endpoint,
+  isolation_group: String,
+  request: protocol.Request,
+  judge: fn(protocol.Response) -> poll.Attempt(a, ApiError),
+) -> Result(a, ApiError) {
+  let waited =
+    poll.until_on(
+      clock: daemon.poll_clock,
+      within: ticket_wait_ms,
+      every: poll.Fixed(ticket_retry_ms),
+      attempt: fn() {
+        // The answer decides; a transport failure is always worth a retry.
+        case
+          mailbox_client.call(
+            daemon.dialer,
+            mailbox,
+            isolation_group,
+            request,
+            ticket_call_ms,
+          )
+        {
+          Ok(response) -> judge(response)
+          Error(_) -> poll.Retry
+        }
+      },
+    )
+
+  // A wait that runs out is a mailbox that could not be reached.
+  case waited {
+    poll.Answered(value) -> Ok(value)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(Unavailable)
+  }
 }
 
 /// Every relationship, oldest first.

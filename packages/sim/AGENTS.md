@@ -137,6 +137,9 @@ Fixed so far:
   local API socket and CLI, mist, `node.stop`'s lock wait (the runner kills
   the supervisor itself), the sweeper's expiry of envelopes (virtual time
   never reaches retention).
+- Pairing by ticket (ADR-009) is not driven: the runner pairs by file, and
+  `PutBlob`/`GetBlob` appear only as names in traces and as variants the
+  byzantine mailbox's wrong-kind answer covers.
 - A store fault is armed per node and fires on the next transactions, so
   which job it hits depends on the schedule, not on its kind.
 - The swarm draws op arguments uniformly; ops that need an earlier op's

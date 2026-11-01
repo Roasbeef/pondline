@@ -422,25 +422,25 @@ two messages, no pairing, one restore, a batch of one):
 
 **The same in the code.**
 
-- `engine.gleam:866` (`handle_envelope`): a processed record with the same
-  digest returns `Ok(Repeat)` at `engine.gleam:884` (`Repeat`) and commits
+- `engine.gleam:1008` (`handle_envelope`): a processed record with the same
+  digest returns `Ok(Repeat)` at `engine.gleam:991` (`Repeat`) and commits
   nothing.
-- `fetcher.gleam:361` (`ack_pending`) acknowledges only what
-  `engine.unacked` returns; `daemon/store.gleam:1418` (`unacked`) runs the
+- `fetcher.gleam:373` (`ack_pending`) acknowledges only what
+  `engine.unacked` returns; `daemon/store.gleam:1706` (`unacked`) runs the
   query at `daemon/sql/inbound.sql:14` (`Unacked`), `WHERE ... acked = 0`,
-  and `daemon/store.gleam:1445` (`mark_acked`) sets it to 1 for good.
-  `fetcher.gleam:431` (`process_batch`) discards the `Handled` value, so a
+  and `daemon/store.gleam:1733` (`mark_acked`) sets it to 1 for good.
+  `fetcher.gleam:447` (`process_batch`) discards the `Handled` value, so a
   `Repeat` is never acknowledged on the spot either.
-- `fetcher.gleam:273` (`polled`): "A round that finished starts the next at
+- `fetcher.gleam:285` (`polled`): "A round that finished starts the next at
   once; the long poll is what paces a quiet queue." A queue holding a
   zombie is never quiet.
 - `mailbox/sql/envelopes.sql:18` (`LiveEnvelopes`) returns the oldest
   `limits.fetch_batch_envelopes` (16) live envelopes `ORDER BY seq`, so
   sixteen zombies at the head (a restored backup puts them back at their
   old positions) hide everything behind them.
-- `mailbox/service.gleam:330` (`append_to`) answers a repeat from the
+- `mailbox/service.gleam:352` (`append_to`) answers a repeat from the
   stored envelope or the tombstone, and otherwise inserts;
-  `mailbox/store.gleam:713` (`sweep`) deletes tombstones past their
+  `mailbox/store.gleam:825` (`sweep`) deletes tombstones past their
   deadline (`DeleteStaleTombstones`).
 - The pure simulation does not show this: `core/world.gleam:1035` (`ack`)
   acknowledges every stored envelope whose processed record matches, with
