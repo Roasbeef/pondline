@@ -420,7 +420,10 @@ Invariants:
   flag, and a stray word is refused without being repeated, so a ticket
   never reaches argv or an error; `cli_test` checks every command. The
   local API's `invite` takes `"ticket": true`; `accept` takes exactly one
-  of `invitation` and `ticket`.
+  of `invitation` and `ticket`. The CLI waits `cli.invitation_timeout_ms` (130 s) for
+  `invite create` and a ticket accept, at least the daemon's own bound
+  (`cli_test`), and refuses a ticket input that is not text locally. An
+  unknown `--name=value` is named without its value.
 - Exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
   4 not found, 5 refused, invalid or too large, 6 unavailable.
 - Known gaps: a connection process that crashes leaves its socket open until the
