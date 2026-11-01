@@ -12,6 +12,17 @@
 //// The operations here (agreement, signing, encapsulation) are thin: they
 //// call the suite and translate its `Error(Nil)` into the shared `Error`,
 //// which carries no key material.
+////
+//// ## Hybrid signatures
+////
+//// Every authentication step in `CryptoProfileV1` is hybrid
+//// (`docs/adr/005-hybrid-authentication.md`): an Ed25519 signature and an
+//// ML-DSA-65 signature over the same message, by the two signing keys of
+//// one identity. `HybridSignature` holds the pair, and `hybrid_verify`
+//// accepts it only when both halves verify, so forging one needs both
+//// Ed25519 and ML-DSA-65 broken. There is deliberately no function that
+//// verifies one half alone: a caller cannot fall back to the classical
+//// signature by choosing the wrong verifier.
 
 import core/crypto/error.{
   type Error, KeyAgreementFailed, Malformed, PrimitiveFailed,
@@ -41,6 +52,19 @@ pub const kem_ciphertext_size = 1568
 
 /// The size of the shared secret ML-KEM produces.
 pub const kem_shared_secret_bytes = 32
+
+/// The size of an ML-DSA-65 public key.
+pub const mldsa_public_size = 1952
+
+/// The size of an ML-DSA-65 secret key, in OpenSSL's expanded form.
+pub const mldsa_secret_size = 4032
+
+/// The size of an ML-DSA-65 signature.
+pub const mldsa_signature_size = 3309
+
+/// The size of a hybrid signature: the Ed25519 signature (64) followed by
+/// the ML-DSA-65 signature (3309).
+pub const hybrid_signature_size = 3373
 
 /// An X25519 public key: exactly 32 bytes.
 pub opaque type X25519Public {
@@ -80,6 +104,24 @@ pub opaque type KemSecret {
 /// An ML-KEM-1024 ciphertext: exactly 1568 bytes.
 pub opaque type KemCiphertext {
   KemCiphertext(bytes: BitArray)
+}
+
+/// An ML-DSA-65 public key: exactly 1952 bytes.
+pub opaque type MldsaPublic {
+  MldsaPublic(bytes: BitArray)
+}
+
+/// An ML-DSA-65 secret key: exactly 4032 bytes, held as a `Secret`.
+pub opaque type MldsaSecret {
+  MldsaSecret(secret: Secret)
+}
+
+/// A hybrid signature: an Ed25519 signature and an ML-DSA-65 signature over
+/// one message. Built only by `hybrid_sign` or by `hybrid_signature`, which
+/// checks both sizes; neither half is reachable alone, so no caller can
+/// verify one and skip the other.
+pub opaque type HybridSignature {
+  HybridSignature(classical: Signature, post_quantum: BitArray)
 }
 
 fn sized(bytes: BitArray, size: Int, what: String) -> Result(BitArray, Error) {
@@ -292,6 +334,90 @@ pub fn kem_ciphertext_bytes(ciphertext: KemCiphertext) -> BitArray {
   ciphertext.bytes
 }
 
+/// An ML-DSA-65 public key from 1952 bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.mldsa_public(<<1, 2>>)
+/// // -> Error(Malformed("ml-dsa public key"))
+/// ```
+pub fn mldsa_public(bytes: BitArray) -> Result(MldsaPublic, Error) {
+  sized(bytes, mldsa_public_size, "ml-dsa public key")
+  |> result.map(MldsaPublic)
+}
+
+/// The bytes of an ML-DSA-65 public key.
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.mldsa_public_bytes(public)
+/// // -> <<_:15_616>>
+/// ```
+pub fn mldsa_public_bytes(key: MldsaPublic) -> BitArray {
+  key.bytes
+}
+
+/// An ML-DSA-65 secret key from 4032 bytes.
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.mldsa_secret(<<1, 2>>)
+/// // -> Error(Malformed("ml-dsa secret key"))
+/// ```
+pub fn mldsa_secret(bytes: BitArray) -> Result(MldsaSecret, Error) {
+  sized(bytes, mldsa_secret_size, "ml-dsa secret key")
+  |> result.map(fn(valid) { MldsaSecret(secret.new(valid)) })
+}
+
+/// The bytes of an ML-DSA-65 secret key. The caller is handling key
+/// material and should say why.
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.expose_mldsa_secret(key)
+/// // -> <<_:32_256>>
+/// ```
+pub fn expose_mldsa_secret(key: MldsaSecret) -> BitArray {
+  secret.expose(key.secret)
+}
+
+/// A hybrid signature from its 3373-byte encoding: the Ed25519 signature,
+/// then the ML-DSA-65 signature.
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.hybrid_signature(<<1, 2>>)
+/// // -> Error(Malformed("hybrid signature"))
+/// ```
+pub fn hybrid_signature(bytes: BitArray) -> Result(HybridSignature, Error) {
+  case bytes {
+    <<
+      classical:bytes-size(ed25519_signature_bytes),
+      post_quantum:bytes-size(mldsa_signature_size),
+    >> -> Ok(HybridSignature(Signature(classical), post_quantum))
+
+    _ -> Error(Malformed("hybrid signature"))
+  }
+}
+
+/// The encoding of a hybrid signature: the Ed25519 signature (64 bytes)
+/// followed by the ML-DSA-65 signature (3309 bytes).
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.hybrid_signature_bytes(signature)
+/// // -> <<_:26_984>>
+/// ```
+pub fn hybrid_signature_bytes(signature: HybridSignature) -> BitArray {
+  <<signature.classical.bytes:bits, signature.post_quantum:bits>>
+}
+
 /// A fresh X25519 key pair from the suite, as `#(secret, public)`.
 ///
 /// ## Examples
@@ -335,6 +461,23 @@ pub fn generate_kem(suite: Suite) -> Result(#(KemSecret, KemPublic), Error) {
   let #(secret_bytes, public_bytes) = suite.kem_keypair()
   use secret <- result.try(kem_secret(secret_bytes))
   use public <- result.try(kem_public(public_bytes))
+  Ok(#(secret, public))
+}
+
+/// A fresh ML-DSA-65 key pair from the suite, as `#(secret, public)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(#(secret, public)) = keys.generate_mldsa(suite)
+/// ```
+pub fn generate_mldsa(
+  suite: Suite,
+) -> Result(#(MldsaSecret, MldsaPublic), Error) {
+  let #(secret_bytes, public_bytes) = suite.mldsa_keypair()
+  use secret <- result.try(mldsa_secret(secret_bytes))
+  use public <- result.try(mldsa_public(public_bytes))
+
   Ok(#(secret, public))
 }
 
@@ -393,6 +536,62 @@ pub fn verify(
   signature: Signature,
 ) -> Bool {
   suite.ed25519_verify(public.bytes, message, signature.bytes)
+}
+
+/// A hybrid signature over `message`: Ed25519 under `classical` and
+/// ML-DSA-65 under `post_quantum`, both over the same bytes. The message
+/// is expected to begin with a domain-separation label, which is what
+/// keeps a signature made for one purpose from verifying for another.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(signature) =
+///   keys.hybrid_sign(suite, ed25519_secret, mldsa_secret, <<"m">>)
+/// ```
+pub fn hybrid_sign(
+  suite: Suite,
+  classical: Ed25519Secret,
+  post_quantum: MldsaSecret,
+  message: BitArray,
+) -> Result(HybridSignature, Error) {
+  use classical_signature <- result.try(sign(suite, classical, message))
+
+  // The secret key is the input of the signature and goes no further.
+  use post_quantum_signature <- result.try(
+    suite.mldsa_sign(expose_mldsa_secret(post_quantum), message)
+    |> result.replace_error(PrimitiveFailed),
+  )
+  use post_quantum_signature <- result.try(sized(
+    post_quantum_signature,
+    mldsa_signature_size,
+    "ml-dsa signature",
+  ))
+
+  Ok(HybridSignature(classical_signature, post_quantum_signature))
+}
+
+/// Whether `signature` is a valid hybrid signature over `message` by the
+/// two public keys: true only when the Ed25519 half verifies under
+/// `classical` and the ML-DSA-65 half under `post_quantum`. A signature
+/// whose classical half alone is valid is refused, which is the whole
+/// point of the pair.
+///
+/// ## Examples
+///
+/// ```gleam
+/// keys.hybrid_verify(suite, ed25519_public, mldsa_public, <<"m">>, sig)
+/// // -> True
+/// ```
+pub fn hybrid_verify(
+  suite: Suite,
+  classical: Ed25519Public,
+  post_quantum: MldsaPublic,
+  message: BitArray,
+  signature: HybridSignature,
+) -> Bool {
+  verify(suite, classical, message, signature.classical)
+  && suite.mldsa_verify(post_quantum.bytes, message, signature.post_quantum)
 }
 
 /// Encapsulates a fresh shared secret to `public`, returning

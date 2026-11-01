@@ -33,6 +33,9 @@ pub fn suite() -> Suite {
     kem_keypair: primitives.mlkem1024_keypair,
     kem_encapsulate: primitives.mlkem1024_encapsulate,
     kem_decapsulate: primitives.mlkem1024_decapsulate,
+    mldsa_keypair: primitives.mldsa65_keypair,
+    mldsa_sign: primitives.mldsa65_sign,
+    mldsa_verify: primitives.mldsa65_verify,
     aead_seal: fn(key, nonce, aad, plaintext) {
       primitives.aead_seal(key, nonce, aad, plaintext)
     },

@@ -13,7 +13,8 @@
 //// that use them.
 
 /// The primitive operations, as `primitives` defines them. Key pairs are
-/// returned secret first.
+/// returned secret first. The `mldsa_*` fields are ML-DSA-65, the
+/// post-quantum half of every hybrid signature.
 pub type Suite {
   Suite(
     random: fn(Int) -> BitArray,
@@ -28,6 +29,9 @@ pub type Suite {
     kem_keypair: fn() -> #(BitArray, BitArray),
     kem_encapsulate: fn(BitArray) -> Result(#(BitArray, BitArray), Nil),
     kem_decapsulate: fn(BitArray, BitArray) -> Result(BitArray, Nil),
+    mldsa_keypair: fn() -> #(BitArray, BitArray),
+    mldsa_sign: fn(BitArray, BitArray) -> Result(BitArray, Nil),
+    mldsa_verify: fn(BitArray, BitArray, BitArray) -> Bool,
     aead_seal: fn(BitArray, BitArray, BitArray, BitArray) ->
       Result(BitArray, Nil),
     aead_open: fn(BitArray, BitArray, BitArray, BitArray) ->

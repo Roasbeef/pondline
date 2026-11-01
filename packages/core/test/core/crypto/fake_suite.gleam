@@ -65,6 +65,14 @@ pub fn suite() -> Suite {
     },
     kem_encapsulate: encapsulate,
     kem_decapsulate: decapsulate,
+    mldsa_keypair: fn() {
+      let seed = fresh(32)
+      #(repeat(seed, 126), repeat(seed, 61))
+    },
+    mldsa_sign: mldsa_sign,
+    mldsa_verify: fn(public, message, signature) {
+      mldsa_sign(public, message) == Ok(signature)
+    },
     aead_seal: seal,
     aead_open: open,
   )
@@ -176,6 +184,16 @@ fn decapsulate(
   use masked <- result.try(seed_of(ciphertext))
 
   Ok(xor(masked, seed))
+}
+
+// An ML-DSA-65 fake: both halves of a key pair begin with one 32-byte
+// seed (the secret 4032 bytes, the public 1952), and a signature is a keyed
+// hash of the message stretched to 3309 bytes, so verifying recomputes it
+// from the public key's seed.
+fn mldsa_sign(key: BitArray, message: BitArray) -> Result(BitArray, Nil) {
+  use seed <- result.try(seed_of(key))
+
+  Ok(stretch(hmac(seed, <<"mldsa":utf8, message:bits>>), 3309))
 }
 
 fn keystream(key: BitArray, nonce: BitArray, length: Int) -> BitArray {
