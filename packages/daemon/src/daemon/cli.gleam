@@ -17,7 +17,7 @@
 ////   [--reply-to HEX]`.
 //// - `receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]`.
 //// - `ack --message HEX`, `status --message HEX`, `audit [--contact HEX]
-////   [--limit N]` and `health`.
+////   [--limit N]`, `incidents [--limit N]` and `health`.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
 //// the daemon, `--credential-file F` to name the credential (default
@@ -88,6 +88,7 @@ commands:
   ack --message HEX
   status --message HEX
   audit [--contact HEX] [--limit N]
+  incidents [--limit N]
   health
 
 client options: --state-dir D | --socket P, --credential-file F, --json
@@ -168,6 +169,7 @@ pub type Action {
   Acknowledge(message: Id(Message))
   MessageStatus(message: Id(Message))
   ShowAudit(contact: Option(Id(Contact)), limit: Int)
+  ShowIncidents(limit: Int)
   ShowHealth
 }
 
@@ -299,6 +301,13 @@ pub fn parse(
           Ok(ShowAudit(contact:, limit:))
         },
       )
+
+    ["incidents", ..rest] ->
+      client(rest, env_credential_file, ["--limit"], [], fn(options) {
+        use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
+
+        Ok(ShowIncidents(limit:))
+      })
 
     ["health", ..rest] ->
       client(rest, env_credential_file, [], [], fn(_) { Ok(ShowHealth) })
@@ -706,6 +715,7 @@ pub fn input_of(action: Action) -> Input {
     | Acknowledge(..)
     | MessageStatus(..)
     | ShowAudit(..)
+    | ShowIncidents(..)
     | ShowHealth -> NoInput
   }
 }
@@ -795,6 +805,11 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
         #("contact", json.nullable(contact, hex_json)),
         #("limit", json.int(limit)),
       ]),
+    )
+
+    ShowIncidents(limit:) -> #(
+      "incidents",
+      json.object([#("limit", json.int(limit))]),
     )
 
     ShowHealth -> #("health", json.object([]))

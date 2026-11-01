@@ -17,7 +17,7 @@ import daemon/local_api_types.{
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -262,6 +262,18 @@ pub fn backend(fake: Fake) -> Backend {
           content_type: "text/plain",
           payload: secret.new(<<"hello audit":utf8>>),
           at: Instant(1_700_000_001),
+        ),
+      ])
+    },
+    incidents: fn(limit) {
+      record("incidents " <> string.inspect(limit))
+      Ok([
+        local_api_types.Incident(
+          kind: local_api_types.RepeatedMessageId,
+          contact: Some(contact()),
+          message: Some(message()),
+          attempts: None,
+          at: Instant(1_700_000_002),
         ),
       ])
     },

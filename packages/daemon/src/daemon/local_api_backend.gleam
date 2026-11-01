@@ -53,6 +53,7 @@ pub fn unavailable() -> Backend {
     acknowledge: fn(_) { Error(Unavailable) },
     status: fn(_) { Error(Unavailable) },
     audit: fn(_, _) { Error(Unavailable) },
+    incidents: fn(_) { Error(Unavailable) },
     subscribe: fn(_) { Nil },
     health: fn() { Health([#("runtime", "not linked")]) },
   )
@@ -140,6 +141,11 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     audit: fn(contact, limit) {
       api.audit(daemon, contact, limit)
       |> result.map(list.map(_, audit_entry))
+      |> map_error
+    },
+    incidents: fn(limit) {
+      api.incidents(daemon, limit)
+      |> result.map(list.map(_, incident))
       |> map_error
     },
     subscribe: fn(subscriber) { subscribe(daemon, subscriber) },
@@ -260,6 +266,19 @@ fn audit_entry(entry: api.AuditEntry) -> local_api_types.AuditEntry {
   )
 }
 
+/// An incident as the local API reports it.
+fn incident(found: api.Incident) -> local_api_types.Incident {
+  local_api_types.Incident(
+    kind: case found.kind {
+      api.RepeatedMessageId -> local_api_types.RepeatedMessageId
+    },
+    contact: found.contact,
+    message: found.message,
+    attempts: found.attempts,
+    at: found.at,
+  )
+}
+
 /// Subscribes `subscriber` to the runtime's events through a forwarding
 /// process that translates each one. The forwarder is linked to the caller,
 /// so it lives exactly as long as the subscription's owner.
@@ -313,5 +332,6 @@ fn health(report: api.Health) -> local_api_types.Health {
       status.MailboxUnreachable -> "unreachable"
     }),
     #("outbox_pending", int.to_string(report.outbox_pending)),
+    #("incidents", int.to_string(report.incidents)),
   ])
 }
