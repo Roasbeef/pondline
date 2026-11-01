@@ -4,7 +4,7 @@ import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, CreateInvite,
   DaemonOptions, DeclineContact, Encoded, HumanOutput, InputFile, InputStdin,
   JsonOutput, ListContacts, MessageStatus, RaiseBudget, Raw, ReceiveMessages,
-  RunDaemon, SendMessage, ShowAudit, ShowHealth, Target,
+  RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents, Target,
 }
 import daemon/local_api_protocol as protocol
 import gleam/json
@@ -164,6 +164,13 @@ pub fn ack_status_audit_health_test() {
     parse(["audit", "--contact", hex, "--limit", "7", ..common])
   assert action == ShowAudit(Some(identifier(hex)), 7)
 
+  let assert Ok(Client(action:, ..)) = parse(["incidents", ..common])
+  assert action == ShowIncidents(50)
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["incidents", "--limit", "9", ..common])
+  assert action == ShowIncidents(9)
+
   let assert Ok(Client(action:, ..)) = parse(["health", ..common])
   assert action == ShowHealth
 }
@@ -262,6 +269,7 @@ fn every_command() -> List(List(String)) {
     ["ack", "--message", hex],
     ["status", "--message", hex],
     ["audit"],
+    ["incidents"],
     ["health"],
     ["daemon", "--mailbox", "h:80", "--provision-file", "p"],
   ]

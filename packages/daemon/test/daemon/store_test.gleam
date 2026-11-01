@@ -287,3 +287,43 @@ pub fn meta_and_pending_counts_round_trip_test() {
   assert store.pending_count(opened) == Ok(0)
   assert config.default_accept_budget > 0
 }
+
+/// The history the core is told is the deliveries' own: an identifier is
+/// used once a delivery under it commits, on that relationship only. A
+/// `RepeatedMessage` record becomes an incident the operator can list.
+pub fn message_history_and_incidents_test() {
+  let #(opened, _) = open()
+  let #(contact, session) = joined(opened)
+  let assert Ok(message) = id.from_bytes(<<9:128>>)
+  let assert Ok(other) = id.from_bytes(<<8:128>>)
+  let assert Ok(Some(before)) = store.relationship_by_contact(opened, contact)
+
+  assert store.message_history(opened, contact, message)
+    == Ok(relationship.FreshId)
+
+  let assert Ok(queue) = id.from_bytes(<<3:128>>)
+  let assert Ok(envelope) = id.from_bytes(<<4:128>>)
+  let records = [
+    delivery(contact, <<"first":utf8>>),
+    plan.RepeatedMessage(contact:, message:, queue:, envelope:),
+  ]
+  let assert Ok(_) =
+    store.commit(
+      opened,
+      at,
+      store.Revised(Plan(..session, records:), before.version),
+    )
+
+  assert store.message_history(opened, contact, message)
+    == Ok(relationship.UsedId)
+  assert store.message_history(opened, contact, other)
+    == Ok(relationship.FreshId)
+
+  let assert Ok([incident]) = store.incidents(opened, 10)
+  assert incident.kind == store.RepeatedMessageId
+  assert incident.contact == Some(contact)
+  assert incident.message == Some(message)
+  assert incident.envelope == envelope
+  assert incident.attempts == None
+  assert store.incident_count(opened) == Ok(1)
+}

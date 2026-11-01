@@ -105,6 +105,11 @@ pub fn every_operator_op_round_trips_test() {
   assert first_string(audit, "entries", "payload")
     == bit_array.base64_encode(<<"hello audit":utf8>>, True)
 
+  let incidents =
+    ask(f, f.operator, "incidents", [#("limit", json.int(3))]) |> succeeded
+  assert first_string(incidents, "incidents", "kind") == "repeated_message"
+  assert first_string(incidents, "incidents", "message") == message_hex()
+
   assert fixture.calls(f.fake)
     == [
       "invite for bob AutoApprove 5",
@@ -115,6 +120,7 @@ pub fn every_operator_op_round_trips_test() {
       "close " <> contact_hex(),
       "raise_budget " <> contact_hex() <> " 7",
       "audit 10",
+      "incidents 3",
     ]
 }
 
@@ -185,6 +191,7 @@ pub fn the_agent_credential_is_forbidden_on_operator_ops_test() {
       #("by", json.int(1)),
     ]),
     #("audit", []),
+    #("incidents", []),
   ]
 
   list.each(operator_ops, fn(op) {
