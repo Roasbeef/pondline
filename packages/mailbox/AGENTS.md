@@ -114,7 +114,8 @@ Nothing depends on it as a library.
   new `sql/NNN_*.sql`. `test/mailbox/sql_drift_test.gleam` checks offline
   that the embedded migrations equal the files and that `mailbox/sql` holds
   every query file's statement as sqlc emits it, with no `Dynamic`
-  parameter.
+  parameter. It also pins the SHA-256 of
+  every shipped migration, so an edited one fails even after a regenerate.
 - A long poll registers with the notifier before its last look at the
   database, so an append between the look and the wait is not missed.
 - No secret reaches an error, a log or a message. Refusals carry no request

@@ -1856,7 +1856,7 @@ fn write(
 /// each parameter as an integer, a string or a bit array, optional where
 /// the column is nullable. Parrot's type also has variants sqlight cannot
 /// bind (a timestamp, a date, a list, a dynamic value), which no statement
-/// here produces and `make gen-sql` refuses; one would fail as a type
+/// here produces and `sql_drift_test` refuses; one would fail as a type
 /// mismatch, naming no value, rather than crash the engine.
 fn bind(parameter: dev.Param) -> Result(sqlight.Value, Error) {
   case parameter {

@@ -3,9 +3,10 @@
 ////
 //// This module owns the schema, the pragmas that make a commit durable, and
 //// every statement the package runs. Nothing above it writes SQL, and
-//// nothing below it knows what a request is. That split is what lets `mailbox/service`
-//// state the protocol's rules as plain functions of a `Store`, and lets the
-//// storage coordinator be the only process that ever holds one.
+//// nothing below it knows what a request is. That split is what lets
+//// `mailbox/service` state the protocol's rules as plain functions of a
+//// `Store`, and lets the storage coordinator be the only process that ever
+//// holds one.
 ////
 //// Three decisions shape the file:
 ////
@@ -800,7 +801,7 @@ fn write(
 /// each parameter as an integer, a string or a bit array, optional where
 /// the column is nullable. Parrot's type also has variants sqlight cannot
 /// bind (a timestamp, a date, a list, a dynamic value), which no statement
-/// here produces and `make gen-sql` refuses; one would fail as a type
+/// here produces and `sql_drift_test` refuses; one would fail as a type
 /// mismatch, naming no value, rather than crash the coordinator.
 fn bind(parameter: dev.Param) -> Result(sqlight.Value, Error) {
   case parameter {

@@ -203,7 +203,8 @@ Invariants:
   new `sql/NNN_*.sql`. `test/daemon/sql_drift_test.gleam` checks offline that
   the embedded migrations equal the files (numbered from `001` without a
   gap) and that `daemon/sql` holds every query file's statement as sqlc
-  emits it, with no `Dynamic` parameter.
+  emits it, with no `Dynamic` parameter. It also pins the SHA-256 of
+  every shipped migration, so an edited one fails even after a regenerate.
 - End-to-end retransmission (ADR-006) is tested against a real mailbox whose
   database the test damages after `Appended`
   (`test/daemon/retransmit_test.gleam`): a corrupted message is delivered

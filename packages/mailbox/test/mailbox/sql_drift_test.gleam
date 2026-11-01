@@ -4,13 +4,17 @@
 //// `make gen-sql` downloads sqlc, so `make check` cannot regenerate and
 //// compare. It can read the sources, though, and check that the generated
 //// text still holds them: a `.sql` file edited without a `make gen-sql`
-//// fails here. The tests run from `packages/mailbox`, so the paths are
-//// relative to it.
+//// fails here. The check is of SQL text only: a hand edit to a generated
+//// parameter list or decoder passes it, and only `make gen-sql` followed by
+//// `git diff --exit-code` catches that. The tests run from
+//// `packages/mailbox`, so the paths are relative to it.
 
+import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/string
 import mailbox/schema
+import primitives
 import simplifile
 
 /// The migration files, in the order the embedder reads them.
@@ -48,6 +52,26 @@ pub fn embedded_migrations_match_the_sql_files_test() {
   assert list.all(texts, is_ascii)
 }
 
+/// The SHA-256 of every migration that has shipped. A database already at
+/// version `n` never runs migration `n` again, so editing a shipped file
+/// (and regenerating) would leave new and old installs on different
+/// schemas. A new migration is a new file; add its line here when it ships.
+const shipped = [
+  #(
+    "001_initial.sql",
+    "872A6A63806B49145FAAA4C91F7B7DAFABF3E14669F5AAF2AD9A50AD79F79847",
+  ),
+]
+
+pub fn shipped_migrations_never_change_test() {
+  list.each(shipped, fn(pin) {
+    let #(name, digest) = pin
+    let assert Ok(text) = simplifile.read("sql/" <> name)
+
+    assert bit_array.base16_encode(primitives.sha256(<<text:utf8>>)) == digest
+  })
+}
+
 /// Every named query in `src/mailbox/sql/` has its function in `mailbox/sql`,
 /// and that function's SQL text is the query as sqlc emits it. A query file
 /// edited, added to or renamed in without a `make gen-sql` fails here.
@@ -63,9 +87,13 @@ pub fn generated_queries_match_the_query_files_test() {
 
   assert files != []
 
-  // A parameter sqlc could not type is generated as `Dynamic`, which the
-  // store's bridge cannot bind.
+  // A parameter sqlc could not type is generated as `Dynamic`, and a
+  // timestamp, date or list parameter is one sqlight cannot take; the
+  // store's bridge binds none of them.
   assert !string.contains(generated, "Dynamic")
+  assert !string.contains(generated, "ParamTimestamp")
+  assert !string.contains(generated, "ParamDate")
+  assert !string.contains(generated, "ParamList")
 
   list.each(files, fn(file) {
     let assert Ok(text) = simplifile.read(directory <> "/" <> file)
