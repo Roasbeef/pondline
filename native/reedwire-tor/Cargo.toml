@@ -1,0 +1,23 @@
+[package]
+name = "reedwire-tor"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+description = "Arti sidecar for reedwire: onion streams and onion services behind an Erlang port."
+publish = false
+
+[dependencies]
+arti-client = { version = "0.47", default-features = false, features = ["tokio", "rustls", "compression", "onion-service-client", "onion-service-service", "keymgr", "static-sqlite"] }
+tor-hsservice = "0.47"
+tor-cell = "0.47"
+tor-rtcompat = { version = "0.47", features = ["tokio", "rustls"] }
+safelog = "0.10"
+# Arti's rustls feature selects no crypto provider, so the process installs
+# one at startup; ring is already in the dependency tree through Arti.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+futures = "0.3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time"] }
+
+[profile.release]
+panic = "abort"
+lto = "thin"
