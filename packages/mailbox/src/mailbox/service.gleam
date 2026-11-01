@@ -24,6 +24,11 @@
 //// - Quota is reserved and the row inserted in one transaction, and the
 ////   receipt is built only after `store.transaction` has returned, so
 ////   nothing is acknowledged before it is durable.
+//// - A sealed invitation (ADR-009) is stored by its queue's administrator,
+////   charged to that queue's quota, and fetched by whoever presents the
+////   retrieve capability whose hash was stored with it. A fetch never
+////   deletes it; the sweep does, once its deadline passes. A missing blob,
+////   an expired one and a wrong capability all answer `Unauthorized`.
 //// - A refusal is an ordinary answer, not a failure: every check precedes
 ////   the first write, so a refused request commits an empty transaction.
 ////   Only a storage fault rolls back, and it surfaces as `Unavailable`.
@@ -36,13 +41,13 @@
 //// 1. `handle` dispatches on the request kind.
 //// 2. `authorize` hashes the presented capability and compares it with the
 ////    stored hash of the one kind the operation needs.
-//// 3. `store_envelope`, `fetch_batch`, `ack_envelopes` and `remove_queue`
-////    then read what they need and write last, each inside one transaction
-////    where they write at all.
+//// 3. `store_envelope`, `fetch_batch`, `ack_envelopes`, `remove_queue`,
+////    `store_blob` and `fetch_blob` then read what they need and write
+////    last, each inside one transaction where they write at all.
 
 import core/capability.{type Capability}
 import core/envelope.{type Padded}
-import core/id.{type Envelope, type Id, type Queue}
+import core/id.{type Blob, type Envelope, type Id, type Queue}
 import core/limits
 import core/mailbox/protocol.{
   type AppendReceipt, type Request, type Response, AppendReceipt,
@@ -147,6 +152,29 @@ pub fn handle(store: Store, now: Instant, request: Request) -> Response {
       ack_envelopes(store, queue, read, envelopes)
 
     protocol.DeleteQueue(queue:, admin:) -> remove_queue(store, queue, admin)
+
+    protocol.PutBlob(
+      queue:,
+      admin:,
+      blob:,
+      retrieve:,
+      retention_deadline:,
+      sealed:,
+    ) ->
+      store_blob(
+        store,
+        now,
+        queue,
+        admin,
+        BlobPut(
+          blob:,
+          retrieve_hash: hash(retrieve),
+          deadline: retention_deadline,
+          sealed:,
+        ),
+      )
+
+    protocol.GetBlob(blob:, retrieve:) -> fetch_blob(store, now, blob, retrieve)
   }
 
   // A storage fault is reported as a refusal the client can retry, without
@@ -164,7 +192,7 @@ pub fn handle(store: Store, now: Instant, request: Request) -> Response {
 ///
 /// ```gleam
 /// service.sweep(store, Instant(1_000))
-/// // -> Ok(SweepReport(envelopes: 0, tombstones: 0))
+/// // -> Ok(SweepReport(envelopes: 0, tombstones: 0, blobs: 0))
 /// ```
 pub fn sweep(
   store: Store,
@@ -580,6 +608,151 @@ fn remove_queue(
       use _ <- result.try(store.delete_queue(store, record.queue))
       Ok(protocol.QueueDeleted)
     }
+  }
+}
+
+// ------------------------------------------------------------------ blobs
+
+/// What a `PutBlob` asks to store, with its capability already hashed.
+type BlobPut {
+  BlobPut(
+    blob: Id(Blob),
+    retrieve_hash: BitArray,
+    deadline: Instant,
+    sealed: BitArray,
+  )
+}
+
+/// Authorizes a blob's store against the paying queue's administrator and
+/// places it. The check, the lookup of the locator and the insert are one
+/// transaction.
+fn store_blob(
+  store: Store,
+  now: Instant,
+  queue: Id(Queue),
+  presented: Capability(a),
+  put: BlobPut,
+) -> Result(Response, store.Error) {
+  use <- store.transaction(store)
+
+  use found <- result.try(authorize(
+    store,
+    queue,
+    fn(record) { record.admin_hash },
+    presented,
+  ))
+
+  // Only the queue's administrator may spend its quota on a blob, and a
+  // missing queue answers like a wrong capability.
+  case found {
+    None -> Ok(protocol.Refused(protocol.Unauthorized))
+    Some(record) -> place_blob(store, now, record, put)
+  }
+}
+
+/// Answers from the locator's existing row when it is taken, and inserts
+/// only when it is free. A retry of the identical request is the same blob
+/// whatever its deadline now says, as for an envelope (spec §6.4).
+fn place_blob(
+  store: Store,
+  now: Instant,
+  record: QueueRecord,
+  put: BlobPut,
+) -> Result(Response, store.Error) {
+  let digest = primitives.sha256(put.sealed)
+
+  use existing <- result.try(store.blob_record(store, put.blob))
+
+  // A taken locator decides the answer before any bound is looked at.
+  case existing {
+    Some(known) -> {
+      let same =
+        known.queue == record.queue
+        && primitives.constant_time_equal(
+          known.retrieve_hash,
+          put.retrieve_hash,
+        )
+        && primitives.constant_time_equal(known.digest, digest)
+
+      // Same request: the original stands. Anything else under the same
+      // locator must never replace it.
+      case same {
+        True -> Ok(protocol.BlobStored(blob: put.blob))
+        False -> Ok(protocol.Refused(protocol.Conflict))
+      }
+    }
+
+    None -> insert_blob(store, now, record, put, digest)
+  }
+}
+
+/// Stores a new blob if it fits the size bound, its deadline is inside the
+/// retention window and its bytes fit the queue's quota. Every check comes
+/// before the write, so a refusal changes nothing.
+fn insert_blob(
+  store: Store,
+  now: Instant,
+  record: QueueRecord,
+  put: BlobPut,
+  digest: BitArray,
+) -> Result(Response, store.Error) {
+  let size = bit_array.byte_size(put.sealed)
+  let latest = time.add(now, limits.message_retention_seconds)
+
+  let deadline_ok =
+    put.deadline.unix_seconds > now.unix_seconds
+    && put.deadline.unix_seconds <= latest.unix_seconds
+
+  // Size first (the codec already bounds it, but `handle` has other
+  // callers), then the deadline, then the quota, as for an envelope.
+  case
+    size <= limits.max_ticket_blob_bytes,
+    deadline_ok,
+    record.bytes_used + size <= record.capacity
+  {
+    False, _, _ -> Ok(protocol.Refused(protocol.TooLarge))
+
+    True, False, _ -> Ok(protocol.Refused(protocol.BadDeadline))
+
+    True, True, False -> Ok(protocol.Refused(protocol.QuotaExceeded))
+
+    True, True, True -> {
+      use _ <- result.try(store.put_blob(
+        store,
+        record.queue,
+        put.blob,
+        put.retrieve_hash,
+        digest,
+        put.deadline,
+        put.sealed,
+      ))
+
+      Ok(protocol.BlobStored(blob: put.blob))
+    }
+  }
+}
+
+/// Returns a live blob to whoever presents its retrieve capability.
+/// Read-only, so it opens no transaction, and it deletes nothing: a joiner
+/// that crashed after a fetch may fetch again.
+fn fetch_blob(
+  store: Store,
+  now: Instant,
+  blob: Id(Blob),
+  presented: Capability(a),
+) -> Result(Response, store.Error) {
+  use found <- result.map(store.live_blob(store, blob, now))
+
+  // Missing, expired and a wrong capability are one answer, so the mailbox
+  // is no oracle for which locators exist.
+  case found {
+    Some(#(stored, sealed)) ->
+      case primitives.constant_time_equal(stored, hash(presented)) {
+        True -> protocol.SealedBlob(sealed:)
+        False -> protocol.Refused(protocol.Unauthorized)
+      }
+
+    None -> protocol.Refused(protocol.Unauthorized)
   }
 }
 

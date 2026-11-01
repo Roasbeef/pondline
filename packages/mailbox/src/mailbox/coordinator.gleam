@@ -236,6 +236,8 @@ fn announce(state: State, response: Response) -> Nil {
     | protocol.Batch(..)
     | protocol.Acked
     | protocol.QueueDeleted
+    | protocol.BlobStored(..)
+    | protocol.SealedBlob(..)
     | protocol.Refused(..) -> Nil
   }
 }

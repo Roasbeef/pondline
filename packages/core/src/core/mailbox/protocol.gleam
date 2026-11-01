@@ -16,9 +16,10 @@
 
 import core/capability.{
   type Admin, type Append, type Capability, type Provision, type Read,
+  type Retrieve,
 }
 import core/envelope.{type Padded, type StoredEnvelope}
-import core/id.{type Envelope, type Id, type Queue}
+import core/id.{type Blob, type Envelope, type Id, type Queue}
 import core/time.{type Instant}
 
 /// The protocol version this build speaks.
@@ -63,6 +64,24 @@ pub type Request {
 
   /// Delete the queue and everything in it.
   DeleteQueue(queue: Id(Queue), admin: Capability(Admin))
+
+  /// Hold a sealed invitation for a ticket (ADR-009) until
+  /// `retention_deadline`, charged to `queue`'s quota and authorized by its
+  /// administrator. The mailbox keeps only the hash of `retrieve`. The same
+  /// request twice is the same blob; a different one under the same
+  /// locator is a conflict.
+  PutBlob(
+    queue: Id(Queue),
+    admin: Capability(Admin),
+    blob: Id(Blob),
+    retrieve: Capability(Retrieve),
+    retention_deadline: Instant,
+    sealed: BitArray,
+  )
+
+  /// Return the sealed invitation stored under `blob`, without deleting it:
+  /// a joiner that crashes after fetching can fetch again (ADR-009).
+  GetBlob(blob: Id(Blob), retrieve: Capability(Retrieve))
 }
 
 /// The mailbox's evidence that it accepted an envelope (spec §6.4). It
@@ -94,6 +113,12 @@ pub type Response {
 
   /// The queue is gone.
   QueueDeleted
+
+  /// The sealed invitation is durably stored under this locator.
+  BlobStored(blob: Id(Blob))
+
+  /// The sealed invitation stored under the requested locator.
+  SealedBlob(sealed: BitArray)
 
   /// The request was not carried out.
   Refused(reason: Refusal)
