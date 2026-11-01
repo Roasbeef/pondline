@@ -1071,18 +1071,30 @@ fn check_canonical(world: World, number: Int) -> World {
 }
 
 /// Never more `Ready` deliveries than the budget allows, and the budget's
-/// own books agree with the delivered rows.
+/// own books agree with the delivered rows: the number of `Ready` rows is
+/// `used`, and every identifier in `held` has a delivered row that is
+/// `Held`. Counts alone would let a message be handed to the agent while
+/// the budget still lists it as held, which is the divergence the demo's
+/// unpaced runs were suspected of.
 fn check_budget(world: World, number: Int) -> World {
   case relationship(world, number) {
     None -> world
     Some(rel) -> {
       let ready = count_delivered(world, number, plan.Ready)
       let held = count_delivered(world, number, plan.Held)
+      let held_rows_are_held =
+        list.all(rel.budget.held, fn(message) {
+          list.contains(party(world, number).delivered, #(
+            id.to_bytes(message),
+            plan.Held,
+          ))
+        })
 
       case
         ready <= rel.budget.granted
         && ready == rel.budget.used
         && held == list.length(rel.budget.held)
+        && held_rows_are_held
       {
         True -> world
         False -> note(world, "budget books disagree with deliveries")
