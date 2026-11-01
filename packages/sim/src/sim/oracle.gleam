@@ -54,8 +54,6 @@
 ////   `Unavailable`.
 //// - `h4_retried_accept`: a joiner with no peer, one per retried accept.
 //// - `lied_append`: a failed row whose `Append` response was a lie.
-//// - `closed_queue_unacked`: a processed row left unacknowledged on the
-////   queue of a relationship that closed.
 //// - `corrupted_fetch`: a message, receipt or handshake lost because a
 ////   fetch response carrying it was a lie, so the reader dropped and
 ////   acknowledged what the mailbox held intact.
@@ -437,7 +435,7 @@ pub fn liveness(view: View, facts: Facts) -> #(List(Violation), List(Excuse)) {
   let #(delivered, corrupted) =
     list.map(pairs, fn(pair) { delivered_and_receipted(pair.0, pair.1, facts) })
     |> merge
-  let #(drained, retired) = queues_drained(view)
+  let drained = queues_drained(view)
 
   #(
     list.flatten([
@@ -448,7 +446,7 @@ pub fn liveness(view: View, facts: Facts) -> #(List(Violation), List(Excuse)) {
       pairing,
       ops_returned(facts),
     ]),
-    list.flatten([lied, accepts, retired, corrupted]),
+    list.flatten([lied, accepts, corrupted]),
   )
 }
 
@@ -679,28 +677,27 @@ fn either(first: Transit, second: fn() -> Transit) -> Transit {
   }
 }
 
-/// Nothing processed is left unacknowledged, and the mailbox holds nothing
-/// for a queue a live relationship or open offer reads. An unacknowledged
-/// row on a queue nothing reads any more is the `closed_queue_unacked`
-/// excuse: the fetcher of a relationship that closed retires at its next
-/// round's liveness check, before acknowledging what that round
-/// processed, and the mailbox keeps those envelopes until retention ends.
-fn queues_drained(view: View) -> #(List(Violation), List(Excuse)) {
+/// Nothing processed is left unacknowledged, on any queue, and the mailbox
+/// holds nothing for a queue a live relationship or open offer reads. A
+/// queue that retired still has its committed envelopes acknowledged: the
+/// fetcher acknowledges before it checks liveness, and the fetch manager
+/// gives a retired queue that a restart left owing acknowledgements a
+/// fetcher of its own.
+fn queues_drained(view: View) -> List(Violation) {
   let live = live_queues(view)
-  let #(unacked, retired) =
+  let unacked =
     list.flat_map([view.a, view.b], fn(node) {
       list.filter_map(node.processed, fn(row) {
         case row.acked {
           1 -> Error(Nil)
           _ ->
-            Ok(#(
-              set.contains(live, row.queue),
+            Ok(Violation(
+              "queues_drained",
               node.name <> " processed " <> short(row.envelope) <> " unacked",
             ))
         }
       })
     })
-    |> list.partition(fn(pair) { pair.0 })
   let stuck =
     list.filter_map(view.envelopes, fn(row) {
       case set.contains(live, row.queue) {
@@ -713,13 +710,7 @@ fn queues_drained(view: View) -> #(List(Violation), List(Excuse)) {
       }
     })
 
-  #(
-    list.append(
-      list.map(unacked, fn(pair) { Violation("queues_drained", pair.1) }),
-      stuck,
-    ),
-    list.map(retired, fn(pair) { Excuse("closed_queue_unacked", pair.1) }),
-  )
+  list.append(unacked, stuck)
 }
 
 /// The queues some daemon still reads: live relationships' and open
