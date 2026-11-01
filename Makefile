@@ -62,6 +62,10 @@ demo: ## Run the two-daemon, two-sandboxed-agent demo: make demo CARRIER=loopbac
 release: ## Build the self-contained release into build/release/<platform>/reedwire
 	@scripts/release.sh
 
+.PHONY: release-smoke
+release-smoke: ## Boot the release with no erl, gleam or Homebrew: mailbox, two daemons, pair, send
+	@scripts/release-smoke.sh
+
 # ---------------------------------------------------------------- formatting
 
 .PHONY: fmt
