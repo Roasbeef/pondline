@@ -3,7 +3,10 @@
 ////
 //// This module owns the schema, the pragmas that make a commit durable, and
 //// every SQL string in the package. Nothing above it writes SQL, and nothing
-//// below it knows what a request is. That split is what lets `mailbox/service`
+//// below it knows what a request is. The schema's text is the migration
+//// files under `packages/mailbox/sql/`, one per version, which `make
+//// gen-sql` embeds in the generated `mailbox/schema` (ADR-007); this module
+//// applies them. That split is what lets `mailbox/service`
 //// state the protocol's rules as plain functions of a `Store`, and lets the
 //// storage coordinator be the only process that ever holds one.
 ////
@@ -52,10 +55,13 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import mailbox/schema
 import sqlight
 
-/// The schema version this build writes and understands.
-pub const schema_version = 1
+/// The schema version this build writes and understands: the number of
+/// migration files under `packages/mailbox/sql/`, as `mailbox/schema` embeds
+/// them.
+pub const schema_version = schema.version
 
 /// How long SQLite waits on a locked database before giving up. Only an
 /// outside process (a backup tool, a stray `sqlite3` shell) can contend with
@@ -148,52 +154,6 @@ pub type Tombstone {
 pub type SweepReport {
   SweepReport(envelopes: Int, tombstones: Int)
 }
-
-/// The statements that bring an empty database to each version. Entry `n`
-/// moves version `n` to `n + 1`, so the list is append-only: an edit to a
-/// shipped entry would leave deployed files on a schema nothing describes.
-const migrations = [
-  "
-CREATE TABLE grants (
-  capability_hash BLOB NOT NULL PRIMARY KEY,
-  allowance INTEGER NOT NULL,
-  queues_used INTEGER NOT NULL DEFAULT 0
-) STRICT;
-
-CREATE TABLE queues (
-  queue_id BLOB NOT NULL PRIMARY KEY,
-  read_hash BLOB NOT NULL,
-  append_hash BLOB NOT NULL,
-  admin_hash BLOB NOT NULL,
-  created_at INTEGER NOT NULL,
-  bytes_used INTEGER NOT NULL,
-  capacity INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE envelopes (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  queue_id BLOB NOT NULL REFERENCES queues(queue_id) ON DELETE CASCADE,
-  envelope_id BLOB NOT NULL,
-  digest BLOB NOT NULL,
-  deadline INTEGER NOT NULL,
-  size INTEGER NOT NULL,
-  ciphertext BLOB NOT NULL,
-  UNIQUE (queue_id, envelope_id)
-) STRICT;
-
-CREATE INDEX envelopes_by_deadline ON envelopes (deadline);
-
-CREATE TABLE tombstones (
-  queue_id BLOB NOT NULL REFERENCES queues(queue_id) ON DELETE CASCADE,
-  envelope_id BLOB NOT NULL,
-  digest BLOB NOT NULL,
-  deadline INTEGER NOT NULL,
-  PRIMARY KEY (queue_id, envelope_id)
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX tombstones_by_deadline ON tombstones (deadline);
-",
-]
 
 // -------------------------------------------------------------- lifecycle
 
@@ -299,7 +259,7 @@ fn migrate(store: Store) -> Result(Nil, Error) {
   // the migrations it has not seen.
   case found > schema_version {
     True -> Error(FutureSchema(found:, supported: schema_version))
-    False -> apply_migrations(store, list.drop(migrations, found), found)
+    False -> apply_migrations(store, list.drop(schema.migrations, found), found)
   }
 }
 
