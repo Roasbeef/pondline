@@ -66,6 +66,10 @@ release: ## Build the self-contained release into build/release/<platform>/reedw
 release-smoke: ## Boot the release with no erl, gleam or Homebrew: mailbox, two daemons, pair, send
 	@scripts/release-smoke.sh
 
+.PHONY: dist
+dist: release release-smoke ## Package the release as dist/reedwire-<version>-<platform>.tar.gz + .sha256
+	@scripts/dist.sh
+
 # Installs the release under $(PREFIX): the tree in $(PREFIX)/lib/reedwire and
 # the reedwire and reedwire-mailbox commands in $(PREFIX)/bin.
 # scripts/install.sh says what lands where and why.
@@ -116,8 +120,9 @@ gen-sql: ## Regenerate the SQL modules after editing any .sql file (needs sqlite
 # ---------------------------------------------------------------- housekeeping
 
 .PHONY: clean
-clean: ## Remove every package's build directory
+clean: ## Remove every package's build directory, the releases and dist/
 	@for p in $(PACKAGES); do rm -rf packages/$$p/build; done
+	@rm -rf build/release build/dist-stage dist
 
 .PHONY: help
 help: ## Show this help
