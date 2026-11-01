@@ -3,8 +3,8 @@
 # The Reedwire demonstration: two daemons, two sandboxed agents, one mailbox,
 # end to end (docs/demo.md).
 #
-#   scripts/demo.sh --carrier=loopback|tor [--messages N] [--skip-build] [--keep]
-#                   [--release DIR]
+#   scripts/demo.sh --carrier=loopback|tor [--pairing=ticket|file]
+#                   [--messages N] [--skip-build] [--keep] [--release DIR]
 #
 # --release runs every program from a release tree instead of the Gleam
 # shipments: build/release/<platform>/reedwire, an unpacked tarball, or an
@@ -22,6 +22,10 @@
 #             sandbox-exec with a copy of its daemon's agent credential and
 #             nothing else: no state directory, no network except its
 #             daemon's one Unix socket.
+#
+# Pairing goes by ticket by default (ADR-009): A prints a short rw1 string
+# and B redeems it from standard input, fetching the sealed invitation from
+# the mailbox. --pairing=file moves the 14.6 KB invitation file instead.
 #
 # The asker is on the acceptor's side because the message budget limits what
 # a peer may send to the party that granted it: A invites with a budget of
@@ -44,6 +48,7 @@ AGENTS="$ROOT/scripts/agents"
 # ------------------------------------------------------------------ options
 
 CARRIER=""
+PAIRING=ticket
 MESSAGES=6
 BUILD=yes
 KEEP=no
@@ -57,6 +62,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --carrier=*) CARRIER="${1#--carrier=}" ;;
     --carrier) shift; CARRIER="${1:-}" ;;
+    --pairing=*) PAIRING="${1#--pairing=}" ;;
+    --pairing) shift; PAIRING="${1:-}" ;;
     --messages=*) MESSAGES="${1#--messages=}" ;;
     --messages) shift; MESSAGES="${1:-}" ;;
     --skip-build) BUILD=no ;;
@@ -75,6 +82,11 @@ done
 case "$CARRIER" in
   loopback|tor) ;;
   *) echo "demo.sh: --carrier=loopback|tor is required" >&2; exit 2 ;;
+esac
+
+case "$PAIRING" in
+  ticket|file) ;;
+  *) echo "demo.sh: --pairing takes ticket or file" >&2; exit 2 ;;
 esac
 
 case "$MESSAGES" in
@@ -301,7 +313,7 @@ B="$TMP/b"
 AGENT_A="$TMP/agent-a"
 AGENT_B="$TMP/agent-b"
 
-step "demo: carrier=$CARRIER, $MESSAGES tasks, budget $BUDGET, workspace $TMP"
+step "demo: carrier=$CARRIER, pairing=$PAIRING, $MESSAGES tasks, budget $BUDGET, workspace $TMP"
 
 step "granting two provisioning capabilities"
 mailbox grant --db "$TMP/mailbox.db" --queues 20 --out "$TMP/a.cap" >/dev/null \
@@ -375,13 +387,31 @@ fi
 # ------------------------------------------------------------------ pairing
 
 step "pairing: A invites with a budget of $BUDGET, B accepts, A approves"
-reedwire invite create --state-dir "$A" --description "responder" \
-  --budget "$BUDGET" --out "$TMP/invite.bin" >/dev/null \
-  || die "invite create failed"
-note "invitation written ($(wc -c <"$TMP/invite.bin" | tr -d ' ') bytes, carries the post-quantum key bundle)"
+if [ "$PAIRING" = ticket ]; then
+  # The ticket is the only thing that crosses between the operators. It is
+  # a bearer secret, so the demo prints its length and prefix, never all of
+  # it, and hands it to B on standard input, never in argv.
+  TICKET=$(reedwire invite create --state-dir "$A" --description "responder" \
+    --budget "$BUDGET" --ticket 2>/dev/null) || die "invite create --ticket failed"
+  case "$TICKET" in
+    rw1*) ;;
+    *) die "invite create --ticket printed no ticket" ;;
+  esac
+  pass "ticket issued: ${#TICKET} characters, ${TICKET:0:4}...; the sealed invitation waits at the mailbox"
 
-reedwire invite accept --state-dir "$B" --file "$TMP/invite.bin" \
-  --description "asker" >/dev/null || die "invite accept failed"
+  printf '%s\n' "$TICKET" | reedwire invite accept --state-dir "$B" --ticket \
+    --stdin --description "asker" >/dev/null || die "invite accept --ticket failed"
+  unset TICKET
+  pass "B fetched, opened and imported the invitation the ticket names"
+else
+  reedwire invite create --state-dir "$A" --description "responder" \
+    --budget "$BUDGET" --out "$TMP/invite.bin" >/dev/null \
+    || die "invite create failed"
+  note "invitation written ($(wc -c <"$TMP/invite.bin" | tr -d ' ') bytes, carries the post-quantum key bundle)"
+
+  reedwire invite accept --state-dir "$B" --file "$TMP/invite.bin" \
+    --description "asker" >/dev/null || die "invite accept failed"
+fi
 
 # B's accept is a message through the mailbox; A sees it as a pending
 # contact once the message has crossed (and, over Tor, once the onion

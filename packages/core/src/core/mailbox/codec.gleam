@@ -31,6 +31,8 @@
 //// | 3    | `Fetch`       | 4 queue, 8 read, 20 wait, 22 max envelopes     |
 //// | 4    | `Ack`         | 4 queue, 8 read, 24 envelope list              |
 //// | 5    | `DeleteQueue` | 4 queue, 12 admin                              |
+//// | 6    | `PutBlob`     | 4 queue, 12 admin, 16 deadline, 34 blob, 36 retrieve, 38 sealed |
+//// | 7    | `GetBlob`     | 34 blob, 36 retrieve                           |
 ////
 //// ### Responses (kind in type 2)
 ////
@@ -42,6 +44,8 @@
 //// | 4    | `Acked`        | none                                          |
 //// | 5    | `QueueDeleted` | none                                          |
 //// | 6    | `Refused`      | 32 refusal code                               |
+//// | 7    | `BlobStored`   | 34 blob                                       |
+//// | 8    | `SealedBlob`   | 38 sealed                                     |
 ////
 //// ### Field types
 ////
@@ -64,6 +68,13 @@
 //// | 28   | append receipt      | nested stream: 4, 14, 26, 16              |
 //// | 30   | stored envelopes    | sequence of length-prefixed nested streams: 4, 14, 16, 18 |
 //// | 32   | refusal code        | u8, table below                           |
+//// | 34   | blob locator        | 16 bytes                                  |
+//// | 36   | retrieve capability | 32 bytes                                  |
+//// | 38   | sealed blob         | bytes, at most `max_ticket_blob_bytes`    |
+////
+//// Kinds 6 and 7 and types 34 to 38 were added by ADR-009, for the sealed
+//// invitation a ticket names. A peer that predates them refuses either
+//// request kind as malformed, which is the fail-closed answer.
 ////
 //// ### Refusal codes (type 32)
 ////
@@ -94,6 +105,7 @@
 
 import core/capability.{type Capability}
 import core/envelope.{type Padded, type StoredEnvelope}
+import core/field
 import core/id.{type Id}
 import core/limits
 import core/mailbox/protocol.{type Refusal, type Request, type Response}
@@ -230,6 +242,29 @@ pub fn encode_request(request: Request) -> BitArray {
       |> put_id(queue_tag, queue)
       |> put_capability(admin_tag, admin)
       |> tlv.encode
+
+    protocol.PutBlob(
+      queue:,
+      admin:,
+      blob:,
+      retrieve:,
+      retention_deadline:,
+      sealed:,
+    ) ->
+      header(6)
+      |> put_id(queue_tag, queue)
+      |> put_capability(admin_tag, admin)
+      |> put_instant(deadline_tag, retention_deadline)
+      |> put_id(blob_tag, blob)
+      |> put_capability(retrieve_tag, retrieve)
+      |> tlv.put(sealed_tag, sealed)
+      |> tlv.encode
+
+    protocol.GetBlob(blob:, retrieve:) ->
+      header(7)
+      |> put_id(blob_tag, blob)
+      |> put_capability(retrieve_tag, retrieve)
+      |> tlv.encode
   }
 }
 
@@ -263,6 +298,8 @@ fn request_decoder() -> tlv.Decoder(Request) {
     3 -> fetch_decoder()
     4 -> ack_decoder()
     5 -> delete_queue_decoder()
+    6 -> put_blob_decoder()
+    7 -> get_blob_decoder()
     _ -> tlv.fail(tlv.InvalidField(kind_tag))
   }
 }
@@ -321,6 +358,34 @@ fn delete_queue_decoder() -> tlv.Decoder(Request) {
   tlv.success(protocol.DeleteQueue(queue:, admin:))
 }
 
+/// Reads a `PutBlob`: the paying queue and its admin capability, the
+/// deadline, the locator, the retrieve capability and the sealed bytes.
+fn put_blob_decoder() -> tlv.Decoder(Request) {
+  use queue <- tlv.required(queue_tag, id_field())
+  use admin <- tlv.required(admin_tag, capability_field())
+  use retention_deadline <- tlv.required(deadline_tag, instant_field())
+  use blob <- tlv.required(blob_tag, id_field())
+  use retrieve <- tlv.required(retrieve_tag, capability_field())
+  use sealed <- tlv.required(sealed_tag, sealed_field())
+
+  tlv.success(protocol.PutBlob(
+    queue:,
+    admin:,
+    blob:,
+    retrieve:,
+    retention_deadline:,
+    sealed:,
+  ))
+}
+
+/// Reads a `GetBlob`: the locator and the retrieve capability.
+fn get_blob_decoder() -> tlv.Decoder(Request) {
+  use blob <- tlv.required(blob_tag, id_field())
+  use retrieve <- tlv.required(retrieve_tag, capability_field())
+
+  tlv.success(protocol.GetBlob(blob:, retrieve:))
+}
+
 // ------------------------------------------------------------ responses
 
 /// The canonical bytes of a response.
@@ -357,6 +422,16 @@ pub fn encode_response(response: Response) -> BitArray {
     protocol.Refused(reason:) ->
       header(6)
       |> tlv.put(refusal_tag, tlv.encode_u8(refusal_code(reason)))
+      |> tlv.encode
+
+    protocol.BlobStored(blob:) ->
+      header(7)
+      |> put_id(blob_tag, blob)
+      |> tlv.encode
+
+    protocol.SealedBlob(sealed:) ->
+      header(8)
+      |> tlv.put(sealed_tag, sealed)
       |> tlv.encode
   }
 }
@@ -406,6 +481,16 @@ fn response_decoder() -> tlv.Decoder(Response) {
     6 -> {
       use reason <- tlv.required(refusal_tag, refusal_field())
       tlv.success(protocol.Refused(reason:))
+    }
+
+    7 -> {
+      use blob <- tlv.required(blob_tag, id_field())
+      tlv.success(protocol.BlobStored(blob:))
+    }
+
+    8 -> {
+      use sealed <- tlv.required(sealed_tag, sealed_field())
+      tlv.success(protocol.SealedBlob(sealed:))
     }
 
     _ -> tlv.fail(tlv.InvalidField(kind_tag))
@@ -536,6 +621,12 @@ const stored_envelopes_tag = 30
 
 const refusal_tag = 32
 
+const blob_tag = 34
+
+const retrieve_tag = 36
+
+const sealed_tag = 38
+
 fn header(kind: Int) -> tlv.Builder {
   tlv.new()
   |> tlv.put(version_tag, tlv.encode_u16(protocol.version))
@@ -593,6 +684,12 @@ fn capability_field() -> tlv.Field(Capability(authority)) {
 
 fn instant_field() -> tlv.Field(Instant) {
   tlv.map(tlv.u64, fn(seconds) { time.Instant(unix_seconds: seconds) })
+}
+
+/// A sealed invitation, refused over `limits.max_ticket_blob_bytes` before
+/// anything is stored or returned.
+fn sealed_field() -> tlv.Field(BitArray) {
+  field.bounded_bytes(limits.max_ticket_blob_bytes)
 }
 
 fn ciphertext_field() -> tlv.Field(Padded) {

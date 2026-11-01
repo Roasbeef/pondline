@@ -32,6 +32,7 @@ import core/limits
 import core/mailbox/codec
 import core/mailbox/protocol.{
   type Request, type Response, Ack, Append, CreateQueue, DeleteQueue, Fetch,
+  GetBlob, PutBlob,
 }
 import daemon/internal/ffi_clock
 import daemon/transport.{type Dialer, type TransportError}
@@ -137,7 +138,12 @@ pub fn effective_timeout(request: Request, timeout_ms: Int) -> Int {
       int.max(timeout_ms, wait * 1000 + long_poll_margin_ms)
     }
 
-    CreateQueue(..) | Append(..) | Ack(..) | DeleteQueue(..) -> timeout_ms
+    CreateQueue(..)
+    | Append(..)
+    | Ack(..)
+    | DeleteQueue(..)
+    | PutBlob(..)
+    | GetBlob(..) -> timeout_ms
   }
 }
 

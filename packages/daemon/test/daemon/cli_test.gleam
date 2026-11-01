@@ -1,10 +1,12 @@
 import core/id
 import core/offer.{AutoApprove, OperatorApproves}
+import daemon/api
 import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, CreateInvite,
-  DaemonOptions, DeclineContact, Encoded, HumanOutput, InputFile, InputStdin,
-  JsonOutput, ListContacts, MessageStatus, RaiseBudget, Raw, ReceiveMessages,
-  RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents, Target,
+  DaemonOptions, DeclineContact, Encoded, FromInvitation, FromTicket,
+  HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput, ListContacts,
+  MessageStatus, RaiseBudget, Raw, ReceiveMessages, RunDaemon, SendMessage,
+  ShowAudit, ShowHealth, ShowIncidents, Target, TicketAndFile, TicketOnly,
 }
 import daemon/local_api_protocol as protocol
 import gleam/json
@@ -39,7 +41,13 @@ pub fn invite_create_test() {
 
   assert target == Target("/s/api.sock", "/s/operator.cred")
   assert output == HumanOutput
-  assert action == CreateInvite("for bob", OperatorApproves, 5, "bob.invite")
+  assert action
+    == CreateInvite(
+      "for bob",
+      OperatorApproves,
+      5,
+      InvitationFile("bob.invite"),
+    )
 
   let assert Ok(Client(action:, ..)) =
     parse(list.append(
@@ -49,13 +57,42 @@ pub fn invite_create_test() {
       ],
       common,
     ))
-  assert action == CreateInvite("d", AutoApprove, 1, "o")
+  assert action == CreateInvite("d", AutoApprove, 1, InvitationFile("o"))
+}
+
+pub fn invite_create_with_a_ticket_test() {
+  let base = ["invite", "create", "--description", "d", "--budget", "1"]
+
+  let assert Ok(Client(action:, ..)) =
+    parse(list.flatten([base, ["--ticket"], common]))
+  assert action == CreateInvite("d", OperatorApproves, 1, TicketOnly)
+
+  let assert Ok(Client(action:, ..)) =
+    parse(list.flatten([base, ["--ticket", "--out", "o"], common]))
+  assert action == CreateInvite("d", OperatorApproves, 1, TicketAndFile("o"))
+
+  // With neither there is nothing to hand out.
+  assert parse(list.append(base, common))
+    == Error("give --out FILE, --ticket, or both")
+}
+
+pub fn invite_accept_with_a_ticket_test() {
+  let assert Ok(Client(action:, ..)) =
+    parse(["invite", "accept", "--ticket", "--stdin", ..common])
+  assert action == AcceptInvite(InputStdin, FromTicket, "")
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["invite", "accept", "--ticket", "--file", "t.txt", ..common])
+  assert action == AcceptInvite(InputFile("t.txt"), FromTicket, "")
+
+  assert parse(["invite", "accept", "--ticket", ..common])
+    == Error("give exactly one of --file and --stdin")
 }
 
 pub fn invite_accept_test() {
   let assert Ok(Client(action:, ..)) =
     parse(["invite", "accept", "--file", "a.invite", ..common])
-  assert action == AcceptInvite("a.invite", "")
+  assert action == AcceptInvite(InputFile("a.invite"), FromInvitation, "")
 
   let assert Ok(Client(action:, ..)) =
     parse([
@@ -67,7 +104,7 @@ pub fn invite_accept_test() {
       "alice",
       ..common
     ])
-  assert action == AcceptInvite("a", "alice")
+  assert action == AcceptInvite(InputFile("a"), FromInvitation, "alice")
 }
 
 pub fn contacts_and_contact_commands_test() {
@@ -253,7 +290,10 @@ pub fn bad_command_lines_are_usage_errors_test() {
   assert parse([]) == Error("unknown command")
   assert parse(["frobnicate"]) == Error("unknown command")
   assert parse(["contact"]) == Error("unknown command")
-  assert parse(["health", "stray", ..common]) == Error("unknown option stray")
+  assert parse(["health", "stray", ..common])
+    == Error(
+      "unexpected argument; secrets are read from a file or standard input",
+    )
   assert parse(["health", "--state-dir"])
     == Error("missing value for --state-dir")
   assert parse(["health", "--json", "--json", ..common])
@@ -314,6 +354,50 @@ pub fn no_command_accepts_a_payload_or_a_credential_in_argv_test() {
       assert !string.contains(message, "s3cret")
     })
   })
+}
+
+/// A ticket is a secret, so no command takes one in argv: `--ticket` is a
+/// flag, and a ticket typed after it, or anywhere else, is refused without
+/// the refusal repeating it (ADR-009).
+pub fn no_command_accepts_a_ticket_in_argv_test() {
+  let ticket = "rw1qy352euf40x77qfrg4ncn27daufrg4ncn27daufrg4ncn27daufrg"
+  let commands = [
+    ["invite", "create", "--description", "d", "--budget", "1", "--ticket"],
+    ["invite", "accept", "--ticket", "--stdin"],
+    ..every_command()
+  ]
+
+  list.each(commands, fn(command) {
+    list.each(
+      [
+        [ticket],
+        ["--ticket", ticket],
+        ["--ticket-text", ticket],
+        ["--ticket=" <> ticket],
+      ],
+      fn(extra) {
+        let line = list.flatten([command, extra, common])
+        let assert Error(message) = parse(line)
+
+        assert !string.contains(message, ticket)
+        assert !string.contains(message, "rw1")
+      },
+    )
+  })
+}
+
+/// The CLI waits for an invitation or a ticket's redemption at least as
+/// long as the daemon may work on it, so it never reports a failure for an
+/// invitation that is then created or a contact that is then accepted.
+pub fn the_cli_outwaits_the_daemon_on_invitations_test() {
+  let daemon_bound =
+    api.invite_wait_ms + api.ticket_wait_ms + api.ticket_call_ms
+
+  assert cli.invitation_timeout_ms >= daemon_bound
+  assert cli.timeout_ms(CreateInvite("d", AutoApprove, 1, TicketOnly))
+    == cli.invitation_timeout_ms
+  assert cli.timeout_ms(AcceptInvite(InputStdin, FromTicket, ""))
+    == cli.invitation_timeout_ms
 }
 
 pub fn requests_carry_the_wire_shape_test() {

@@ -410,6 +410,8 @@ fn acknowledge(
     | protocol.Appended(_)
     | protocol.Batch(_)
     | protocol.QueueDeleted
+    | protocol.BlobStored(_)
+    | protocol.SealedBlob(_)
     | protocol.Refused(_) -> Error(RoundFailed)
   }
 }
@@ -434,6 +436,8 @@ fn fetch_batch(config: Config) -> Result(List(StoredEnvelope), RoundFailed) {
     | protocol.Appended(_)
     | protocol.Acked
     | protocol.QueueDeleted
+    | protocol.BlobStored(_)
+    | protocol.SealedBlob(_)
     | protocol.Refused(_) -> Error(RoundFailed)
   }
 }

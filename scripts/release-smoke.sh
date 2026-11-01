@@ -22,7 +22,9 @@
 #   4. `mailbox grant` twice and `mailbox serve` on loopback;
 #   5. two `reedwire daemon --carrier loopback` against it, and `health`
 #      reporting the build identity;
-#   6. pairing: A invites, B accepts, A approves, both become active;
+#   6. pairing: A invites with a ticket (and writes the file), B redeems
+#      the ticket from standard input (ADR-009), A approves, both become
+#      active;
 #   7. B sends one payload from standard input, A receives the same bytes;
 #   8. every process stops on SIGTERM.
 #
@@ -226,10 +228,18 @@ step "ok   two daemons ready; health reports version=$VERSION commit=$COMMIT"
 
 # ------------------------------------------------------------- 6. pairing
 
-reedwire invite create --state-dir "$T/a" --description responder --budget 10 \
-  --out "$T/invite.bin" >/dev/null || die "invite create"
-reedwire invite accept --state-dir "$T/b" --file "$T/invite.bin" \
-  --description asker >/dev/null || die "invite accept"
+# The ticket is a bearer secret: it goes from A's standard output to B's
+# standard input and is never printed or put in argv.
+TICKET=$(reedwire invite create --state-dir "$T/a" --description responder \
+  --budget 10 --out "$T/invite.bin" --ticket 2>/dev/null) || die "invite create --ticket"
+case "$TICKET" in
+  rw1*) ;;
+  *) die "invite create --ticket printed no ticket" ;;
+esac
+[ -s "$T/invite.bin" ] || die "invite create --ticket --out wrote no file"
+printf '%s\n' "$TICKET" | reedwire invite accept --state-dir "$T/b" --ticket \
+  --stdin --description asker >/dev/null || die "invite accept --ticket"
+unset TICKET
 
 contact_on() {
   reedwire contacts list --state-dir "$1" | awk -v phase="$2" '$2 == phase {print $1; exit}'

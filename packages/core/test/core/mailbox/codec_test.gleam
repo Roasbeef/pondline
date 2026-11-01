@@ -134,8 +134,42 @@ fn requests() -> qcheck.Generator(Request) {
     use queue, admin <- qcheck.map2(ids(), capabilities())
     protocol.DeleteQueue(queue:, admin:)
   }
+  let put_blob = {
+    use #(queue, admin), #(blob, retrieve), #(retention_deadline, sealed) <- qcheck.map3(
+      qcheck.tuple2(ids(), capabilities()),
+      qcheck.tuple2(ids(), capabilities()),
+      qcheck.tuple2(instants(), blobs()),
+    )
+    protocol.PutBlob(
+      queue:,
+      admin:,
+      blob:,
+      retrieve:,
+      retention_deadline:,
+      sealed:,
+    )
+  }
+  let get_blob = {
+    use blob, retrieve <- qcheck.map2(ids(), capabilities())
+    protocol.GetBlob(blob:, retrieve:)
+  }
 
-  qcheck.from_generators(create, [append, fetch, ack, delete])
+  qcheck.from_generators(create, [
+    append,
+    fetch,
+    ack,
+    delete,
+    put_blob,
+    get_blob,
+  ])
+}
+
+/// A short sealed blob; its contents are opaque to the codec.
+fn blobs() -> qcheck.Generator(BitArray) {
+  qcheck.generic_byte_aligned_bit_array(
+    values_from: qcheck.bounded_int(0, 255),
+    byte_size_from: qcheck.bounded_int(0, 80),
+  )
 }
 
 fn stored_envelopes() -> qcheck.Generator(envelope.StoredEnvelope) {
@@ -188,12 +222,17 @@ fn responses() -> qcheck.Generator(Response) {
       protocol.Refused(reason:)
     })
 
+  let stored = qcheck.map(ids(), fn(blob) { protocol.BlobStored(blob:) })
+  let found = qcheck.map(blobs(), fn(sealed) { protocol.SealedBlob(sealed:) })
+
   qcheck.from_generators(created, [
     appended,
     batch,
     qcheck.constant(protocol.Acked),
     qcheck.constant(protocol.QueueDeleted),
     refused,
+    stored,
+    found,
   ])
 }
 
@@ -575,4 +614,46 @@ fn distinct_capability(byte: Int) -> Capability(authority) {
       bit_array.concat(list.repeat(<<byte>>, capability.capability_bytes)),
     )
   value
+}
+
+/// A sealed blob is bounded in both directions: the largest allowed one
+/// round trips as a request and a response, and one byte more is refused
+/// as a malformed field before anything else is read (ADR-009).
+pub fn sealed_blobs_are_bounded_test() {
+  let largest = fill(limits.max_ticket_blob_bytes)
+  let over = fill(limits.max_ticket_blob_bytes + 1)
+  let put = fn(sealed) {
+    protocol.PutBlob(
+      queue: ident(),
+      admin: marked_capability(),
+      blob: ident(),
+      retrieve: marked_capability(),
+      retention_deadline: time.Instant(10),
+      sealed:,
+    )
+  }
+
+  assert codec.decode_request(codec.encode_request(put(largest)))
+    == Ok(put(largest))
+  assert codec.decode_response(
+      codec.encode_response(protocol.SealedBlob(largest)),
+    )
+    == Ok(protocol.SealedBlob(largest))
+
+  assert is_error(codec.decode_request(codec.encode_request(put(over))))
+  assert is_error(
+    codec.decode_response(codec.encode_response(protocol.SealedBlob(over))),
+  )
+}
+
+/// A `GetBlob` that also carries a field of `PutBlob` is refused: each
+/// kind reads exactly its own fields.
+pub fn a_get_blob_with_a_stray_field_is_refused_test() {
+  let bytes =
+    codec.encode_request(protocol.GetBlob(
+      blob: ident(),
+      retrieve: marked_capability(),
+    ))
+
+  assert is_error(codec.decode_request(with_record(bytes, 38, <<1, 2, 3>>)))
 }

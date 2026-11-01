@@ -259,6 +259,8 @@ fn kind(answer: Answer) -> String {
     protocol.Batch(..) -> "batch"
     protocol.Acked -> "acked"
     protocol.QueueDeleted -> "queue_deleted"
+    protocol.BlobStored(..) -> "blob_stored"
+    protocol.SealedBlob(..) -> "sealed_blob"
     protocol.Refused(..) -> "refused"
   }
 }

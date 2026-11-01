@@ -18,14 +18,17 @@ primitive functions the shell builds from `packages/primitives`.
 ## Key Types
 
 - `core/id`: `Id(kind)`, sixteen random bytes with a phantom kind
-  (`Agent`, `Contact`, `Queue`, `Envelope`, `Message`, `Invitation`), so
-  one kind of identifier cannot stand in for another.
+  (`Agent`, `Contact`, `Queue`, `Envelope`, `Message`, `Invitation`,
+  `Blob`), so one kind of identifier cannot stand in for another.
 - `core/capability`: `Capability(authority)`, thirty-two random bytes held
-  as a `Secret`, typed `Append`, `Read`, `Admin` or `Provision`.
+  as a `Secret`, typed `Append`, `Read`, `Admin`, `Provision` or
+  `Retrieve` (a ticket's blob, ADR-009).
 - `core/secret`: `Secret`, bytes held inside a closure so `inspect`, logs
   and crash reports print `#Fun<..>`; `expose` is the only way out.
 - `core/endpoint`: `Endpoint` is a v3 `Onion` or a `Loopback` port, with no
-  constructor for a public host; `admit` checks a `CarrierPolicy`.
+  constructor for a public host; `admit` checks a `CarrierPolicy`. An
+  `OnionAddress` also holds its decoded label (`onion_bytes`, 35 bytes),
+  and `onion_from_bytes` is the inverse.
 - `core/envelope`: `Padded`, a ciphertext at exactly a bucket size, built
   only by `pad` or `from_wire`; `StoredEnvelope`.
 - `core/time`: `Instant` in Unix seconds; `is_past` treats the deadline
@@ -40,6 +43,16 @@ primitive functions the shell builds from `packages/primitives`.
 - `core/mailbox/protocol` and `core/mailbox/codec`: the mailbox protocol as
   typed `Request`/`Response` values and their TLV bytes; type tables in the
   codec's module doc; `refusal/1` maps decode errors to a `Refusal`.
+  `PutBlob`/`GetBlob` and `BlobStored`/`SealedBlob` carry a ticket's
+  sealed invitation (ADR-009).
+- `core/codex32`: the bech32 alphabet and prefix expansion with BIP-93's
+  long codex32 BCH checksum (fifteen symbols, any eight substitutions
+  detected up to 1023 symbols), and strict byte/5-bit regrouping.
+- `core/ticket` (ADR-009): `Ticket` (an endpoint and a 32-byte secret `K`,
+  opaque), `encode`/`decode` of the `rw1` text (130 characters onion, 74
+  loopback), `keys` (locator, retrieve capability, AEAD key and nonce,
+  commitment key, each under its own HKDF label), `seal` and `open` (the
+  AEAD, then the HMAC commitment to the plaintext).
 - `core/http1`: pure, total HTTP/1.1 framing for the mailbox binding; an
   incremental response parser bounded as bytes arrive.
 - `core/crypto/keys`, `identity`, `hkdf`: typed X25519, Ed25519, ML-DSA-65
@@ -123,6 +136,15 @@ None. `core` sends no messages and owns no processes.
   offer, and one up to 529 650 s (about 6.1 days) behind accepts some
   offer. The pure simulation does not model clock skew and still stores
   envelopes under the row's deadline.
+- A ticket's decoder is total and strict: lowercase, the checksum before
+  the payload, exact lengths, zero padding; whatever it accepts re-encodes
+  to the same text, and every single substitution and any eight are
+  caught (`test/core/ticket_test.gleam`, with properties; the checksum
+  against BIP-93's vector 5 in `codex32_test.gleam`). `open` returns
+  nothing that has not passed both the AEAD and the commitment, and every
+  derived value has its own label. Mutation-checked: dropping the
+  commitment check, or deriving the commitment key under the AEAD key's
+  label, each fail a test there.
 - An application message the relationship would store under an identifier
   it already used (`UsedId`) is ignored: the session advances, the plan is
   the `Processed` record and one `RepeatedMessage`, with no delivery, receipt
@@ -186,6 +208,8 @@ None. `core` sends no messages and owns no processes.
 - `docs/adr/006-end-to-end-retransmit.md` (retransmission and
   regenerated receipts).
 - `docs/adr/008-deadline-slack.md` (retention slack and shorter offers).
+- `docs/adr/009-invitation-tickets.md` (tickets, the sealed blob) and
+  `docs/crypto-profile-v1.md` §11.
 - `docs/adr/010-dedup-and-quarantine.md` (repeated identifiers).
 - `docs/crypto-profile-v1.md` (the profile, byte for byte),
   `docs/adr/002-pq-crypto-over-otp.md` and

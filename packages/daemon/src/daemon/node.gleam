@@ -366,6 +366,7 @@ fn launch(
         started.pid,
         directory,
         config.poll_clock,
+        dialer,
       ))
 
     Error(_) -> Error(classify_failure(directory))

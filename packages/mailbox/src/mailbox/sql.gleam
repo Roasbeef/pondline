@@ -4,6 +4,96 @@
 import gleam/dynamic/decode
 import mailbox/internal/sql_param as dev
 
+pub type BlobRecord {
+  BlobRecord(
+    queue_id: BitArray,
+    retrieve_hash: BitArray,
+    digest: BitArray,
+    deadline: Int,
+  )
+}
+
+pub fn blob_record(blob_id blob_id: BitArray) {
+  let sql =
+    "
+SELECT queue_id, retrieve_hash, digest, deadline FROM blobs
+WHERE blob_id = ?"
+  #(sql, [dev.ParamBitArray(blob_id)], blob_record_decoder())
+}
+
+pub fn blob_record_decoder() -> decode.Decoder(BlobRecord) {
+  use queue_id <- decode.field(0, decode.bit_array)
+  use retrieve_hash <- decode.field(1, decode.bit_array)
+  use digest <- decode.field(2, decode.bit_array)
+  use deadline <- decode.field(3, decode.int)
+  decode.success(BlobRecord(queue_id:, retrieve_hash:, digest:, deadline:))
+}
+
+pub fn insert_blob(
+  blob_id blob_id: BitArray,
+  queue_id queue_id: BitArray,
+  retrieve_hash retrieve_hash: BitArray,
+  digest digest: BitArray,
+  deadline deadline: Int,
+  size size: Int,
+  sealed sealed: BitArray,
+) {
+  let sql =
+    "INSERT INTO blobs (blob_id, queue_id, retrieve_hash, digest, deadline, size,
+                   sealed)
+VALUES (?, ?, ?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(blob_id),
+    dev.ParamBitArray(queue_id),
+    dev.ParamBitArray(retrieve_hash),
+    dev.ParamBitArray(digest),
+    dev.ParamInt(deadline),
+    dev.ParamInt(size),
+    dev.ParamBitArray(sealed),
+  ])
+}
+
+pub type LiveBlob {
+  LiveBlob(retrieve_hash: BitArray, sealed: BitArray)
+}
+
+pub fn live_blob(blob_id blob_id: BitArray, now now: Int) {
+  let sql =
+    "SELECT retrieve_hash, sealed FROM blobs
+WHERE blob_id = ?1 AND deadline >= ?2"
+  #(sql, [dev.ParamBitArray(blob_id), dev.ParamInt(now)], live_blob_decoder())
+}
+
+pub fn live_blob_decoder() -> decode.Decoder(LiveBlob) {
+  use retrieve_hash <- decode.field(0, decode.bit_array)
+  use sealed <- decode.field(1, decode.bit_array)
+  decode.success(LiveBlob(retrieve_hash:, sealed:))
+}
+
+pub type ExpiredBlobsPerQueue {
+  ExpiredBlobsPerQueue(queue_id: BitArray, bytes: Int, blobs: Int)
+}
+
+pub fn expired_blobs_per_queue(now now: Int) {
+  let sql =
+    "SELECT queue_id, CAST(SUM(size) AS INTEGER) AS bytes, COUNT(*) AS blobs
+FROM blobs
+WHERE deadline < ?1 GROUP BY queue_id"
+  #(sql, [dev.ParamInt(now)], expired_blobs_per_queue_decoder())
+}
+
+pub fn expired_blobs_per_queue_decoder() -> decode.Decoder(ExpiredBlobsPerQueue) {
+  use queue_id <- decode.field(0, decode.bit_array)
+  use bytes <- decode.field(1, decode.int)
+  use blobs <- decode.field(2, decode.int)
+  decode.success(ExpiredBlobsPerQueue(queue_id:, bytes:, blobs:))
+}
+
+pub fn delete_expired_blobs(now now: Int) {
+  let sql = "DELETE FROM blobs WHERE deadline < ?1"
+  #(sql, [dev.ParamInt(now)])
+}
+
 pub type EnvelopeRecord {
   EnvelopeRecord(digest: BitArray, deadline: Int, size: Int)
 }

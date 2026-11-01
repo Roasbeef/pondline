@@ -81,3 +81,17 @@ pub fn admit_respects_the_carrier_policy_test() {
   assert endpoint.admit(loopback, endpoint.TorOnly)
     == Error(endpoint.CarrierNotPermitted)
 }
+
+/// An address's decoded label is its 35 bytes, ending in version 3, and
+/// those bytes give back the same address; other sizes are refused.
+pub fn an_address_round_trips_through_its_bytes_test() {
+  let bytes = endpoint.onion_bytes(onion())
+  let assert <<_:bytes-size(34), version>> = bytes
+
+  assert version == 3
+  assert endpoint.onion_from_bytes(bytes) == Ok(onion())
+  assert endpoint.onion_from_bytes(<<0:264>>)
+    == Error(endpoint.NotAnOnionAddress)
+  assert endpoint.onion_from_bytes(<<0:272, 4>>)
+    == Error(endpoint.NotAnOnionAddress)
+}
