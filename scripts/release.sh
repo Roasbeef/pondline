@@ -372,13 +372,17 @@ REL=\$(cd "\$(dirname "\$SELF")/.." && pwd -P)
 # consults an installed Erlang, \$ERL_ROOTDIR or the PATH. The variables a
 # host Erlang setup might leave behind are removed: ERL_LIBS would put
 # foreign code ahead of the release's, and the ERL_*FLAGS variables add
-# emulator arguments.
+# emulator arguments. So are the loader's search and preload variables:
+# dyld and ld.so both search DYLD_LIBRARY_PATH or LD_LIBRARY_PATH by leaf
+# name before the bundled crypto NIF's own relative reference, which would
+# map the host's libcrypto in place of the release's.
 ROOTDIR=\$REL
 BINDIR=\$REL/$ERTS_NAME/bin
 EMU=beam
 PROGNAME=erl
 export ROOTDIR BINDIR EMU PROGNAME
 unset ERL_LIBS ERL_FLAGS ERL_AFLAGS ERL_ZFLAGS
+unset DYLD_LIBRARY_PATH DYLD_INSERT_LIBRARIES LD_LIBRARY_PATH LD_PRELOAD
 
 # A crash dump is a copy of every process heap, credentials and keys
 # included, written to the working directory. It is off unless the
@@ -430,25 +434,28 @@ for name in "${FORBIDDEN[@]}"; do
   fi
 done
 
-# Load crypto in the bundled VM with the launcher's environment and list
-# every libcrypto mapped into it. Exactly one may be present, and it must
-# live inside the release.
+# Load crypto in the bundled VM with the launcher's environment, apply the
+# launchers' own OpenSSL floor (so a host whose OTP links an older OpenSSL
+# fails here, with the launchers' message, and not at a user's first run),
+# and list every libcrypto mapped into it. Exactly one may be present, and
+# it must live inside the release.
 case "$OS" in
   darwin) MAPS='"/usr/sbin/lsof -p " ++ os:getpid() ++ " | grep libcrypto"' ;;
   linux) MAPS='"grep libcrypto /proc/" ++ os:getpid() ++ "/maps | sort -u -k6"' ;;
 esac
 vmcheck=$(env -i PATH=/usr/bin:/bin OPENSSL_CONF=/dev/null \
   OPENSSL_MODULES="$REL/lib/ossl-modules" ROOTDIR="$REL" \
-  BINDIR="$REL/$ERTS_NAME/bin" EMU=beam PROGNAME=erl \
+  BINDIR="$REL/$ERTS_NAME/bin" EMU=beam PROGNAME=erl ERL_CRASH_DUMP_SECONDS=0 \
   "$REL/$ERTS_NAME/bin/erlexec" -boot "$REL/bin/no_dot_erlang" -noshell \
   -noinput -eval "
-    [{_, _, Str}] = crypto:info_lib(),
+    $(openssl_check release.sh),
+    [{_, _, Loaded}] = crypto:info_lib(),
     Maps = os:cmd($MAPS),
-    io:format(\"~s~n~s\", [Str, Maps]),
+    io:format(\"~s~n~s\", [Loaded, Maps]),
     halt().")
 echo "$vmcheck"
 if [ "$(echo "$vmcheck" | grep -c 'libcrypto')" -ne 1 ] \
-  || echo "$vmcheck" | grep libcrypto | grep -qv "$REL"; then
+  || echo "$vmcheck" | grep libcrypto | grep -v "$REL" >/dev/null; then
   echo "release.sh: the VM mapped a libcrypto from outside the release" >&2
   exit 1
 fi

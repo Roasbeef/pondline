@@ -261,9 +261,16 @@ reedwire/
 - **`no_dot_erlang.boot`.** `start_clean` runs the user's `~/.erlang`. A
   CLI whose standard output can be a raw payload must not run code it did
   not ship.
-- **Host Erlang variables removed.** `ERL_LIBS` would put foreign code
-  ahead of the release's on the code path; `ERL_FLAGS`, `ERL_AFLAGS` and
-  `ERL_ZFLAGS` add emulator arguments. The launcher unsets all four.
+- **Host Erlang and loader variables removed.** `ERL_LIBS` would put
+  foreign code ahead of the release's on the code path; `ERL_FLAGS`,
+  `ERL_AFLAGS` and `ERL_ZFLAGS` add emulator arguments. `DYLD_LIBRARY_PATH`
+  (and on Linux `LD_LIBRARY_PATH`) is searched by leaf name before the
+  NIF's `@loader_path` (or `$ORIGIN`) reference: with it pointing at
+  Homebrew's OpenSSL, `lsof` showed the host's libcrypto mapped instead of
+  the bundled one, and the floor check accepts any foreign 3.5 or newer.
+  The launcher unsets these and `DYLD_INSERT_LIBRARIES` and `LD_PRELOAD`.
+  `release.sh` also applies the launchers' floor check at build time, so a
+  host whose OTP links an older OpenSSL fails the build.
 - **No crash dumps by default.** A dump is every process heap, keys and
   credentials included, written to the working directory. The launcher
   sets `ERL_CRASH_DUMP_SECONDS=0` unless the operator set it.
@@ -301,10 +308,12 @@ generated and nothing records the prefix. The tree is copied under a
 staging name and renamed into place, and `current` is switched by a
 rename. A tree a running process uses (its physical path is on the VM's
 command line) is never replaced or pruned, and `uninstall` refuses while
-one runs. The script refuses to replace a `bin/` entry that is not
+one runs; `$PREFIX/lib` is compared by its physical path, since a VM
+names its tree that way. The script refuses to replace a `bin/` entry that is not
 exactly its own link, or a `lib/reedwire` without its marker, and checks
 both before changing anything. Reinstalling a clean commit keeps its
-tree: a rebuild is not byte-identical (the sqlite NIF is re-linked, and
+tree (a `-dirty` or `unknown` one is recopied when its files differ): a
+rebuild is not byte-identical (the sqlite NIF is re-linked, and
 the bundled liblzma is whatever Homebrew has that day; it changed between
 two builds minutes apart while this was written). State directories and
 mailbox databases are never under the prefix and never touched.
