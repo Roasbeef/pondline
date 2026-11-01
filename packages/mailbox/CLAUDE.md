@@ -16,11 +16,11 @@ process.
 - `mailbox/store`: `Store`, the schema, the pragmas (WAL, `synchronous=FULL`,
   `fullfsync=ON`, `foreign_keys=ON`, a busy timeout), `PRAGMA user_version`
   migrations, `transaction`, and every SQL statement in the package. The SQL
-  text is generated (ADR-007): the migration is `sql/001_initial.sql`, which
-  `dev/embed_schema.gleam` embeds in `mailbox/schema` (`version`,
-  `migrations`), and the statements are named queries in
-  `src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`), which parrot
-  generates into `mailbox/sql`. The store's `query`, `write` and `bind`
+  text is generated (ADR-007): the migrations are `sql/001_initial.sql` and
+  `sql/002_blobs.sql` (ADR-009), which `dev/embed_schema.gleam` embeds in
+  `mailbox/schema` (`version`, `migrations`), and the statements are named
+  queries in `src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`,
+  `blobs`), which parrot generates into `mailbox/sql`. The store's `query`, `write` and `bind`
   bridge binds the generated parameters as sqlight values; only the pragmas,
   the transaction statements and the migration runner are hand-written.
   After editing any `.sql` file run `make gen-sql` (needs `sqlite3`, and the
@@ -28,7 +28,8 @@ process.
   are ASCII only.
 - `mailbox/service`: `handle(store, now, request) -> Response`, `sweep`,
   and `create_grant(store, allowance, random)`, which returns the
-  provisioning capability once and stores only its hash.
+  provisioning capability once and stores only its hash. `PutBlob` and
+  `GetBlob` (ADR-009) store and return a ticket's sealed invitation.
 - `mailbox/coordinator`: the storage coordinator, a `weft/actor`, the one
   writer. It receives complete commands and tells the notifier after an
   append commits. It opens the store in its initialiser so a bad file fails
@@ -109,6 +110,15 @@ the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
   append for a known identifier is answered from the stored envelope or the
   tombstone before anything is inserted, so a retry never resurrects it.
 - `Ack` deletes exactly the named envelopes; it is never a cursor.
+- A sealed invitation (ADR-009) is stored only by its queue's admin
+  capability, charged to that queue's quota in the inserting transaction,
+  kept with the hash of its retrieve capability, bounded by
+  `limits.max_ticket_blob_bytes` and a deadline inside the envelope
+  retention window. A taken locator answers first: identical is
+  `BlobStored`, anything else `Conflict`. `GetBlob` never deletes; a
+  missing, expired or wrongly authorized blob is `Unauthorized` alike. The
+  sweep removes expired blobs and returns their bytes; a queue's deletion
+  cascades to its blobs (`test/mailbox/blob_test.gleam`).
 - `mailbox/schema` and `mailbox/sql` are generated and never edited by hand,
   and a migration file that has shipped never changes: a schema change is a
   new `sql/NNN_*.sql`. `test/mailbox/sql_drift_test.gleam` checks offline
