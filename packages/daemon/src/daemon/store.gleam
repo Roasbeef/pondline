@@ -766,9 +766,14 @@ fn put_record(
     ),
       _
     ->
+      // A plain `INSERT`: `UNIQUE (contact, message_id)` makes a second
+      // delivery of the same message fail the commit and roll it back. The
+      // core delivers each message once, so a duplicate means the state and
+      // the store have diverged, and `OR IGNORE` would hide exactly that by
+      // keeping the first row.
       write(
         store,
-        "INSERT OR IGNORE INTO deliveries
+        "INSERT INTO deliveries
            (contact, message_id, content_type, payload, in_reply_to, status,
             received_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",

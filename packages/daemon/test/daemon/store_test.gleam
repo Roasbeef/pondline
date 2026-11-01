@@ -2,15 +2,18 @@
 //// refusal of a newer schema, and the commit's version check and atomicity.
 
 import core/endpoint
+import core/id
 import core/offer
 import core/plan.{Plan}
 import core/relationship
 import core/route
+import core/secret
 import core/time.{Instant}
 import daemon/config
 import daemon/node
 import daemon/store
 import daemon/support
+import gleam/list
 import gleam/option.{None, Some}
 import primitives/suite
 import simplifile
@@ -135,6 +138,70 @@ pub fn a_failed_record_rolls_the_state_back_test() {
   let assert Ok(Some(after)) =
     store.relationship_by_contact(opened, joining.state.contact)
   assert after.version == before.version
+}
+
+/// A joiner's relationship, committed through `Revised` at version 2, with
+/// the plan that wrote it.
+fn joined(opened: store.Store) {
+  let made = started(opened)
+  let opened_offer = offer.provisioned(made)
+  let assert Ok(_) =
+    store.commit(opened, at, store.OfferRevised(opened_offer, 1))
+  let assert offer.Open(stock) = opened_offer.phase
+  let assert Ok(joining) =
+    relationship.join(
+      suite.suite(),
+      stock.invitation,
+      endpoint.TorOrLoopback,
+      terms(),
+      at,
+    )
+  let assert Ok(_) =
+    store.commit(opened, at, store.Started(joining, "invitation"))
+  let assert Ok(session) = relationship.joined(suite.suite(), joining.state, at)
+  let assert Ok(_) = store.commit(opened, at, store.Revised(session, 1))
+
+  #(joining.state.contact, session)
+}
+
+fn delivery(contact, payload: BitArray) -> plan.Record {
+  let assert Ok(message) = id.from_bytes(<<9:128>>)
+
+  plan.Delivered(
+    message:,
+    contact:,
+    content_type: "text/plain",
+    payload: secret.new(payload),
+    in_reply_to: None,
+    status: plan.Ready,
+    at:,
+  )
+}
+
+pub fn a_second_delivery_of_one_message_fails_the_whole_commit_test() {
+  let #(opened, _) = open()
+  let #(contact, session) = joined(opened)
+  let assert Ok(Some(before)) = store.relationship_by_contact(opened, contact)
+
+  // The first delivery of the message commits.
+  let first = Plan(..session, records: [delivery(contact, <<"first":utf8>>)])
+  let assert Ok(_) =
+    store.commit(opened, at, store.Revised(first, before.version))
+  let assert Ok(Some(middle)) = store.relationship_by_contact(opened, contact)
+  assert middle.version == before.version + 1
+
+  // A second delivery of the same message must not be ignored: the commit
+  // fails and its state write rolls back with it.
+  let second = Plan(..session, records: [delivery(contact, <<"second":utf8>>)])
+  assert store.commit(opened, at, store.Revised(second, middle.version))
+    |> result_is_failure
+  let assert Ok(Some(after)) = store.relationship_by_contact(opened, contact)
+  assert after.version == middle.version
+
+  // The row that was stored first is the only one.
+  let assert Ok(ready) = store.ready_deliveries(opened, None, 10)
+  assert list.map(ready, fn(row) { secret.expose(row.payload) })
+    == [<<"first":utf8>>]
 }
 
 fn offer_by_queue(opened: store.Store, made: offer.Offer) {
