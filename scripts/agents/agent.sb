@@ -1,0 +1,111 @@
+;; The sandbox every Reedwire demo agent runs in (macOS Seatbelt).
+;;
+;; An agent is a program that reads messages from a peer it does not control,
+;; so the pairing's budget is only half of the defence: the other half is that
+;; a misled agent cannot reach anything that matters. This profile is the
+;; second half, and it is deliberately small.
+;;
+;;   run:  sandbox-exec -D AGENT_DIR=... -D API_SOCK=... -D STATE_DIR=... \
+;;                      -D RUNTIME=... -D OTP_ROOT=... -f agent.sb  CMD ...
+;;
+;; Parameters (all absolute, with symlinks resolved, because Seatbelt matches
+;; the real path):
+;;
+;;   AGENT_DIR  the agent's own directory: its working files, its copy of
+;;              agent.cred, its scratch space. The only place it may write.
+;;   API_SOCK   the daemon's local API socket, the only thing it may connect to.
+;;   STATE_DIR  the daemon's state directory (database, operator.cred, Tor
+;;              state). Named only so it can be denied by name.
+;;   RUNTIME    the built `reedwire` CLI: the Erlang shipment of the daemon
+;;              package, code only, read-only.
+;;   OTP_ROOT   the Erlang/OTP installation the CLI runs on (the directory that
+;;              holds bin/erl and lib/erlang), read-only.
+;;
+;; The shape is "deny by default, then name what is allowed". A rule that
+;; comes later wins, so the explicit denials sit at the end and hold even if
+;; an allowance above is ever widened to cover the state directory.
+
+(version 1)
+(deny default)
+
+;; Apple's baseline for any program that loads dynamic libraries: the dyld
+;; shared cache, the standard device nodes, and the like. Without it even
+;; /bin/echo aborts under `deny default`. It grants no access to user files.
+(import "system.sb")
+
+;; --- Process basics -------------------------------------------------------
+;;
+;; The agent is a shell script that runs `erl`, `jq`, `shasum` and a few other
+;; tools, so it may fork and execute. It may signal only itself.
+
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+(allow sysctl-read)
+(allow mach-lookup)
+(allow ipc-posix-shm-read* ipc-posix-shm-write-data)
+
+;; Looking at a path (stat, readlink) is allowed everywhere so that programs
+;; can walk to the directories they are allowed into. Reading file contents
+;; is not: it is granted below, path by path. A denied read of the state
+;; directory therefore fails with "Operation not permitted", which is the
+;; evidence the demo wants, rather than with a misleading "No such file".
+(allow file-read-metadata)
+
+;; --- What the agent may read ---------------------------------------------
+;;
+;; System libraries and the standard tools, the Erlang installation and the
+;; CLI's code, and nothing else. No home directory, no repository, no other
+;; temporary directory.
+
+(allow file-read*
+  (subpath "/usr/lib")
+  (subpath "/usr/bin")
+  (subpath "/usr/libexec")
+  (subpath "/usr/share")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/System")
+  (subpath "/Library/Preferences/Logging")
+  (subpath "/private/etc")
+  (subpath "/private/var/select")
+  (subpath "/private/var/db/timezone")
+  (subpath "/private/var/db/dyld")
+  (subpath "/dev")
+  (subpath (param "OTP_ROOT"))
+  (subpath (param "RUNTIME")))
+
+;; Homebrew's `bin` holds the `erl` launcher, a symlink into the Cellar
+;; (covered by OTP_ROOT). OTP's crypto library links the Homebrew OpenSSL,
+;; so its libraries are readable too; nothing else under the prefix is.
+(allow file-read*
+  (subpath "/opt/homebrew/bin")
+  (regex #"^/opt/homebrew/(opt|Cellar)/openssl"))
+
+;; --- What the agent may write --------------------------------------------
+
+(allow file-read* file-write* (subpath (param "AGENT_DIR")))
+(allow file-write* (literal "/dev/null") (literal "/dev/dtracehelper"))
+
+;; --- The network ----------------------------------------------------------
+;;
+;; No internet, no loopback TCP, no other Unix sockets: exactly one socket
+;; path. Creating the socket is allowed, because the kernel needs one to
+;; connect; where it may connect to is what is restricted. A hostile payload
+;; therefore cannot be exfiltrated except through the daemon, whose agent
+;; credential permits only contacts, send, receive, acknowledge, status and
+;; health, and whose sends are bounded by the pairing's budget.
+
+(allow system-socket)
+(allow network-outbound (literal (param "API_SOCK")))
+
+;; --- Explicit denials, last so they win -----------------------------------
+;;
+;; The daemon's state directory holds the database, `operator.cred` (the
+;; credential that can approve contacts and raise budgets), `agent.cred`
+;; (the original of the agent's copy) and Tor's keys. The agent's copy of
+;; `agent.cred` lives in AGENT_DIR; this directory it can neither read nor
+;; write. The socket inside it stays reachable: connecting is governed by the
+;; rule above, not by this one.
+
+(deny file-read* file-write* (subpath (param "STATE_DIR")))
