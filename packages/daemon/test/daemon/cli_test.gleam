@@ -124,6 +124,18 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
       None,
     )
 
+  let assert Ok(Client(action:, ..)) =
+    parse([
+      "send",
+      "--contact",
+      hex,
+      "--stdin",
+      "--idempotency-key",
+      "order-17",
+      ..common
+    ])
+  let assert SendMessage(idempotency_key: Some("order-17"), ..) = action
+
   assert parse(["send", "--contact", hex, ..common])
     == Error("give exactly one of --file and --stdin")
   assert parse(["send", "--contact", hex, "--file", "p", "--stdin", ..common])
@@ -325,6 +337,24 @@ pub fn requests_carry_the_wire_shape_test() {
     <> "\",\"content_type\":\"application/octet-stream\",\"payload\":\"aGk=\",\"in_reply_to\":\""
     <> hex2
     <> "\"}"
+
+  // A key, when given, rides along as `idempotency_key`.
+  let assert Ok(Client(action:, ..)) =
+    parse([
+      "send",
+      "--contact",
+      hex,
+      "--file",
+      "p",
+      "--idempotency-key",
+      "k-9",
+      ..common
+    ])
+  let #(_, args) = cli.request(action, <<"hi":utf8>>)
+  assert json.to_string(args)
+    == "{\"contact\":\""
+    <> hex
+    <> "\",\"content_type\":\"application/octet-stream\",\"payload\":\"aGk=\",\"in_reply_to\":null,\"idempotency_key\":\"k-9\"}"
 
   let #(op, _) = cli.request(ShowHealth, <<>>)
   assert op == "health"

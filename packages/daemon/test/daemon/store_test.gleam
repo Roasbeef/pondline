@@ -364,3 +364,45 @@ pub fn attempts_count_durably_and_settle_with_the_envelope_test() {
   // Settled, the envelope's count starts again from nothing.
   assert store.count_attempt(opened, queue, envelope) == Ok(1)
 }
+
+/// A joiner names its invitation until it closes: accepting the invitation
+/// again finds it while it lives, and starts afresh once it is closed, which
+/// is how an operator recovers a joiner whose `Hello` was set aside (ADR-011).
+pub fn a_closed_joiner_releases_its_invitation_test() {
+  let #(opened, _) = open()
+  let made = started(opened)
+  let opened_offer = offer.provisioned(made)
+  let assert Ok(_) =
+    store.commit(opened, at, store.OfferRevised(opened_offer, 1))
+  let assert offer.Open(stock) = opened_offer.phase
+  let invitation = stock.invitation
+  let join = fn() {
+    let assert Ok(joining) =
+      relationship.join(
+        suite.suite(),
+        invitation,
+        endpoint.TorOrLoopback,
+        terms(),
+        at,
+      )
+    joining
+  }
+
+  let first = join()
+  let assert Ok(_) = store.commit(opened, at, store.Started(first, "first"))
+  assert store.contact_by_invitation(opened, invitation.id)
+    == Ok(Some(first.state.contact))
+
+  // A second live joiner for the same invitation is refused by the index.
+  let second = join()
+  assert store.commit(opened, at, store.Started(second, "second"))
+    |> result_is_failure
+
+  // Closed, the first releases the invitation for a fresh joiner.
+  let assert Ok(closed) = relationship.close(suite.suite(), first.state, at)
+  let assert Ok(_) = store.commit(opened, at, store.Revised(closed, 1))
+  assert store.contact_by_invitation(opened, invitation.id) == Ok(None)
+  let assert Ok(_) = store.commit(opened, at, store.Started(second, "second"))
+  assert store.contact_by_invitation(opened, invitation.id)
+    == Ok(Some(second.state.contact))
+}

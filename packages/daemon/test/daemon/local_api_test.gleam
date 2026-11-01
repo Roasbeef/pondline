@@ -469,3 +469,27 @@ pub fn the_credential_files_are_private_and_never_in_output_test() {
   assert list.sort(entries, string.compare)
     == ["agent.cred", "api.sock", "operator.cred"]
 }
+
+/// An `idempotency_key` reaches the backend with the send, and its absence
+/// (or `null`) is no key at all (ADR-011).
+pub fn a_send_carries_its_idempotency_key_test() {
+  use f <- fixture.with_server
+
+  let base = [
+    #("contact", json.string(contact_hex())),
+    #("content_type", json.string("text/plain")),
+    #("payload", json.string(bit_array.base64_encode(<<1>>, True))),
+  ]
+  let _ =
+    ask(f, f.agent, "send", [#("idempotency_key", json.string("k-1")), ..base])
+    |> succeeded
+  let _ =
+    ask(f, f.agent, "send", [#("idempotency_key", json.null()), ..base])
+    |> succeeded
+
+  assert fixture.calls(f.fake)
+    == [
+      "send " <> contact_hex() <> " text/plain 01 None key=k-1",
+      "send " <> contact_hex() <> " text/plain 01 None",
+    ]
+}
