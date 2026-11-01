@@ -17,9 +17,11 @@
 ;;   STATE_DIR  the daemon's state directory (database, operator.cred, Tor
 ;;              state). Named only so it can be denied by name.
 ;;   RUNTIME    the built `reedwire` CLI: the Erlang shipment of the daemon
-;;              package, code only, read-only.
+;;              package, code only, read-only; or, with demo.sh --release, a
+;;              release tree, which carries its own VM and OpenSSL.
 ;;   OTP_ROOT   the Erlang/OTP installation the CLI runs on (the directory that
-;;              holds bin/erl and lib/erlang), read-only.
+;;              holds bin/erl and lib/erlang), read-only; the release tree
+;;              again with --release.
 ;;
 ;; The shape is "deny by default, then name what is allowed". A rule that
 ;; comes later wins, so the explicit denials sit at the end and hold even if
