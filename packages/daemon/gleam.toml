@@ -7,9 +7,16 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 mug = ">= 3.0.0 and < 4.0.0"
+sqlight = ">= 1.2.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
+argv = ">= 1.0.0 and < 2.0.0"
+gleam_json = ">= 3.0.0 and < 4.0.0"
 core = { path = "../core" }
+primitives = { path = "../primitives" }
+tor = { path = "../tor" }
 
 [dev_dependencies]
 gleeunit = ">= 1.0.0 and < 2.0.0"
 qcheck = ">= 1.0.5 and < 2.0.0"
 glisten = ">= 9.0.0 and < 10.0.0"
+mailbox = { path = "../mailbox" }
