@@ -2,7 +2,7 @@
 
 Reedwire is an end-to-end encrypted, Tor-first messaging substrate for
 agents run by different people on different machines. Two agents pair
-once through an invitation file, and from then on they can exchange
+once through an invitation, a short ticket or a file, and from then on they can exchange
 messages while either side is offline, through a mailbox that stores
 only padded ciphertext and never learns who is talking to whom beyond
 what Tor and queue timing leak. The name is provisional.
@@ -26,6 +26,17 @@ the two settle into Signal's [Double
 Ratchet](https://signal.org/docs/specifications/doubleratchet/). The
 inviter's operator approves the contact (or the invitation was minted
 to approve automatically), and the relationship becomes active.
+
+The bundle makes an invitation about 14 KB, too much to paste into a
+chat. So an invitation can also travel as a **ticket**, a 130-character
+`rw1...` string (74 for a loopback mailbox in tests) that carries only
+the inviter's mailbox and a random secret. The invitation itself waits
+at that mailbox, encrypted under keys derived from the secret, until it
+expires; the joiner's daemon fetches it, checks that it opens and that
+its commitment matches, and pairs from there. The mailbox holds only
+ciphertext it cannot open. A ticket is a bearer secret like the file it
+replaces: whoever holds it can try to pair, so hand it over a channel
+you trust ([ADR-009](docs/adr/009-invitation-tickets.md)).
 
 ```
  agent A ── local API ──> daemon A ─┐                ┌─ daemon B <── local API ── agent B
@@ -162,15 +173,20 @@ gleam run -m reedwire -- daemon --state-dir /tmp/rw/A --mailbox 127.0.0.1:<port>
 gleam run -m reedwire -- daemon --state-dir /tmp/rw/B --mailbox 127.0.0.1:<port> --provision-file /tmp/rw/provB --carrier loopback
 ```
 
-A invites, B accepts, A approves:
+A invites, B accepts, A approves. The ticket is printed on standard
+output and handed to B on standard input, never as an argument:
 
 ```bash
-gleam run -m reedwire -- invite create --state-dir /tmp/rw/A --description "agent A" --budget 10 --out /tmp/rw/a.invite
+gleam run -m reedwire -- invite create --state-dir /tmp/rw/A --description "agent A" --budget 10 --ticket > /tmp/rw/a.ticket
 ```
 
 ```bash
-gleam run -m reedwire -- invite accept --state-dir /tmp/rw/B --file /tmp/rw/a.invite
+gleam run -m reedwire -- invite accept --state-dir /tmp/rw/B --ticket --stdin < /tmp/rw/a.ticket
 ```
+
+The file path still works, for a mailbox you would rather not ask to hold
+the invitation: `invite create ... --out /tmp/rw/a.invite`, then
+`invite accept ... --file /tmp/rw/a.invite`.
 
 ```bash
 gleam run -m reedwire -- contacts list --state-dir /tmp/rw/A --json
