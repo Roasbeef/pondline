@@ -96,6 +96,11 @@ pub fn a_ticket_pairs_two_daemons_and_a_message_crosses_test() {
   let at_a = active_contact(a)
   assert active_contact(b) == at_b
 
+  // A joiner that redeems the same ticket again, as one that crashed
+  // after fetching would, gets the same contact: the fetch consumed
+  // nothing, and `accept` is idempotent per invitation (ADR-011).
+  assert api.accept_ticket(b, issued.ticket, "inviter") == Ok(at_b)
+
   let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hi":utf8>>, None)
   let delivered =
     support.eventually(15_000, fn() {
