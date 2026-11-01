@@ -1,6 +1,6 @@
 //// Shared fixtures for the runtime tests: an in-process mailbox node with
 //// its HTTP server on an ephemeral port, daemons on throwaway state
-//// directories, and a polling wait.
+//// directories, and a bounded wait built on `weft/poll`.
 
 import core/capability
 import core/endpoint
@@ -23,6 +23,7 @@ import mailbox/store as mailbox_store
 import primitives
 import simplifile
 import sqlight
+import weft/poll
 
 /// A running mailbox and what a daemon needs to use it.
 pub type Mailbox {
@@ -33,6 +34,9 @@ pub type Mailbox {
     provisioning_file: String,
     /// The node, for tests that talk to it directly.
     node: mailbox_node.Node,
+    /// The HTTP listener, for tests that take the mailbox off the network
+    /// and bring it back on the same port.
+    server: mailbox_http.Server,
   )
 }
 
@@ -69,7 +73,7 @@ pub fn start_mailbox() -> Mailbox {
       mailbox_http.Config(interface: "127.0.0.1", port: 0),
     )
 
-  Mailbox(port: server.port, provisioning_file: file, node: running)
+  Mailbox(port: server.port, provisioning_file: file, node: running, server:)
 }
 
 /// A configuration for a daemon on `directory` that uses `mailbox` over
@@ -98,18 +102,18 @@ pub fn start_daemon(mailbox: Mailbox) -> #(api.Daemon, Config) {
 /// Polls `check` every 50 ms until it returns `Some`, and panics after
 /// `timeout_ms`. The panic is the test failing.
 pub fn eventually(timeout_ms: Int, check: fn() -> Option(a)) -> a {
-  case check() {
-    Some(value) -> value
-
-    None ->
-      case timeout_ms > 0 {
-        True -> {
-          process.sleep(50)
-          eventually(timeout_ms - 50, check)
-        }
-
-        False -> panic as "the condition did not become true in time"
+  let waited =
+    poll.until(within: timeout_ms, every: 50, attempt: fn() {
+      case check() {
+        Some(value) -> poll.Done(value)
+        None -> poll.Retry
       }
+    })
+
+  case waited {
+    poll.Answered(value:) -> value
+    poll.Failed(error: Nil) -> panic as "the probe cannot succeed"
+    poll.Expired -> panic as "the condition did not become true in time"
   }
 }
 
@@ -126,6 +130,41 @@ pub fn now() -> time.Instant {
   let clock = config.system_clock()
   let Instant(seconds) = clock()
   Instant(seconds)
+}
+
+/// Takes the mailbox off the network: its HTTP listener dies and its port
+/// refuses connections. The node and its store are untouched.
+pub fn stop_listener(mailbox: Mailbox) -> Nil {
+  let supervisor = mailbox.server.supervisor.pid
+
+  // The listener's supervisor is linked to the test process, and killing it
+  // would otherwise take the test down with it.
+  process.unlink(supervisor)
+  process.kill(supervisor)
+
+  // The port is free once the listener's socket is closed.
+  let gone =
+    poll.until(within: 5000, every: 20, attempt: fn() {
+      case process.is_alive(supervisor) {
+        True -> poll.Retry
+        False -> poll.Done(Nil)
+      }
+    })
+
+  let assert poll.Answered(Nil) = gone as "the listener stops"
+  Nil
+}
+
+/// Brings a stopped mailbox back on the port it had.
+pub fn restart_listener(mailbox: Mailbox) -> Mailbox {
+  let assert Ok(server) =
+    mailbox_http.start(
+      mailbox.node,
+      mailbox_http.Config(interface: "127.0.0.1", port: mailbox.port),
+    )
+    as "the port is free again"
+
+  Mailbox(..mailbox, server:)
 }
 
 /// Takes the daemon database's write lock from outside, as a stuck backup

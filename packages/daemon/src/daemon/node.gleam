@@ -6,11 +6,12 @@
 //// ├── lock          the state directory's ownership lock
 //// ├── status        Tor and mailbox observations
 //// ├── events        subscribers for adapter wake
-//// ├── carrier       the Tor sidecar and the onion dialer
+//// ├── carrier       the Tor sidecar and the onion dialer (state machine)
 //// ├── engine        the single writer
-//// ├── scheduler     sends committed outbox rows
-//// ├── provisioner   creates committed queues at the mailbox
-//// └── fetch_manager one fetcher per live inbound queue
+//// ├── scheduler     sends committed outbox rows (actor, runs of sends)
+//// ├── provisioner   creates committed queues at the mailbox (state machine)
+//// └── fetch_manager one fetcher per live inbound queue (actor; each fetcher
+////                   is a state machine linked to it)
 //// ```
 ////
 //// The order is the dependency order and the supervisor is `rest_for_one`:
@@ -66,6 +67,7 @@ import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
 import gleam/result
 import simplifile
+import weft/poll
 
 /// The file name of the database inside the state directory.
 pub const database_file = "daemon.db"
@@ -298,6 +300,7 @@ fn launch(
           status: names.status,
           clock: config.clock,
           sha256: config.suite.sha256,
+          send_deadline_ms: scheduler.send_deadline_ms,
         ),
       ))
       |> static_supervisor.add(provisioner.supervised(
@@ -394,14 +397,16 @@ pub fn stop(daemon: api.Daemon) -> Nil {
 }
 
 /// Polls until the lock can be taken or the wait is over.
-fn wait_for_lock(path: String, remaining_ms: Int) -> Nil {
-  // A free lock, or a spent wait, ends the stop; otherwise look again shortly.
-  case lock.is_free(path), remaining_ms > 0 {
-    True, _ | False, False -> Nil
+fn wait_for_lock(path: String, within_ms: Int) -> Nil {
+  // A free lock ends the stop; a spent wait ends it too, and the caller
+  // finds out when it starts on the directory again.
+  let _ =
+    poll.until(within: within_ms, every: 20, attempt: fn() {
+      case lock.is_free(path) {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
+      }
+    })
 
-    False, True -> {
-      process.sleep(20)
-      wait_for_lock(path, remaining_ms - 20)
-    }
-  }
+  Nil
 }

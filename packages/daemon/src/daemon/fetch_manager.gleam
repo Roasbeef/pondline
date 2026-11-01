@@ -16,6 +16,13 @@
 ////
 //// The periodic tick also retires offers whose acceptance deadline passed,
 //// which is what makes their queues stop being live.
+////
+//// ## Timers
+////
+//// The manager is a `weft/actor`. Its first `Tick` is handled before any
+//// request (`continuing`), so fetchers for committed queues start at once,
+//// and `periodic` sends one every `tick_ms`. The period is armed in the
+//// builder and nowhere else; a nudge reconciles without touching it.
 
 import core/id
 import core/route.{type Inbox}
@@ -27,8 +34,9 @@ import daemon/transport.{type Dialer}
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/list
-import gleam/otp/actor
+import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
+import weft/actor
 
 /// Milliseconds between reconciles.
 pub const tick_ms = 2000
@@ -52,10 +60,11 @@ pub opaque type Message {
 }
 
 type State {
-  State(config: Config, self: Subject(Message), running: Dict(BitArray, Pid))
+  State(config: Config, running: Dict(BitArray, Pid))
 }
 
-/// Starts the manager under `name` and arms its first reconcile.
+/// Starts the manager under `name`. Its first reconcile runs before any
+/// request, and the next ones every `tick_ms`.
 ///
 /// ## Examples
 ///
@@ -66,17 +75,8 @@ type State {
 pub fn start(
   name: Name(Message),
   config: Config,
-) -> actor.StartResult(Subject(Message)) {
-  actor.new_with_initialiser(5000, fn(subject) {
-    process.send(subject, Tick)
-
-    actor.initialised(State(config:, self: subject, running: dict.new()))
-    |> actor.returning(subject)
-    |> Ok
-  })
-  |> actor.on_message(handle)
-  |> actor.named(name)
-  |> actor.start
+) -> otp_actor.StartResult(Subject(Message)) {
+  actor.start(builder(name, config))
 }
 
 /// The manager as a supervised child.
@@ -90,7 +90,23 @@ pub fn supervised(
   name: Name(Message),
   config: Config,
 ) -> supervision.ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(name, config) })
+  actor.supervised(builder(name, config))
+}
+
+/// The manager's actor: named, reconciling first, then every `tick_ms`.
+fn builder(
+  name: Name(Message),
+  config: Config,
+) -> actor.Builder(State, Message, Subject(Message)) {
+  actor.new_with_initialiser(5000, fn(subject) {
+    actor.initialised(State(config:, running: dict.new()))
+    |> actor.returning(subject)
+    |> actor.continuing(Tick)
+    |> Ok
+  })
+  |> actor.on_message(handle)
+  |> actor.named(name)
+  |> actor.periodic(every: tick_ms, sending: Tick)
 }
 
 /// Tells the manager the set of live queues may have changed. Safe to lose.
@@ -105,15 +121,13 @@ pub fn nudge(name: Name(Message)) -> Nil {
   mail.tell(name, Reconcile)
 }
 
-/// Reconciles on a nudge; on a tick also retires expired offers and re-arms.
+/// Reconciles on a nudge; on a tick also retires expired offers.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
-  // A nudge reconciles at once; a tick also retires expired offers and arms the next tick.
+  // A nudge reconciles at once; a tick also retires expired offers.
   case message {
     Reconcile -> actor.continue(reconcile(state))
 
     Tick -> {
-      process.send_after(state.self, tick_ms, Tick)
-
       // Expiring first lets a retired offer's queue drop out of the same
       // reconcile's live set.
       let _ = engine.expire_offers(state.config.engine)
@@ -154,10 +168,18 @@ fn ensure_fetcher(state: State, inbox: Inbox) -> State {
           engine: state.config.engine,
           status: state.config.status,
           inbox:,
+          ack_deadline_ms: fetcher.ack_deadline_ms,
+          poll_deadline_ms: fetcher.poll_deadline_ms,
         )
-      let pid = process.spawn(fn() { fetcher.run(config) })
 
-      State(..state, running: dict.insert(state.running, key, pid))
+      // A fetcher that fails to start is simply absent; the next tick tries
+      // again.
+      case fetcher.start(config) {
+        Ok(started) ->
+          State(..state, running: dict.insert(state.running, key, started.pid))
+
+        Error(_) -> state
+      }
     }
   }
 }

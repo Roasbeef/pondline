@@ -20,6 +20,17 @@
 //// which is fine: there is no other work for it, and a nudge that arrives
 //// meanwhile waits in its mailbox. A failure doubles the next tick's delay
 //// up to a cap, so an unreachable mailbox is not hammered.
+////
+//// ## A `weft/state_machine` with one state and a named timeout
+////
+//// The delay to the next scan is computed from the scan that just ended, so
+//// a fixed `periodic` tick cannot express it. Named timeouts belong to
+//// `weft/state_machine`, so the provisioner is one, with a single state,
+//// `Watching`, and the failure count in its data. Each `Tick` scans and
+//// arms the `scan` timeout again with `delay_ms(failures)`; arming a name
+//// replaces what was armed under it, so there is never more than one. A
+//// `Nudge` scans without touching the timeout, and the first `Tick` is
+//// handled before any request (`continuing`).
 
 import core/capability.{type Capability, type Provision}
 import core/mailbox/protocol
@@ -35,6 +46,7 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
+import weft/state_machine as sm
 
 /// Milliseconds between scans when nothing is failing.
 pub const tick_ms = 1000
@@ -65,11 +77,22 @@ pub opaque type Message {
   Tick
 }
 
+/// The provisioner's only state: waiting for a nudge or the `scan` timeout.
 type State {
-  State(config: Config, self: Subject(Message), failures: Int)
+  Watching
 }
 
-/// Starts the provisioner under `name` and arms its first scan.
+/// What the machine keeps. The failure count is data, not part of the
+/// state, so a failing scan does not look like a state change.
+type Data {
+  Data(config: Config, failures: Int)
+}
+
+/// The name of the timeout that arms the next scan.
+const scan_timeout = "scan"
+
+/// Starts the provisioner under `name`. Its first scan runs before any
+/// request, which arms the ones that follow.
 ///
 /// ## Examples
 ///
@@ -81,16 +104,7 @@ pub fn start(
   name: Name(Message),
   config: Config,
 ) -> actor.StartResult(Subject(Message)) {
-  actor.new_with_initialiser(5000, fn(subject) {
-    process.send(subject, Tick)
-
-    actor.initialised(State(config:, self: subject, failures: 0))
-    |> actor.returning(subject)
-    |> Ok
-  })
-  |> actor.on_message(handle)
-  |> actor.named(name)
-  |> actor.start
+  sm.start(builder(name, config))
 }
 
 /// The provisioner as a supervised child.
@@ -104,7 +118,22 @@ pub fn supervised(
   name: Name(Message),
   config: Config,
 ) -> supervision.ChildSpecification(Subject(Message)) {
-  supervision.worker(fn() { start(name, config) })
+  sm.supervised(builder(name, config))
+}
+
+/// The provisioner's machine: named, scanning first.
+fn builder(
+  name: Name(Message),
+  config: Config,
+) -> sm.Builder(State, Data, Message, Subject(Message)) {
+  sm.new_with_initialiser(5000, fn(subject) {
+    sm.initialised(Watching, Data(config:, failures: 0))
+    |> sm.returning(subject)
+    |> sm.continuing(Tick)
+    |> Ok
+  })
+  |> sm.on_event(handle)
+  |> sm.named(name)
 }
 
 /// Tells the provisioner a queue is waiting. Safe to lose.
@@ -134,48 +163,56 @@ pub fn delay_ms(failures: Int) -> Int {
   int.min(tick_ms * int.bitwise_shift_left(1, doublings), backoff_cap_ms)
 }
 
-/// Scans on a nudge or a tick; only a tick re-arms the next one.
-fn handle(state: State, message: Message) -> actor.Next(State, Message) {
+/// Scans on a nudge or a tick; only a tick arms the next one.
+fn handle(
+  state: State,
+  data: Data,
+  message: Message,
+) -> sm.Next(State, Data, Message) {
   // A nudge scans once; a tick scans and arms the next tick with the delay its outcome earned.
-  case message {
-    Nudge -> actor.continue(scan(state))
+  case state, message {
+    Watching, Nudge -> sm.keep(scan(data))
 
-    Tick -> {
-      let next = scan(state)
+    Watching, Tick -> {
+      let next = scan(data)
 
       // The next scan is armed after this one, with the delay its own
-      // outcome earned.
-      process.send_after(state.self, delay_ms(next.failures), Tick)
-      actor.continue(next)
+      // outcome earned. This is the only place the timeout is armed.
+      sm.keep(next)
+      |> sm.with_named_timeout(
+        name: scan_timeout,
+        after: delay_ms(next.failures),
+        sending: Tick,
+      )
     }
   }
 }
 
 /// Creates every pending queue and counts the scan as a failure if any
 /// creation did not go through.
-fn scan(state: State) -> State {
+fn scan(data: Data) -> Data {
   // Inboxes still waiting are created one by one; an engine that does not answer counts as a failed scan.
-  case engine.pending_inboxes(state.config.engine) {
+  case engine.pending_inboxes(data.config.engine) {
     Ok(inboxes) -> {
-      let failed = list.filter(inboxes, fn(inbox) { !create(state, inbox) })
+      let failed = list.filter(inboxes, fn(inbox) { !create(data, inbox) })
 
-      // Inboxes still waiting are created one by one; an engine that does not answer counts as a failed scan.
+      // One creation that did not go through makes the whole scan a failure.
       case failed {
-        [] -> State(..state, failures: 0)
-        [_, ..] -> State(..state, failures: state.failures + 1)
+        [] -> Data(..data, failures: 0)
+        [_, ..] -> Data(..data, failures: data.failures + 1)
       }
     }
 
-    Error(_) -> State(..state, failures: state.failures + 1)
+    Error(_) -> Data(..data, failures: data.failures + 1)
   }
 }
 
 /// Creates one queue and reports it. `True` when the queue exists and the
 /// engine recorded it.
-fn create(state: State, inbox: Inbox) -> Bool {
+fn create(data: Data, inbox: Inbox) -> Bool {
   let request =
     protocol.CreateQueue(
-      provision: state.config.provision,
+      provision: data.config.provision,
       queue: inbox.queue,
       read: inbox.read,
       append: inbox.append,
@@ -184,7 +221,7 @@ fn create(state: State, inbox: Inbox) -> Bool {
 
   let answer =
     mailbox_client.call(
-      state.config.dialer,
+      data.config.dialer,
       inbox.endpoint,
       mailbox_client.isolation_group(inbox.queue),
       request,
@@ -194,17 +231,17 @@ fn create(state: State, inbox: Inbox) -> Bool {
   // Only a created queue is reported; every other answer is retried.
   case answer {
     Ok(protocol.QueueCreated(_)) -> {
-      status.set_mailbox(state.config.status, status.MailboxReachable)
+      status.set_mailbox(data.config.status, status.MailboxReachable)
 
       // Only a created queue is reported to the engine; every other answer is retried on a later scan.
-      case engine.provisioned(state.config.engine, inbox.queue) {
+      case engine.provisioned(data.config.engine, inbox.queue) {
         Ok(Nil) -> True
         Error(_) -> False
       }
     }
 
     Ok(protocol.Refused(_)) -> {
-      status.set_mailbox(state.config.status, status.MailboxReachable)
+      status.set_mailbox(data.config.status, status.MailboxReachable)
       log.line("provisioner", "the mailbox refused to create a queue")
       False
     }
@@ -215,7 +252,7 @@ fn create(state: State, inbox: Inbox) -> Bool {
     | Ok(protocol.QueueDeleted) -> False
 
     Error(_) -> {
-      status.set_mailbox(state.config.status, status.MailboxUnreachable)
+      status.set_mailbox(data.config.status, status.MailboxUnreachable)
       False
     }
   }

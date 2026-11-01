@@ -12,24 +12,41 @@
 //// crash and never acknowledged is just another unacknowledged row, so no
 //// recovery code exists beyond the loop itself.
 ////
-//// ## One round
+//// ## A `weft/state_machine`
 ////
-//// 1. `ack_pending` acknowledges the committed, unacknowledged envelopes.
-//// 2. A `Fetch` long-polls for up to `limits.long_poll_seconds`.
-//// 3. Each envelope goes to `engine.process`. An engine that cannot commit
-////    ends the round, and the unprocessed envelopes stay in the mailbox for
-////    the next fetch.
+//// The fetcher is a machine with three states.
 ////
-//// A failure of any step waits an exponentially growing, capped time and
-//// starts over; the mailbox's own retry semantics make every step safe to
-//// repeat. The process ends by itself when its queue is no longer live
-//// (the relationship closed, the offer expired), so retiring a queue needs
-//// no signal.
+//// | State | What it is waiting for |
+//// |---|---|
+//// | `Acking` | the run that acknowledges the committed envelopes |
+//// | `Polling` | the run that long-polls and hands the batch to the engine |
+//// | `BackingOff` | the backoff to pass |
+////
+//// Each network step is a one-task `weft` run, relayed to the machine and
+//// bounded by a deadline, so the machine itself never blocks on the
+//// mailbox and a call that hangs is abandoned by its run instead of waited
+//// for. A run's outcome arrives as a message, followed by one end marker.
+//// An outcome moves the machine on; the end marker of a run the machine
+//// has already left is dropped, which is why the two runs push to two
+//// subjects, `Acked` and `Polled`, and not to one.
+////
+//// A failure of either step enters `BackingOff` and arms a state timeout of
+//// `backoff_ms(failures)`. The state timeout dies with the state, and the
+//// failure count lives in the machine's data and not in the state, so a
+//// transition into `BackingOff` is a real state change and arms the timeout
+//// once. The mailbox's own retry semantics make every step safe to repeat.
+////
+//// The process ends by itself when its queue is no longer live (the
+//// relationship closed, the offer expired), checked at the start of each
+//// round, so retiring a queue needs no signal.
 ////
 //// ## Flow
 ////
-//// 1. `run` loops through `round` until the queue is not live.
-//// 2. `round` calls `ack_pending`, `fetch_batch` and `process_batch`.
+//// 1. `start` builds the machine, which handles `Begin` before anything else.
+//// 2. `begin_round` stops the machine if the queue is retired, otherwise
+////    runs `ack_pending` and enters `Acking`.
+//// 3. `acked` runs `fetch_batch` and `process_batch` and enters `Polling`.
+//// 4. `polled` begins the next round, or `failed` enters `BackingOff`.
 
 import core/envelope.{type StoredEnvelope}
 import core/id.{type Envelope, type Id}
@@ -40,10 +57,13 @@ import daemon/engine
 import daemon/mailbox_client
 import daemon/status
 import daemon/transport.{type Dialer}
-import gleam/erlang/process.{type Name}
+import gleam/erlang/process.{type Name, type Subject}
 import gleam/int
 import gleam/list
+import gleam/otp/actor as otp_actor
 import gleam/result
+import weft
+import weft/state_machine as sm
 
 /// The budget for a call that is not a long poll.
 pub const call_timeout_ms = 30_000
@@ -53,6 +73,16 @@ pub const backoff_base_ms = 500
 
 /// The longest wait after repeated failed rounds, in milliseconds.
 pub const backoff_cap_ms = 30_000
+
+/// How long the acknowledging run may take. Each acknowledgement is a call
+/// of at most `call_timeout_ms`, and a queue may owe several batches.
+pub const ack_deadline_ms = 120_000
+
+/// How long the polling run may take: the long poll's own wait
+/// (`limits.long_poll_seconds`) and the client's margin for it, and a minute
+/// to hand the batch to the engine. A poll that hangs past it is abandoned
+/// and the round is retried.
+pub const poll_deadline_ms = 120_000
 
 /// What a fetcher needs to run.
 pub type Config {
@@ -65,6 +95,10 @@ pub type Config {
     status: Name(status.Message),
     /// The queue to read, with the capability to read it.
     inbox: Inbox,
+    /// The deadline of the acknowledging run, in milliseconds.
+    ack_deadline_ms: Int,
+    /// The deadline of the polling run, in milliseconds.
+    poll_deadline_ms: Int,
   )
 }
 
@@ -74,10 +108,47 @@ type RoundFailed {
   RoundFailed
 }
 
+/// What a run of one round's step reports.
+type Pulled =
+  weft.Pulled(Nil, RoundFailed)
+
 /// Whether the queue this fetcher serves is still one the daemon fetches.
 type Liveness {
   Live
   Retired
+}
+
+/// Where the fetcher is in its round.
+type State {
+  Acking
+  Polling
+  BackingOff
+}
+
+/// The fetcher's events.
+pub opaque type Message {
+  /// Start a round: the first one, and the end of a backoff.
+  Begin
+
+  /// The acknowledging run pushed something.
+  Acked(Pulled)
+
+  /// The polling run pushed something.
+  Polled(Pulled)
+}
+
+/// What the machine keeps between events. None of it is part of a state, so
+/// changing it never restarts a state timeout.
+type Data {
+  Data(
+    config: Config,
+    /// Rounds that failed in a row.
+    failures: Int,
+    /// Where the acknowledging runs push.
+    acks: Subject(Pulled),
+    /// Where the polling runs push.
+    polls: Subject(Pulled),
+  )
 }
 
 /// The wait after `failures` failed rounds in a row.
@@ -98,33 +169,163 @@ pub fn backoff_ms(failures: Int) -> Int {
   )
 }
 
-/// Fetches and processes until the queue is no longer live. Blocks the
-/// calling process, which is the fetcher.
+/// Starts a fetcher, linked to the caller, which fetches and processes
+/// until its queue is no longer live and then exits normally.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// process.spawn(fn() { fetcher.run(config) })
+/// let assert Ok(started) = fetcher.start(config)
+/// started.pid
 /// ```
-pub fn run(config: Config) -> Nil {
-  loop(config, 0)
+pub fn start(config: Config) -> otp_actor.StartResult(Subject(Message)) {
+  sm.new_with_initialiser(1000, fn(subject) {
+    let acks = process.new_subject()
+    let polls = process.new_subject()
+    let selector =
+      process.new_selector()
+      |> process.select(subject)
+      |> process.select_map(acks, Acked)
+      |> process.select_map(polls, Polled)
+
+    sm.initialised(Acking, Data(config:, failures: 0, acks:, polls:))
+    |> sm.selecting(selector)
+    |> sm.returning(subject)
+    |> sm.continuing(Begin)
+    |> Ok
+  })
+  |> sm.on_event(handle)
+  |> sm.start
 }
 
-/// Runs rounds, waiting out failures.
-fn loop(config: Config, failures: Int) -> Nil {
+/// Handles one event. Every state and message pair is written.
+fn handle(
+  state: State,
+  data: Data,
+  message: Message,
+) -> sm.Next(State, Data, Message) {
+  case state, message {
+    // The first round starts from `Acking` before any run exists, and a
+    // backoff ends with a `Begin`.
+    Acking, Begin -> begin_round(data)
+    BackingOff, Begin -> begin_round(data)
+
+    // A round is already running; only the first start and the backoff send
+    // `Begin`, so this does not happen.
+    Polling, Begin -> sm.keep(data)
+
+    Acking, Acked(pulled) -> acked(data, pulled)
+    Polling, Polled(pulled) -> polled(data, pulled)
+
+    // The end marker of a run the machine has already left, or an outcome
+    // pushed to the other state's subject: nothing is waiting for it.
+    Polling, Acked(_) -> sm.keep(data)
+    BackingOff, Acked(_) -> sm.keep(data)
+    Acking, Polled(_) -> sm.keep(data)
+    BackingOff, Polled(_) -> sm.keep(data)
+  }
+}
+
+/// Starts a round: ends the machine if the queue is retired, otherwise
+/// starts the acknowledging run.
+fn begin_round(data: Data) -> sm.Next(State, Data, Message) {
   // A retired queue ends the process; a live or unknowable one keeps going.
-  case liveness(config) {
-    Retired -> Nil
+  case liveness(data.config) {
+    Retired -> sm.stop()
 
-    Live ->
-      case round(config) {
-        Ok(Nil) -> loop(config, 0)
+    Live -> {
+      let config = data.config
+      start_run(data.acks, config.ack_deadline_ms, fn() { ack_pending(config) })
 
-        Error(RoundFailed) -> {
-          process.sleep(backoff_ms(failures))
-          loop(config, failures + 1)
-        }
+      sm.transition(to: Acking, data:)
+    }
+  }
+}
+
+/// Reads what the acknowledging run pushed.
+fn acked(data: Data, pulled: Pulled) -> sm.Next(State, Data, Message) {
+  // The first outcome decides the step. An end marker only says the run is
+  // over, and if the run was lost before it said anything the step failed.
+  case pulled {
+    weft.PulledOutcome(outcome:) ->
+      case step_result(outcome) {
+        Ok(Nil) -> begin_poll(data)
+        Error(RoundFailed) -> failed(data)
       }
+
+    weft.AllDelivered -> sm.keep(data)
+    weft.NotYet -> sm.keep(data)
+    weft.RunLost(reason: _) -> failed(data)
+  }
+}
+
+/// Reads what the polling run pushed.
+fn polled(data: Data, pulled: Pulled) -> sm.Next(State, Data, Message) {
+  case pulled {
+    weft.PulledOutcome(outcome:) ->
+      case step_result(outcome) {
+        // A round that finished starts the next at once; the long poll is
+        // what paces a quiet queue.
+        Ok(Nil) -> begin_round(Data(..data, failures: 0))
+        Error(RoundFailed) -> failed(data)
+      }
+
+    weft.AllDelivered -> sm.keep(data)
+    weft.NotYet -> sm.keep(data)
+    weft.RunLost(reason: _) -> failed(data)
+  }
+}
+
+/// Starts the polling run: the long poll, and the batch it returns handed to
+/// the engine.
+fn begin_poll(data: Data) -> sm.Next(State, Data, Message) {
+  let config = data.config
+  start_run(data.polls, config.poll_deadline_ms, fn() {
+    use batch <- result.try(fetch_batch(config))
+
+    process_batch(config, batch)
+  })
+
+  sm.transition(to: Polling, data:)
+}
+
+/// Waits out a failed round. The count moves in the data, the wait is the
+/// state's timeout, and `Begin` ends it.
+fn failed(data: Data) -> sm.Next(State, Data, Message) {
+  sm.transition(to: BackingOff, data: Data(..data, failures: data.failures + 1))
+  |> sm.with_state_timeout(backoff_ms(data.failures), Begin)
+}
+
+/// One step as a `weft` run of one task, bounded by `deadline_ms` and
+/// relayed to `sink`. The relay is linked to the machine, so a machine that
+/// dies takes the run with it.
+fn start_run(
+  sink: Subject(Pulled),
+  deadline_ms: Int,
+  work: fn() -> Result(Nil, RoundFailed),
+) -> Nil {
+  let _relay =
+    weft.new([work])
+    |> weft.deadline(deadline_ms)
+    |> weft.start_relayed(sink)
+
+  Nil
+}
+
+/// Whether a step's outcome is a finished step. Only `Completed` is; a task
+/// that failed, crashed, was abandoned at the deadline or never started did
+/// not do its work, and the round is repeated.
+fn step_result(
+  outcome: weft.Outcome(Nil, RoundFailed),
+) -> Result(Nil, RoundFailed) {
+  case outcome {
+    weft.Completed(index: _, value: Nil) -> Ok(Nil)
+    weft.Failed(index: _, error: _) -> Error(RoundFailed)
+    weft.Crashed(index: _, reason: _) -> Error(RoundFailed)
+    weft.Abandoned(index: _) -> Error(RoundFailed)
+    weft.NeverStarted(index: _) -> Error(RoundFailed)
+    weft.DrainProofLost(index: _, reason: _) -> Error(RoundFailed)
+    weft.CancellationUnconfirmed(index: _) -> Error(RoundFailed)
   }
 }
 
@@ -140,14 +341,6 @@ fn liveness(config: Config) -> Liveness {
 
     Error(_) -> Live
   }
-}
-
-/// One round: acknowledge what is committed, fetch, process.
-fn round(config: Config) -> Result(Nil, RoundFailed) {
-  use _ <- result.try(ack_pending(config))
-  use batch <- result.try(fetch_batch(config))
-
-  process_batch(config, batch)
 }
 
 /// Acknowledges the committed, unacknowledged envelopes of the queue, and
