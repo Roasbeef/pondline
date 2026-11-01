@@ -51,9 +51,16 @@ sidecar: ## Build the reedwire-tor Arti sidecar (release); the tor package's tes
 demo: ## Run the two-daemon, two-sandboxed-agent demo: make demo CARRIER=loopback|tor
 	scripts/demo.sh --carrier=$(or $(CARRIER),loopback)
 
+# ---------------------------------------------------------------- releasing
+
+# One self-contained tree, build/release/<platform>/reedwire, holding both
+# programs (bin/reedwire and bin/mailbox) over its own ERTS, OpenSSL and Tor
+# sidecar (docs/adr/003-packaging.md and its addendum). release.sh builds the
+# sidecar itself unless REEDWIRE_TOR_BIN names one already built, which is
+# how a worktree reuses another checkout's.
 .PHONY: release
-release: sidecar ## Build the self-contained mailbox release into build/release/<platform>/
-	scripts/release.sh
+release: ## Build the self-contained release into build/release/<platform>/reedwire
+	@scripts/release.sh
 
 # ---------------------------------------------------------------- formatting
 
