@@ -30,11 +30,31 @@
 ////
 //// `classify` is the policy, a pure function of the mailbox's answer. A
 //// receipt marks the row stored. A refusal a retry cannot change (`Conflict`,
-//// `Unauthorized`, `BadDeadline`, `TooLarge`, `Malformed`,
-//// `UnsupportedVersion`) marks it failed. Everything else, a transport
-//// error, `QuotaExceeded` and `Unavailable` included, is retried with
-//// exponential backoff, capped. A row past its deadline is failed without a
-//// send, because the mailbox would refuse it anyway.
+//// `Unauthorized`, `TooLarge`, `Malformed`, `UnsupportedVersion`) marks it
+//// failed. Everything else, a transport error, `QuotaExceeded`,
+//// `Unavailable` and `BadDeadline` included, is retried with exponential
+//// backoff, capped. A row past its deadline is failed without a send,
+//// because the mailbox would refuse it anyway.
+////
+//// ## Retention deadlines and clock skew
+////
+//// The mailbox judges an append's retention deadline by its own clock, and
+//// a sender's clock can run ahead of it (ADR-008). So a send does not ask
+//// for the row's deadline as it stands: `core/retention.offers` gives the
+//// deadlines to offer, the first a slack below the mailbox's maximum by
+//// this daemon's clock, and the rest each halving the lifetime. A
+//// `BadDeadline` answer moves `send_row` to the next offer within the same
+//// attempt; the offers are a finite list, so an attempt makes at most
+//// `limits.max_deadline_offers` appends. A `BadDeadline` to the last offer
+//// is a failed attempt like a transport error, retried with backoff, so a
+//// clock that is corrected later still delivers, and the row's deadline,
+//// past which it is never sent, bounds the retries. Nothing about the
+//// offers is stored: each attempt computes them from the row and the time,
+//// and the bytes and the envelope identifier are the same under every
+//// offer, so a refused offer changed nothing at the mailbox. The offers
+//// share the run's `send_deadline_ms`; a mailbox slow enough to answer
+//// several of them past it gets the attempt `Abandoned`, which is retried
+//// like any other, starting again from the first offer.
 ////
 //// The run adds the cases a send cannot report for itself. A send the run
 //// crashed or abandoned at its deadline is a failed attempt and retried with
@@ -85,6 +105,7 @@
 import core/envelope
 import core/id
 import core/mailbox/protocol
+import core/retention
 import core/time
 import daemon/engine
 import daemon/log
@@ -354,12 +375,17 @@ fn classify_refusal(reason: protocol.Refusal) -> Verdict {
   case reason {
     protocol.Conflict
     | protocol.Unauthorized
-    | protocol.BadDeadline
     | protocol.TooLarge
     | protocol.Malformed
     | protocol.UnsupportedVersion -> Refused
 
     protocol.QuotaExceeded | protocol.Unavailable -> Transient
+
+    // The mailbox's clock disagrees with the deadline offered: every
+    // shorter offer was already tried in this attempt (`send_row`), and a
+    // later attempt may meet a corrected clock. The row's own deadline ends
+    // the retries.
+    protocol.BadDeadline -> Transient
   }
 }
 
@@ -508,28 +534,62 @@ fn release_held(state: State) -> State {
   )
 }
 
-/// The network half, run in a task: one append of the committed bytes.
+/// The network half, run in a task: the committed bytes appended under the
+/// retention deadlines `retention.offers` gives for this row now, one after
+/// another while the mailbox answers `BadDeadline`, and the first other
+/// answer (or the last offer's) classified.
 fn send_row(config: Config, row: store.OutboxRow) -> Verdict {
+  let #(first, shorter) =
+    retention.offers(expires_at: row.deadline, now: config.clock())
+
+  offer(config, row, first, shorter)
+}
+
+/// Appends the row under `deadline`, falling back to the `shorter` offers
+/// while the mailbox refuses the deadline.
+fn offer(
+  config: Config,
+  row: store.OutboxRow,
+  deadline: time.Instant,
+  shorter: List(time.Instant),
+) -> Verdict {
+  let answer = append(config, row, deadline)
+  report_reachability(config, answer)
+
+  // A `BadDeadline` refusal wrote nothing (the mailbox judges the deadline
+  // before the quota and the write), so the same envelope can be offered
+  // again with a shorter deadline. Any other answer, or a `BadDeadline` to
+  // the last offer, is the attempt's outcome.
+  case answer, shorter {
+    Ok(protocol.Refused(protocol.BadDeadline)), [next, ..rest] ->
+      offer(config, row, next, rest)
+
+    _, _ -> classify(config.sha256, row, answer)
+  }
+}
+
+/// One append of the committed bytes under one retention deadline.
+fn append(
+  config: Config,
+  row: store.OutboxRow,
+  deadline: time.Instant,
+) -> Result(protocol.Response, mailbox_client.ClientError) {
   let request =
     protocol.Append(
       queue: row.route.queue,
       append: row.route.append,
       envelope: row.envelope,
-      retention_deadline: row.deadline,
+      retention_deadline: deadline,
       ciphertext: row.padded,
     )
 
-  let answer =
-    mailbox_client.call(
-      config.dialer,
-      row.route.endpoint,
-      mailbox_client.isolation_group(row.route.queue),
-      request,
-      append_timeout_ms,
-    )
-
-  report_reachability(config, answer)
-  classify(config.sha256, row, answer)
+  mailbox_client.call(
+    config.dialer,
+    row.route.endpoint,
+    mailbox_client.isolation_group(row.route.queue),
+    request,
+    append_timeout_ms,
+  )
 }
 
 /// Tells the status cell whether the mailbox answered at all.

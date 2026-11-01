@@ -108,7 +108,11 @@ this before changing any of them.
   clock's seconds. The rescan is `actor.periodic`
   (`tick_ms`) plus a first tick via `continuing`; the engine has no soonest
   `next_attempt_at` query, so a computed named timeout is not possible yet.
-  `classify` and `backoff_seconds` are the pure policy.
+  `classify` and `backoff_seconds` are the pure policy. A send offers the
+  retention deadlines `core/retention.offers` gives for the row at that
+  moment (ADR-008): a `BadDeadline` moves to the next, shorter offer in the
+  same attempt, and one to the last offer is `Transient`, retried until
+  the row's deadline. Nothing about the offers is stored.
 - `daemon/fetcher` (one process per live queue): a `weft/state_machine`,
   states `Acking`, `Polling`, `BackingOff`. Each network step is a one-task
   relayed run with a deadline (`ack_deadline_ms`, `poll_deadline_ms`) pushing
@@ -194,6 +198,12 @@ Invariants:
   `support.shiftable_clock`, so the window passes at once. Mutation-checked:
   never scheduling a retransmit fails both, and skipping the fingerprint
   lookup fails the lost-receipt test.
+- A sender whose clock disagrees with the mailbox's still delivers
+  (ADR-008, `test/daemon/clock_skew_test.gleam`, two real daemons and a
+  real mailbox): an hour ahead is stored on the first offer, two days ahead
+  under a halved one, and a mailbox no offer satisfies leaves the row
+  queued until its clock is corrected. Mutation-checked: a zero slack, no
+  shorter offers, and a permanent `BadDeadline` each fail one of them.
 - A restart resumes committed state: an unsent outbox row is sent on start,
   and an envelope committed but unacknowledged is acknowledged by the next
   fetcher round, with no second delivery to the agent.
