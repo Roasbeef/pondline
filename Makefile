@@ -47,6 +47,10 @@ test-%: ## Run one package's tests, e.g. make test-core
 sidecar: ## Build the reedwire-tor Arti sidecar (release); the tor package's tests need it
 	cargo build --release --manifest-path native/reedwire-tor/Cargo.toml
 
+.PHONY: release
+release: sidecar ## Build the self-contained mailbox release into build/release/<platform>/
+	scripts/release.sh
+
 # ---------------------------------------------------------------- formatting
 
 .PHONY: fmt
