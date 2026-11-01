@@ -104,8 +104,21 @@ fn repeat(chunk: BitArray, times: Int) -> BitArray {
   }
 }
 
+// A lane takes eight bytes per step while it can and one at a time after.
+// A changed byte changes its word by some nonzero delta under 2^64, which
+// moves the lane by delta times an odd power of the multiplier, never zero
+// modulo 2^64, so a single changed byte still changes every lane. The
+// word steps are what keeps hybrid-sized inputs (an identity is 5389
+// bytes) affordable across the property suites.
 fn lane(data: BitArray, multiplier: Int, accumulator: Int) -> Int {
   case data {
+    <<word:size(64), rest:bytes>> ->
+      lane(
+        rest,
+        multiplier,
+        int.bitwise_and(accumulator * multiplier + word + 1, mask),
+      )
+
     <<byte, rest:bytes>> ->
       lane(
         rest,
