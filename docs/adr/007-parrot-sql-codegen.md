@@ -150,3 +150,29 @@ after which the query text is regenerated anyway.
   if a store needs a statement composed at run time (it stays hand-written
   beside the generated ones, and this ADR gets an addendum), or if sqlc's
   SQLite parser stops accepting a construct we use.
+
+## Addendum (2026-11-01): the runtime module is vendored
+
+The owner chose the escape hatch above before the first merge. Parrot's
+`.app` file starts `gleam_httpc` and with it OTP's `inets` in every daemon
+and mailbox, an HTTP client stack in a node whose only network path is
+meant to be its `Dialer` and the Tor sidecar. Nothing called it, but the
+security priority puts code that ships and starts without a use above the
+cost of a copy.
+
+- `parrot` is a dev dependency of `daemon` and `mailbox`, used only by
+  `make gen-sql`, and the release bundles the same OTP applications it did
+  before this ADR (no `inets`).
+- Each package carries `<pkg>/internal/sql_param`: parrot 2.3.0's `Param`
+  trimmed to `ParamInt`, `ParamString`, `ParamBitArray` and
+  `ParamNullable`, plus `bool_decoder` (Apache-2.0, attributed in the
+  module doc). `scripts/gen-sql.sh` rewrites the generated
+  `import parrot/dev` to `import <pkg>/internal/sql_param as dev`, so the
+  rest of the generated text is parrot's own.
+- The bridge's `Mismatch` arm is gone: a statement needing a timestamp,
+  date, list, float, boolean or dynamic parameter does not compile, so
+  `bind` is total. The drift test checks the rewritten import instead of
+  searching for those variants.
+- A parrot upgrade that changes `parrot/dev`'s shape (a variant renamed,
+  a new decoder the generated code calls) fails to compile here; the copy
+  is updated by hand then.

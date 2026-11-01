@@ -63,14 +63,14 @@ process.
 
 Depends on `core` (protocol, ids, capabilities, envelopes, limits, time)
 and `primitives` (`sha256`, `constant_time_equal`), plus `sqlight` (esqlite,
-Apache-2.0), `parrot` (only its small `parrot/dev` runtime, which the
-generated `mailbox/sql` imports; ADR-007, and the reason the release bundles
-OTP's `inets`), `gleam_otp` and `gleam_erlang`, `weft` (the sibling checkout
+Apache-2.0), `gleam_otp` and `gleam_erlang`, `weft` (the sibling checkout
 as a path dependency while its run timer source is unreleased), `mist` 6.0.3 (with `glisten`, Apache-2.0),
 `gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. and `tor` (only to host the
 onion service; the sidecar forwards every stream on any virtual port to the
 loopback port, so 80 is just the conventional value the daemon dials).
-Nothing depends on it as a library.
+Dev: `parrot` generates `mailbox/sql` under `make gen-sql`, which imports
+the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
+(ADR-007, addendum). Nothing depends on it as a library.
 
 ## Traffic
 

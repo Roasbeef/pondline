@@ -30,10 +30,11 @@ processes.
 Depends on `core` (the state machines, codec, typed protocol, snapshots,
 endpoints and limits), `primitives` (the real `Suite`), `tor` (the sidecar and
 onion streams, wrapped as a `transport.Connection` only in `daemon/carrier`),
-`sqlight`, `parrot` (only its small `parrot/dev` runtime, which the
-generated `daemon/sql` imports; ADR-007), `simplifile`, `gleam_json` (the
+`sqlight`, `simplifile`, `gleam_json` (the
 local API), `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and `mug` (loopback
-TCP). Dev: `glisten` runs the
+TCP). Dev: `parrot` generates `daemon/sql` under `make gen-sql`, which imports
+the trimmed copy of its runtime in `daemon/internal/sql_param` instead
+(ADR-007, addendum); `glisten` runs the
 test fake server and `mailbox` runs a real mailbox node in the end-to-end
 tests. `transport` itself still takes the onion carrier as a function.
 
