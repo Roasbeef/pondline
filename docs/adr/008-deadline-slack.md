@@ -117,3 +117,17 @@ What is implemented and tested:
 - Revisit the slack with measurements of real clock skew between daemons
   and mailboxes, and revisit halving if misconfigured clocks turn out to be
   common enough that the retention it costs matters.
+
+## Addendum (2026-11-01): the offer at the deadline itself
+
+The Lean proof of the offer ladder (`docs/formal/lean.md`) found that "an
+offer is never `now` or earlier" holds for the halved fallbacks but not for
+the first offer: at `now == expires_at`, `retention.offers` returns that
+instant alone, and the mailbox refuses a deadline that is not after its
+`now`. The scheduler still dispatches such a row, because `time.is_past`
+treats the deadline itself as valid. The cost is one refused append in the
+one second a row can be at its deadline, after which the retry finds the
+row past it and fails it. That is cheaper than any mechanism to avoid it,
+so the behaviour stands and the sentence above is read as applying to the
+fallbacks.
+
