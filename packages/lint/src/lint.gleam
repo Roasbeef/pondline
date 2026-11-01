@@ -304,10 +304,10 @@ const header_prefix: Int = 400
 /// parrot and each package's `dev/embed_schema.gleam` (ADR-007), so a finding
 /// in one asks for a change the next `make gen-sql` would discard, and each
 /// package's `sql_drift_test` compares them with their sources precisely so
-/// that nobody makes it. That is noise which never clears, and R1's and R5's promotion cases
-/// rest on a census where every line is actionable (issue loom#73,
-/// housekeeping). `lint/cli` drops these before scanning; nothing in the
-/// rules themselves knows about the exemption.
+/// that nobody makes it. That is noise which never clears, and R1's and
+/// R5's promotion cases rest on a census where every line is actionable
+/// (issue loom#73, housekeeping). `lint/cli` drops these before scanning;
+/// nothing in the rules themselves knows about the exemption.
 ///
 /// The marker is the `DO NOT EDIT.` header each of those generators emits,
 /// and it counts only in the leading comment block: a hand-written module
