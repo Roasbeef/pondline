@@ -328,3 +328,36 @@ pub fn message_history_and_incidents_test() {
   assert incident.attempts == None
   assert store.incident_count(opened) == Ok(1)
 }
+
+/// An attempt count goes up one per call, survives a reopen of the file,
+/// and is cleared by the `Processed` row that settles the envelope; a
+/// quarantine writes that row as dropped and an incident with the count.
+pub fn attempts_count_durably_and_settle_with_the_envelope_test() {
+  let #(opened, path) = open()
+  let assert Ok(queue) = id.from_bytes(<<5:128>>)
+  let assert Ok(envelope) = id.from_bytes(<<6:128>>)
+  let ref = plan.EnvelopeRef(queue:, envelope:, digest: <<1, 2>>)
+
+  assert store.count_attempt(opened, queue, envelope) == Ok(1)
+  assert store.count_attempt(opened, queue, envelope) == Ok(2)
+  let assert Ok(Nil) = store.close(opened)
+
+  let assert Ok(opened) = store.open(path, suite.suite())
+  assert store.count_attempt(opened, queue, envelope) == Ok(3)
+
+  let assert Ok(_) =
+    store.commit(
+      opened,
+      at,
+      store.Quarantined(ref:, contact: None, attempts: 3),
+    )
+  assert store.processed_digest(opened, queue, envelope) == Ok(Some(<<1, 2>>))
+  assert store.unacked(opened, queue) == Ok([envelope])
+  let assert Ok([incident]) = store.incidents(opened, 10)
+  assert incident.kind == store.QuarantinedEnvelope
+  assert incident.attempts == Some(3)
+  assert incident.contact == None
+
+  // Settled, the envelope's count starts again from nothing.
+  assert store.count_attempt(opened, queue, envelope) == Ok(1)
+}
