@@ -92,13 +92,12 @@ pub fn every_offer_is_in_the_future_and_within_expiry_test() {
 }
 
 pub fn some_offer_is_accepted_for_any_skew_the_ladder_covers_test() {
-  // A sender ahead of the mailbox by up to the retention window less the
-  // last offer's lifetime finds an accepted deadline among its offers.
+  // ADR-008 claims a sender up to six days ahead of the mailbox finds an
+  // accepted deadline among its offers. The reach is the claim, not derived
+  // from the ladder, so losing a rung fails this test.
   let expires_at = time.add(now, limits.message_retention_seconds)
   let offers = all(retention.offers(expires_at:, now:))
-  let assert Ok(last) = list.last(offers)
-  let reach =
-    limits.message_retention_seconds - { last.unix_seconds - now.unix_seconds }
+  let reach = 6 * 86_400
 
   use skew <- qcheck.given(qcheck.bounded_int(0, reach))
   let mailbox_now = time.add(now, 0 - skew)
@@ -110,4 +109,9 @@ pub fn the_slack_is_a_small_part_of_retention_test() {
   // An hour of a week: the slack must not eat the retention it protects.
   assert limits.retention_slack_seconds > 0
   assert limits.retention_slack_seconds * 100 < limits.message_retention_seconds
+
+  // ADR-006's addendum: a retransmitted copy goes out at least one receipt
+  // window after the original was stored, so its first offer is the
+  // message's own expiry only while the slack is no wider than that window.
+  assert limits.retention_slack_seconds <= limits.receipt_window_seconds
 }
