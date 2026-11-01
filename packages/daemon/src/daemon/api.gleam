@@ -39,6 +39,18 @@
 //// its own; a ticket whose store failed leaves an offer that was never
 //// handed out, as a timed-out `invite` does, and the operator asks again.
 ////
+//// ## Flow
+////
+//// 1. `assemble` builds the handle, for `daemon/node` alone.
+//// 2. Pairing: `invite` (and `await_file`), `accept`; by ticket,
+////    `invite_ticket` (`offer_inbox`, `store_blob`) and `accept_ticket`
+////    (`fetch_blob`), both through `ticket_call`.
+//// 3. Relationships: `contacts`, `approve`, `decline`, `close`,
+////    `raise_budget`.
+//// 4. Messages: `send` and `send_with_key`, `receive`, `acknowledge`,
+////    `status`; the operator's trail: `audit` and `incidents`.
+//// 5. `subscribe` and `health` for adapters and monitoring.
+////
 //// ## Why the types are repeated
 ////
 //// The engine and the store define their own record types and this module
