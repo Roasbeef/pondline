@@ -13,8 +13,8 @@ builds no read-credit machinery (spec §10.4).
 
 - `tor`: `start(Config)` returns a `Tor`; `bootstrap`, `host_onion`,
   `connect`, `subscribe`, `sidecar_pid`, `shutdown`. `TorError`, `Event` and
-  `OnionHost` are the typed outcomes; the actor owns the port and the
-  restart policy.
+  `OnionHost` are the typed outcomes. The port owner is a
+  `weft/state_machine` (below) that owns the port and the restart policy.
 - `tor/stream`: the opaque passive `Stream` (`send`, `recv`, `close`) and
   the handshake that opens one over the sidecar's unix socket, with
   `OpenError` and `Refusal` for typed failures.
@@ -30,11 +30,36 @@ builds no read-credit machinery (spec §10.4).
 
 ## Relationships
 
-Depends on `gleam_stdlib`, `gleam_erlang`, `gleam_otp`. Does not depend on
+Depends on `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and `weft`
+(pinned `== 0.4.6`; `docs/weft.md`). Does not depend on
 `core` or any other Reedwire package. Consumed later by the mailbox
 (hosting) and the delivery path (outbound streams). The binary it drives is
 `native/reedwire-tor` (`make sidecar`); the tests find it through
 `REEDWIRE_TOR_BIN`, defaulting to the release build in the repository.
+
+## The port owner
+
+`tor` is a weft state machine, the shape `spindle` uses for its helper
+process. The state is the sidecar's phase; the data (config, next request
+id, pending requests, subscribers, restart count) changes without moving a
+deadline, which is why it is not part of the phase.
+
+| Phase | Entered from | Leaves on |
+|---|---|---|
+| `Starting(port)` | init; `Restarting` on `Respawn` | `Ready` to `Serving`; exit, bad frame or `ReadyTimeout` to `Restarting` or `GivenUp` |
+| `Serving(port)` | `Starting` on `Ready` | exit or bad frame to `Restarting` or `GivenUp` |
+| `Restarting` | `Starting` or `Serving` on failure | `Respawn` to `Starting`; a failed spawn counts as another failure |
+| `GivenUp` | any failure past `max_restarts` | terminal |
+
+The same table, checked by lint R14 against the type, is in the module doc
+of `src/tor.gleam`. Two deadlines are the machine's: `ReadyTimeout` is the
+state timeout of `Starting`, armed by the enter callback, and `Respawn` is
+the named timeout `respawn`, armed only in `sidecar_failed`. `AwaitReady`
+is postponed in `Starting` and `Restarting` and replayed by the next phase
+change; `Bootstrap` and `HostOnion` outside `Serving` are answered at once
+with `SidecarUnavailable`. Each port gets its own selector
+(`with_selector` at `Respawn`), so a dead port's last messages are never
+read as the new port's. A request's reply deadline belongs to its caller.
 
 ## Traffic
 
@@ -42,18 +67,21 @@ Depends on `gleam_stdlib`, `gleam_erlang`, `gleam_otp`. Does not depend on
   length prefix: `Bootstrap`, `HostOnion`, `Shutdown` out; `Ready`,
   `Bootstrapped`, `OnionReady`, `Failed`, `ServiceStatus` back. Requests
   carry an id echoed by the reply.
-- Messages to the actor: one `Subject` message per call, a reply `Subject`
-  per request, and `Abandon*` when a caller times out. Subscribers receive
-  `Event`s.
+- Messages to the machine: one `Subject` message per call, a reply
+  `Subject` per request, and `Abandon*` when a caller times out.
+  Subscribers receive `Event`s.
 - One unix-socket connection per outbound stream, to
   `<state-dir>/connect.sock`: a `CONNECT` line, `OK` or `ERR <code>`, then
-  raw bytes. These never pass through the actor.
+  raw bytes. These never pass through the machine.
 
 ## Invariants
 
 - The sidecar exits when its stdin closes, so a dead owner never leaves an
   orphan (`test/tor/sidecar_test.gleam`, owner killed without `Shutdown`).
-- A killed sidecar (`kill -9`) does not affect the VM: the actor fails
+- A sidecar that never reports ready, or that exits at once, ends in
+  `GivenUp` and `start` returns `NeverReady`
+  (`test/tor/lifecycle_test.gleam`, with stand-in scripts).
+- A killed sidecar (`kill -9`) does not affect the VM: the machine fails
   pending requests, tells subscribers, and restarts it within
   `max_restarts` consecutive restarts without a successful bootstrap. A
   restarted sidecar is not bootstrapped; the owner re-bootstraps and
@@ -74,4 +102,5 @@ Depends on `gleam_stdlib`, `gleam_erlang`, `gleam_otp`. Does not depend on
 
 - `docs/adr/001-tor-sidecar.md` (the decision, measurements, limits).
 - `docs/spec.md` §6.1, §10.3–10.5, §11.1, §13.1.
-- `docs/gleam-style.md` Part III (actors, FFI) and Part IV.
+- `docs/weft.md` (the rules this port is held to) and
+  `docs/gleam-style.md` Part III (process machinery, FFI) and Part IV.

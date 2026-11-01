@@ -8,34 +8,73 @@
 ////
 //// ## How the pieces fit
 ////
-//// One actor, started by `start`, owns the sidecar's Erlang port. It sends
-//// control frames (`tor/internal/codec`), turns the replies into typed
-//// results for the callers waiting on them, and watches for the process to
-//// exit. Outbound streams do not go through the actor at all: `connect`
-//// opens a unix socket to the sidecar directly (`tor/stream`), so stream
-//// traffic never queues behind control traffic and a slow stream cannot
-//// slow the actor.
+//// One process, a `weft/state_machine` started by `start`, owns the
+//// sidecar's Erlang port. It sends control frames (`tor/internal/codec`),
+//// turns the replies into typed results for the callers waiting on them,
+//// and watches for the process to exit. Outbound streams do not go through
+//// the machine at all: `connect` opens a unix socket to the sidecar
+//// directly (`tor/stream`), so stream traffic never queues behind control
+//// traffic and a slow stream cannot slow the machine.
+////
+//// ## Flow
+////
+//// `start` builds the machine with `start_machine`, whose initialiser spawns
+//// the first sidecar through `ffi_port.open_sidecar` and selects the port's
+//// messages. `handle` is the one event handler: it dispatches every
+//// `Phase` and `Message` pair, and the helpers it calls are `submit` for a
+//// request frame, `frame` and `on_event` for what the sidecar says,
+//// `sidecar_failed` for its death and `stop` for an orderly end. `entered`
+//// arms the one state timeout. The public functions after the types are
+//// thin callers that send a message and wait on a reply subject.
+////
+//// ## The phases
+////
+//// The sidecar's life is the machine's state, so a request is judged by
+//// the phase it arrives in and not by a flag in a record:
+////
+//// <!-- transitions: tor.Phase -->
+//// | Phase | Meaning and exits |
+//// |---|---|
+//// | `Starting` | Spawned, not yet listening. `Ready` moves to `Serving`; an exit, an undecodable frame or the ready timeout moves to `Restarting`, or to `GivenUp` when the budget is spent. |
+//// | `Serving` | Listening; requests go out. An exit or an undecodable frame moves to `Restarting`, or to `GivenUp`. |
+//// | `Restarting` | Waiting out the backoff. The `respawn` named timeout spawns a replacement and moves to `Starting`; a spawn that fails counts as another failure. |
+//// | `GivenUp` | The restart budget is spent. Terminal; every request is refused. |
+////
+//// `AwaitReady` is the one request that waits for a phase to end: it is
+//// postponed in `Starting` and `Restarting`, and the machine replays it on
+//// the next phase change, so no list of waiters is kept. A `Bootstrap` or
+//// `HostOnion` in any phase but `Serving` is answered at once with
+//// `SidecarUnavailable`, which is the API's promise and not a missing case.
 ////
 //// ## The sidecar's lifetime
 ////
-//// The port is owned by the actor, so if the actor dies the VM closes the
-//// port, the sidecar's stdin reaches end of file, and the sidecar exits.
-//// If the sidecar dies first, the actor is told through `exit_status` and
-//// restarts it itself rather than leaving that to a supervisor. A
-//// supervisor restart would hand callers a new `Tor` value and drop the
-//// subscribers and the pending requests the actor holds, while a sidecar
-//// restart inside the actor keeps all of them.
+//// The port is owned by the machine, so if the machine dies the VM closes
+//// the port, the sidecar's stdin reaches end of file, and the sidecar
+//// exits. If the sidecar dies first, the machine is told through
+//// `exit_status` and restarts it itself rather than leaving that to a
+//// supervisor. A supervisor restart would hand callers a new `Tor` value
+//// and drop the subscribers and the pending requests the machine holds,
+//// while a sidecar restart inside the machine keeps all of them.
 ////
 //// The restart policy is bounded by `max_restarts`: that many consecutive
-//// restarts that do not end in a successful bootstrap, and the actor stops
-//// restarting, tells subscribers with `SidecarGaveUp`, and answers every
-//// later request with `SidecarUnavailable`. A sidecar that works and then
-//// crashes once gets a full budget again, because a successful bootstrap
-//// resets the count. After a restart the new sidecar is not bootstrapped:
-//// the owner sees `SidecarRestarted` and must call `bootstrap` and
-//// `host_onion` again. Onion services are expected to keep their address
-//// across restarts because Arti persists the key under the state
-//// directory.
+//// restarts that do not end in a successful bootstrap, and the machine
+//// stops restarting, tells subscribers with `SidecarGaveUp`, and answers
+//// every later request with `SidecarUnavailable`. A sidecar that works and
+//// then crashes once gets a full budget again, because a successful
+//// bootstrap resets the count. After a restart the new sidecar is not
+//// bootstrapped: the owner sees `SidecarRestarted` and must call
+//// `bootstrap` and `host_onion` again. Onion services are expected to keep
+//// their address across restarts because Arti persists the key under the
+//// state directory.
+////
+//// ## Deadlines
+////
+//// Two deadlines belong to the machine. The ready timeout is a state
+//// timeout on `Starting`, so any move out of that phase cancels it and a
+//// late fire cannot be mistaken for a current one. The restart backoff is
+//// the named timeout `respawn`, armed in `sidecar_failed` and nowhere else.
+//// A request's reply deadline belongs to its caller, which waits on its own
+//// reply subject and sends `Abandon*` when it gives up.
 ////
 //// ## Failure semantics
 ////
@@ -50,8 +89,6 @@ import gleam/dict.{type Dict}
 import gleam/erlang/port.{type Port}
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
@@ -59,6 +96,7 @@ import tor/address.{type OnionAddress, type Port as OnionPort}
 import tor/internal/codec
 import tor/internal/ffi_port.{PortData, PortExit}
 import tor/stream.{type OpenError, type Stream}
+import weft/state_machine as sm
 
 /// The longest onion service nickname, in bytes. Arti enforces its own
 /// grammar; this only keeps the control frame small.
@@ -75,7 +113,7 @@ pub type Config {
     /// (about 100 bytes on macOS).
     state_dir: String,
     /// How many consecutive restarts without a successful bootstrap are
-    /// allowed before the actor gives up.
+    /// allowed before the machine gives up.
     max_restarts: Int,
     /// How long, in milliseconds, a freshly started sidecar has to report
     /// that it is listening.
@@ -83,10 +121,10 @@ pub type Config {
   )
 }
 
-/// The actor's mailbox protocol. Public only because the opaque `Tor`
+/// The machine's mailbox protocol. Public only because the opaque `Tor`
 /// carries a subject of it; callers use the functions in this module.
 pub type Message {
-  /// Wait until the sidecar is listening.
+  /// Wait until the sidecar is listening. Postponed while it is not.
   AwaitReady(reply_to: Subject(Result(Nil, TorError)))
 
   /// Bootstrap the Tor client.
@@ -111,14 +149,18 @@ pub type Message {
   /// Ask for the sidecar's operating system pid.
   GetPid(reply_to: Subject(Result(Int, TorError)))
 
-  /// A message from the port, or `Error(Nil)` for anything else that
-  /// reached the mailbox.
+  /// A message from the current port, or `Error(Nil)` for anything else
+  /// that reached the mailbox.
   FromPort(message: Result(ffi_port.PortMessage, Nil))
 
-  /// The sidecar on this port did not report ready in time.
-  ReadyTimeout(port: Port)
+  /// The sidecar did not report ready in time. The state timeout of
+  /// `Starting` sends it, so it only arrives while that phase lasts.
+  ReadyTimeout
 
-  /// Stop the sidecar and the actor.
+  /// The restart backoff elapsed. The named timeout `respawn` sends it.
+  Respawn
+
+  /// Stop the sidecar and the machine.
   Stop(reply_to: Subject(Result(Nil, TorError)))
 }
 
@@ -128,27 +170,33 @@ type Pending {
   PendingHost(nickname: String, reply_to: Subject(Result(OnionHost, TorError)))
 }
 
-/// Where the sidecar is in its life.
-type Sidecar {
+/// Where the sidecar is in its life. A phase's payload never changes while
+/// the machine is in it: the ready timeout belongs to `Starting(port)` and
+/// is cancelled by any move to a different phase.
+type Phase {
   /// Spawned, not yet listening. Requests are refused until it is.
   Starting(port: Port)
 
   /// Listening; requests go out.
   Serving(port: Port)
 
+  /// Dead, and waiting out the backoff before a replacement is spawned.
+  Restarting
+
   /// The restart budget is spent.
   GivenUp
 }
 
-type State {
-  State(
+/// What the machine carries across phases. None of it may cancel the ready
+/// timeout or replay a postponed request, which is why it is not part of
+/// `Phase`.
+type Data {
+  Data(
     config: Config,
     self: Subject(Message),
-    sidecar: Sidecar,
     next_id: Int,
     pending: Dict(Int, Pending),
     subscribers: List(Subject(Event)),
-    waiters: List(Subject(Result(Nil, TorError))),
     restarts: Int,
   )
 }
@@ -210,17 +258,17 @@ pub type Event {
 
   /// The sidecar process exited with this status. `-1` means its control
   /// channel carried something undecodable, `-2` that it never reported
-  /// ready; in both cases the actor closed it.
+  /// ready; in both cases the machine closed it.
   SidecarDied(status: Int)
 
   /// A new sidecar is listening. It is not bootstrapped.
   SidecarRestarted
 
-  /// The restart budget is spent; the actor serves no more requests.
+  /// The restart budget is spent; the machine serves no more requests.
   SidecarGaveUp
 }
 
-/// A handle to a running sidecar and the actor that owns it.
+/// A handle to a running sidecar and the machine that owns it.
 pub opaque type Tor {
   Tor(subject: Subject(Message), config: Config)
 }
@@ -237,12 +285,12 @@ pub fn config(binary_path: String, state_dir: String) -> Config {
   Config(binary_path:, state_dir:, max_restarts: 3, ready_timeout_ms: 10_000)
 }
 
-/// Starts the sidecar and the actor that owns it, returning once the
+/// Starts the sidecar and the machine that owns it, returning once the
 /// sidecar is listening for outbound connections. Not bootstrapped yet:
 /// call `bootstrap` next.
 ///
-/// The actor is linked to the caller, so the caller's death takes the
-/// actor, the port, and the sidecar with it.
+/// The machine is linked to the caller, so the caller's death takes the
+/// machine, the port, and the sidecar with it.
 ///
 /// ## Examples
 ///
@@ -251,11 +299,11 @@ pub fn config(binary_path: String, state_dir: String) -> Config {
 /// // -> Ok(tor)
 /// ```
 pub fn start(config: Config) -> Result(Tor, TorError) {
-  use started <- result.try(start_actor(config))
+  use started <- result.try(start_machine(config))
   let tor = started.data
 
-  // The actor answers once the sidecar reports ready, or once the restart
-  // budget is spent. The extra second covers the actor's own scheduling.
+  // The machine answers once the sidecar reports ready, or once the restart
+  // budget is spent. The extra second covers the machine's own scheduling.
   let wait = config.ready_timeout_ms * { config.max_restarts + 1 } + 1000
 
   // The reply decides whether the caller gets a handle or a failure.
@@ -268,9 +316,9 @@ pub fn start(config: Config) -> Result(Tor, TorError) {
   }
 }
 
-/// A child specification that starts the actor under a supervisor. A
-/// supervisor restart replaces the actor, so the `Tor` handle in the new
-/// child's data must be fetched again; prefer `start` unless the actor
+/// A child specification that starts the machine under a supervisor. A
+/// supervisor restart replaces the machine, so the `Tor` handle in the new
+/// child's data must be fetched again; prefer `start` unless the machine
 /// itself needs supervising.
 ///
 /// ## Examples
@@ -279,65 +327,68 @@ pub fn start(config: Config) -> Result(Tor, TorError) {
 /// tor.supervised(tor.config("./reedwire-tor", "/tmp/rw-tor"))
 /// ```
 pub fn supervised(config: Config) -> supervision.ChildSpecification(Tor) {
-  supervision.worker(fn() { start_actor(config) |> result.map_error(to_start) })
-  |> supervision.map_data(fn(tor) { tor })
+  sm.supervised(machine(config))
 }
 
-/// The actor start error a supervisor expects.
-fn to_start(error: TorError) -> actor.StartError {
-  actor.InitFailed(string.inspect(error))
-}
-
-/// Starts the actor without waiting for the sidecar.
-fn start_actor(config: Config) -> Result(actor.Started(Tor), TorError) {
-  actor.new_with_initialiser(5000, fn(self) { init(config, self) })
-  |> actor.on_message(handle_message)
-  |> actor.start
-  |> result.map(fn(started) {
-    actor.Started(pid: started.pid, data: Tor(subject: started.data, config:))
-  })
+/// Starts the machine without waiting for the sidecar.
+fn start_machine(config: Config) -> Result(sm.Started(Tor), TorError) {
+  machine(config)
+  |> sm.start
   |> result.map_error(fn(_) { StartFailed(SpawnFailed) })
 }
 
-/// Spawns the first sidecar and builds the actor's state. The sidecar is
+/// The machine's description, shared by `start` and `supervised`. The
+/// initialiser runs in the new process, so the machine, not the caller, is
+/// the port's owner.
+fn machine(config: Config) -> sm.Builder(Phase, Data, Message, Tor) {
+  sm.new_with_initialiser(5000, fn(self) { init(config, self) })
+  |> sm.on_event(handle)
+  |> sm.on_enter(entered)
+}
+
+/// Spawns the first sidecar and builds the machine's state. The sidecar is
 /// `Starting` until its `Ready` frame arrives.
 fn init(
   config: Config,
   self: Subject(Message),
-) -> Result(actor.Initialised(State, Message, Subject(Message)), String) {
+) -> Result(sm.Initialised(Phase, Data, Message, Tor), String) {
   use port <- result.try(
     ffi_port.open_sidecar(config.binary_path, config.state_dir)
     |> result.replace_error("cannot spawn the sidecar"),
   )
-  let _ = process.send_after(self, config.ready_timeout_ms, ReadyTimeout(port))
-
-  // `select_other` is the only way to receive port messages, and it takes
-  // every message the other handlers do not. The classifier hands it to
-  // the shim at once, so a stray message becomes `Error(Nil)`, not a frame.
-  let selector =
-    process.new_selector()
-    |> process.select(self)
-    |> process.select_other(fn(raw) { FromPort(ffi_port.classify_message(raw)) })
-  let state =
-    State(
+  let data =
+    Data(
       config:,
       self:,
-      sidecar: Starting(port),
       next_id: 1,
       pending: dict.new(),
       subscribers: [],
-      waiters: [],
       restarts: 0,
     )
 
-  actor.initialised(state)
-  |> actor.selecting(selector)
-  |> actor.returning(self)
+  sm.initialised(Starting(port), data)
+  |> sm.selecting(selector_for(self, port))
+  |> sm.returning(Tor(subject: self, config:))
   |> Ok
 }
 
-/// Asks the actor and waits for a reply, withdrawing the reply address on
-/// timeout so a late reply is dropped by the actor rather than left in the
+/// The mailbox selection for one port: the machine's own subject and
+/// nothing from any other port. A replacement sidecar gets a new selector,
+/// so the last messages of a dead port are never delivered as the new
+/// port's, and no frame needs to be checked for which port sent it.
+fn selector_for(
+  self: Subject(Message),
+  port: Port,
+) -> process.Selector(Message) {
+  process.new_selector()
+  |> process.select(self)
+  |> process.select_record(port, 1, fn(raw) {
+    FromPort(ffi_port.classify_message(raw))
+  })
+}
+
+/// Asks the machine and waits for a reply, withdrawing the reply address on
+/// timeout so a late reply is dropped by the machine rather than left in the
 /// caller's mailbox.
 fn ask(
   subject: Subject(Message),
@@ -476,9 +527,9 @@ pub fn sidecar_pid(tor: Tor) -> Result(Int, TorError) {
   ask(tor.subject, GetPid, 5000)
 }
 
-/// Stops the sidecar and the actor. The sidecar is told to shut down and
+/// Stops the sidecar and the machine. The sidecar is told to shut down and
 /// its port is closed, so it exits even if it ignores the request. Returns
-/// once the actor has done both; the process itself may take a moment to
+/// once the machine has done both; the process itself may take a moment to
 /// disappear.
 ///
 /// ## Examples
@@ -492,120 +543,188 @@ pub fn shutdown(tor: Tor) -> Nil {
   Nil
 }
 
-// ---------------------------------------------------------------- the actor
+// -------------------------------------------------------------- the machine
 
-/// Routes one mailbox message. Handlers return the next state; none of
-/// them blocks except the short restart backoff.
-fn handle_message(
-  state: State,
+/// Dispatches one event against the phase it arrives in. Every pair of
+/// phase and message is written, so a new phase or message is a compile
+/// error here until someone decides what it does. A message that is the
+/// same in every phase says so with `_` for the phase.
+fn handle(
+  phase: Phase,
+  data: Data,
   message: Message,
-) -> actor.Next(State, Message) {
-  // One arm per message; each handler returns the next state.
-  case message {
-    AwaitReady(reply_to) -> await_ready(state, reply_to)
+) -> sm.Next(Phase, Data, Message) {
+  case phase, message {
+    // A caller waiting for the sidecar to listen waits inside the machine:
+    // the next phase change replays it, so no list of waiters is kept.
+    Starting(..), AwaitReady(..) | Restarting, AwaitReady(..) ->
+      sm.keep(data) |> sm.postpone
 
-    Bootstrap(reply_to) ->
-      request(state, codec.encode_bootstrap, PendingBootstrap(reply_to), fn() {
-        process.send(reply_to, Error(SidecarUnavailable))
-      })
+    Serving(..), AwaitReady(reply_to) -> {
+      process.send(reply_to, Ok(Nil))
+      sm.keep(data)
+    }
 
-    HostOnion(nickname, local_port, reply_to) ->
-      request(
-        state,
+    GivenUp, AwaitReady(reply_to) -> {
+      process.send(reply_to, Error(StartFailed(NeverReady)))
+      sm.keep(data)
+    }
+
+    // Only a listening sidecar takes a request. In any other phase the
+    // caller is told so at once, which the API promises.
+    Serving(port), Bootstrap(reply_to) ->
+      submit(
+        port,
+        data,
+        codec.encode_bootstrap,
+        PendingBootstrap(reply_to),
+        fn() { process.send(reply_to, Error(SidecarUnavailable)) },
+      )
+
+    Starting(..), Bootstrap(reply_to)
+    | Restarting, Bootstrap(reply_to)
+    | GivenUp, Bootstrap(reply_to)
+    -> {
+      process.send(reply_to, Error(SidecarUnavailable))
+      sm.keep(data)
+    }
+
+    Serving(port), HostOnion(nickname, local_port, reply_to) ->
+      submit(
+        port,
+        data,
         codec.encode_host_onion(_, nickname, local_port),
         PendingHost(nickname, reply_to),
         fn() { process.send(reply_to, Error(SidecarUnavailable)) },
       )
 
-    AbandonBootstrap(reply_to) ->
-      forget(state, fn(pending) { pending == PendingBootstrap(reply_to) })
+    Starting(..), HostOnion(_, _, reply_to)
+    | Restarting, HostOnion(_, _, reply_to)
+    | GivenUp, HostOnion(_, _, reply_to)
+    -> {
+      process.send(reply_to, Error(SidecarUnavailable))
+      sm.keep(data)
+    }
 
-    AbandonHost(reply_to) ->
-      forget(state, fn(pending) {
+    // A caller that timed out no longer wants its reply, in any phase.
+    _, AbandonBootstrap(reply_to) ->
+      forget(data, fn(pending) { pending == PendingBootstrap(reply_to) })
+
+    _, AbandonHost(reply_to) ->
+      forget(data, fn(pending) {
         case pending {
           PendingHost(reply_to: other, ..) -> other == reply_to
           PendingBootstrap(..) -> False
         }
       })
 
-    Subscribe(subscriber) ->
-      actor.continue(
-        State(..state, subscribers: [subscriber, ..state.subscribers]),
-      )
+    _, Subscribe(subscriber) ->
+      sm.keep(Data(..data, subscribers: [subscriber, ..data.subscribers]))
 
-    GetPid(reply_to) -> {
-      process.send(reply_to, sidecar_pid_of(state.sidecar))
-      actor.continue(state)
+    Starting(port), GetPid(reply_to) | Serving(port), GetPid(reply_to) -> {
+      process.send(
+        reply_to,
+        ffi_port.os_pid(port) |> result.replace_error(SidecarUnavailable),
+      )
+      sm.keep(data)
     }
 
-    FromPort(Ok(PortData(port, data))) -> on_data(state, port, data)
+    Restarting, GetPid(reply_to) | GivenUp, GetPid(reply_to) -> {
+      process.send(reply_to, Error(SidecarUnavailable))
+      sm.keep(data)
+    }
 
-    FromPort(Ok(PortExit(port, status))) -> on_exit(state, port, status)
+    // The selector only delivers the current port's messages, so a frame in
+    // `Starting` or `Serving` is from the sidecar this phase owns.
+    Starting(..), FromPort(Ok(PortData(_, bytes)))
+    | Serving(..), FromPort(Ok(PortData(_, bytes)))
+    -> frame(phase, data, bytes)
 
-    FromPort(Error(Nil)) -> actor.continue(state)
+    Starting(..), FromPort(Ok(PortExit(_, status)))
+    | Serving(..), FromPort(Ok(PortExit(_, status)))
+    -> sidecar_failed(data, status)
 
-    ReadyTimeout(port) -> on_ready_timeout(state, port)
+    // A dead or abandoned port's last messages can still be in the mailbox
+    // after the phase has moved on; they are not the new sidecar's.
+    Restarting, FromPort(..) | GivenUp, FromPort(..) -> sm.keep(data)
 
-    Stop(reply_to) -> stop(state, reply_to)
+    // Something other than a port frame or exit reached the mailbox.
+    Starting(..), FromPort(Error(Nil)) | Serving(..), FromPort(Error(Nil)) ->
+      sm.keep(data)
+
+    // The state timeout of `Starting` fired: close the silent sidecar and
+    // take the restart path. The timeout is cancelled by every move out of
+    // `Starting`, so the other phases never see this; they keep the state.
+    Starting(port), ReadyTimeout -> {
+      let _ = ffi_port.close_port(port)
+      sidecar_failed(data, -2)
+    }
+
+    Serving(..), ReadyTimeout
+    | Restarting, ReadyTimeout
+    | GivenUp, ReadyTimeout
+    -> sm.keep(data)
+
+    // The backoff elapsed: spawn the replacement. The new port gets its own
+    // selector, and entering `Starting` arms the ready timeout.
+    Restarting, Respawn -> respawn(data)
+
+    // Armed only by `sidecar_failed` and cancelled by nothing, but it fires
+    // in `Restarting` alone: a respawn that fails re-arms it from there.
+    Starting(..), Respawn | Serving(..), Respawn | GivenUp, Respawn ->
+      sm.keep(data)
+
+    _, Stop(reply_to) -> stop(phase, data, reply_to)
   }
 }
 
-/// Answers an `AwaitReady` now if the sidecar is listening, parks it if the
-/// sidecar is starting, and refuses it if the actor has given up.
-fn await_ready(
-  state: State,
-  reply_to: Subject(Result(Nil, TorError)),
-) -> actor.Next(State, Message) {
-  // Whether the sidecar is listening decides if the waiter is answered,
-  // parked or refused.
-  case state.sidecar {
-    Serving(..) -> {
-      process.send(reply_to, Ok(Nil))
-      actor.continue(state)
-    }
-
+/// Arms the one state timeout. Entering `Starting` from anywhere, including
+/// the initial entry, starts the ready deadline, so every path into the
+/// phase gets it. Leaving the phase cancels it.
+fn entered(
+  _from: Phase,
+  to: Phase,
+  data: Data,
+) -> sm.Enter(Phase, Data, Message) {
+  case to {
     Starting(..) ->
-      actor.continue(State(..state, waiters: [reply_to, ..state.waiters]))
+      sm.keep(data)
+      |> sm.with_state_timeout(
+        after: data.config.ready_timeout_ms,
+        sending: ReadyTimeout,
+      )
 
-    GivenUp -> {
-      process.send(reply_to, Error(StartFailed(NeverReady)))
-      actor.continue(state)
-    }
+    Serving(..) | Restarting | GivenUp -> sm.keep(data)
   }
 }
 
 /// Sends a request frame and records who is waiting for the reply. The id
-/// is allocated here, so replies are matched to requests by the actor alone.
-/// `refuse` runs when the sidecar cannot take requests.
-fn request(
-  state: State,
+/// is allocated here, so replies are matched to requests by the machine
+/// alone. `refuse` runs when the port will not take the frame.
+fn submit(
+  port: Port,
+  data: Data,
   encode: fn(Int) -> BitArray,
   pending: Pending,
   refuse: fn() -> Nil,
-) -> actor.Next(State, Message) {
-  let id = state.next_id
-
-  // Only a serving sidecar can take a frame.
-  let sent = case state.sidecar {
-    Serving(port) -> ffi_port.send_frame(port, encode(id))
-    Starting(..) | GivenUp -> Error(Nil)
-  }
+) -> sm.Next(Phase, Data, Message) {
+  let id = data.next_id
 
   // A failed send means the port is already closed; its exit message is
   // behind this one in the mailbox and will fail everything pending.
-  case sent {
+  case ffi_port.send_frame(port, encode(id)) {
     Ok(Nil) ->
-      actor.continue(
-        State(
-          ..state,
+      sm.keep(
+        Data(
+          ..data,
           next_id: { id + 1 } % 4_294_967_296,
-          pending: dict.insert(state.pending, id, pending),
+          pending: dict.insert(data.pending, id, pending),
         ),
       )
 
     Error(Nil) -> {
       refuse()
-      actor.continue(state)
+      sm.keep(data)
     }
   }
 }
@@ -613,87 +732,72 @@ fn request(
 /// Drops the pending requests the predicate selects: a caller that timed
 /// out no longer wants its reply.
 fn forget(
-  state: State,
+  data: Data,
   abandoned: fn(Pending) -> Bool,
-) -> actor.Next(State, Message) {
-  let pending = dict.filter(state.pending, fn(_, p) { !abandoned(p) })
-  actor.continue(State(..state, pending:))
+) -> sm.Next(Phase, Data, Message) {
+  let pending = dict.filter(data.pending, fn(_, p) { !abandoned(p) })
+  sm.keep(Data(..data, pending:))
 }
 
-/// The pid of the running sidecar.
-fn sidecar_pid_of(sidecar: Sidecar) -> Result(Int, TorError) {
-  case sidecar {
-    Serving(port) | Starting(port) ->
-      ffi_port.os_pid(port) |> result.replace_error(SidecarUnavailable)
-    GivenUp -> Error(SidecarUnavailable)
-  }
-}
+/// Handles a frame from the current sidecar.
+fn frame(
+  phase: Phase,
+  data: Data,
+  bytes: BitArray,
+) -> sm.Next(Phase, Data, Message) {
+  case codec.decode_event(bytes), phase {
+    Ok(event), _ -> on_event(phase, data, event)
 
-/// Handles a frame from the sidecar. Frames from a port we no longer own
-/// are ignored: after a restart, the old port's last messages can still be
-/// in the mailbox.
-fn on_data(
-  state: State,
-  port: Port,
-  data: BitArray,
-) -> actor.Next(State, Message) {
-  case current_port(state.sidecar) == Some(port) {
-    False -> actor.continue(state)
+    // Undecodable bytes mean the two ends disagree about the protocol.
+    // Nothing the sidecar says can be trusted after that, so close it and
+    // take the restart path.
+    Error(_), Starting(port) | Error(_), Serving(port) -> {
+      let _ = ffi_port.close_port(port)
+      sidecar_failed(data, -1)
+    }
 
-    True ->
-      case codec.decode_event(data) {
-        Ok(event) -> on_event(state, port, event)
-
-        // Undecodable bytes mean the two ends disagree about the protocol.
-        // Nothing the sidecar says can be trusted after that, so close it
-        // and take the restart path.
-        Error(_) -> {
-          let _ = ffi_port.close_port(port)
-          sidecar_failed(state, -1)
-        }
-      }
+    // A frame is only handled in a phase that has a port.
+    Error(_), Restarting | Error(_), GivenUp -> sm.keep(data)
   }
 }
 
 /// Applies one decoded event.
 fn on_event(
-  state: State,
-  port: Port,
+  phase: Phase,
+  data: Data,
   event: codec.Event,
-) -> actor.Next(State, Message) {
+) -> sm.Next(Phase, Data, Message) {
   // Each event either answers a pending request or changes sidecar state.
   case event {
-    codec.Ready(_) -> on_ready(state, port)
+    codec.Ready(_) -> on_ready(phase, data)
 
     codec.Bootstrapped(id) -> {
-      let state = State(..state, restarts: 0)
+      let data = Data(..data, restarts: 0)
 
       // Only a pending bootstrap with this id is answered; any other id is a
       // late reply.
-      case dict.get(state.pending, id) {
+      case dict.get(data.pending, id) {
         Ok(PendingBootstrap(reply_to)) -> {
           process.send(reply_to, Ok(Nil))
-          actor.continue(
-            State(..state, pending: dict.delete(state.pending, id)),
-          )
+          sm.keep(Data(..data, pending: dict.delete(data.pending, id)))
         }
-        _ -> actor.continue(state)
+
+        Ok(PendingHost(..)) | Error(Nil) -> sm.keep(data)
       }
     }
 
     codec.OnionReady(id, nickname, hostname) ->
-      case dict.get(state.pending, id) {
+      case dict.get(data.pending, id) {
         Ok(PendingHost(reply_to: reply_to, ..)) -> {
           let reply =
             address.parse_onion(hostname)
             |> result.map(OnionHost(nickname, _))
             |> result.replace_error(BadHostname)
           process.send(reply_to, reply)
-          actor.continue(
-            State(..state, pending: dict.delete(state.pending, id)),
-          )
+          sm.keep(Data(..data, pending: dict.delete(data.pending, id)))
         }
-        _ -> actor.continue(state)
+
+        Ok(PendingBootstrap(..)) | Error(Nil) -> sm.keep(data)
       }
 
     codec.Failed(id, code, text) -> {
@@ -701,95 +805,71 @@ fn on_event(
 
       // The reply type depends on what was asked, so each arm builds its own
       // `Error`.
-      case dict.get(state.pending, id) {
+      case dict.get(data.pending, id) {
         Ok(PendingBootstrap(reply_to)) -> process.send(reply_to, Error(failure))
         Ok(PendingHost(reply_to: reply_to, ..)) ->
           process.send(reply_to, Error(failure))
         Error(Nil) -> Nil
       }
 
-      actor.continue(State(..state, pending: dict.delete(state.pending, id)))
+      sm.keep(Data(..data, pending: dict.delete(data.pending, id)))
     }
 
     codec.ServiceStatus(nickname, service_state) -> {
-      notify(state, ServiceStateChanged(nickname, service_state))
-      actor.continue(state)
+      notify(data, ServiceStateChanged(nickname, service_state))
+      sm.keep(data)
     }
   }
 }
 
-/// The sidecar is listening: requests may flow, and anyone parked in
-/// `AwaitReady` is released. A ready after a restart is announced.
-fn on_ready(state: State, port: Port) -> actor.Next(State, Message) {
+/// The sidecar is listening: requests may flow, and the `AwaitReady`
+/// callers postponed in `Starting` are replayed by this very transition. A
+/// ready after a restart is announced.
+fn on_ready(phase: Phase, data: Data) -> sm.Next(Phase, Data, Message) {
   // Only a starting sidecar becomes ready; a repeat `Ready` changes nothing.
-  case state.sidecar {
-    Starting(..) -> {
-      list.each(state.waiters, process.send(_, Ok(Nil)))
-      let state = State(..state, sidecar: Serving(port), waiters: [])
-
-      // Restarts only go up while the actor is running, so a positive count
-      // here means this ready follows a restart, not the first start.
-      case state.restarts > 0 {
-        True -> notify(state, SidecarRestarted)
+  case phase {
+    Starting(port) -> {
+      // Restarts only go up while the machine is running, so a positive
+      // count here means this ready follows a restart, not the first start.
+      case data.restarts > 0 {
+        True -> notify(data, SidecarRestarted)
         False -> Nil
       }
 
-      actor.continue(state)
+      sm.transition(to: Serving(port), data:)
     }
 
-    Serving(..) | GivenUp -> actor.continue(state)
-  }
-}
-
-/// The sidecar exited. A stale port's exit is ignored.
-fn on_exit(
-  state: State,
-  port: Port,
-  status: Int,
-) -> actor.Next(State, Message) {
-  case current_port(state.sidecar) == Some(port) {
-    True -> sidecar_failed(state, status)
-    False -> actor.continue(state)
-  }
-}
-
-/// The sidecar never reported ready: close it and take the restart path.
-fn on_ready_timeout(state: State, port: Port) -> actor.Next(State, Message) {
-  // Only a sidecar still starting on this port is timed out; a ready one is
-  // left alone.
-  case state.sidecar == Starting(port) {
-    True -> {
-      let _ = ffi_port.close_port(port)
-      sidecar_failed(state, -2)
-    }
-
-    False -> actor.continue(state)
-  }
-}
-
-/// The port of a sidecar that has one.
-fn current_port(sidecar: Sidecar) -> Option(Port) {
-  case sidecar {
-    Starting(port) | Serving(port) -> Some(port)
-    GivenUp -> None
+    Serving(..) | Restarting | GivenUp -> sm.keep(data)
   }
 }
 
 /// The sidecar is gone. Every pending request fails with the exit status,
-/// subscribers are told, and then the actor either spawns a replacement or,
-/// with the budget spent, gives up. The restart count rises before the
-/// spawn, so a binary that fails to start at all still ends in `GivenUp`.
-fn sidecar_failed(state: State, status: Int) -> actor.Next(State, Message) {
-  dict.each(state.pending, fn(_, pending) { fail(pending, status) })
-  notify(state, SidecarDied(status))
+/// subscribers are told, and then the machine either waits out a backoff
+/// that grows with the number of consecutive failures, so a crash loop does
+/// not spin, or, with the budget spent, gives up. The restart count rises
+/// before the spawn, so a binary that fails to start at all still ends in
+/// `GivenUp`. The backoff is the only place the `respawn` timeout is armed.
+fn sidecar_failed(data: Data, status: Int) -> sm.Next(Phase, Data, Message) {
+  dict.each(data.pending, fn(_, pending) { fail(pending, status) })
+  notify(data, SidecarDied(status))
 
-  let restarts = state.restarts + 1
-  let state = State(..state, pending: dict.new(), restarts:)
+  let restarts = data.restarts + 1
+  let data = Data(..data, pending: dict.new(), restarts:)
 
-  // A spent budget gives up; otherwise a replacement is spawned.
-  case restarts > state.config.max_restarts {
-    True -> give_up(state)
-    False -> respawn(state)
+  // A spent budget gives up; otherwise a replacement is scheduled.
+  case restarts > data.config.max_restarts {
+    True -> {
+      notify(data, SidecarGaveUp)
+      sm.transition(to: GivenUp, data:)
+    }
+
+    False ->
+      sm.transition(to: Restarting, data:)
+      |> sm.with_named_timeout(
+        name: "respawn",
+        after: 200 * restarts,
+        sending: Respawn,
+      )
   }
 }
 
@@ -803,57 +883,45 @@ fn fail(pending: Pending, status: Int) -> Nil {
   }
 }
 
-/// Spawns a replacement after a short backoff that grows with the number
-/// of consecutive failures, so a crash loop does not spin.
-fn respawn(state: State) -> actor.Next(State, Message) {
-  process.sleep(200 * state.restarts)
+/// Spawns the replacement once the backoff is over. Spawning itself can
+/// fail, which counts as another failed attempt and so re-enters the
+/// backoff or gives up.
+fn respawn(data: Data) -> sm.Next(Phase, Data, Message) {
+  case ffi_port.open_sidecar(data.config.binary_path, data.config.state_dir) {
+    Ok(port) ->
+      sm.transition(to: Starting(port), data:)
+      |> sm.with_selector(selector_for(data.self, port))
 
-  // Whether the spawn succeeded decides between waiting for ready and
-  // counting another failure.
-  case ffi_port.open_sidecar(state.config.binary_path, state.config.state_dir) {
-    Ok(port) -> {
-      let timeout = state.config.ready_timeout_ms
-      let _ = process.send_after(state.self, timeout, ReadyTimeout(port))
-      actor.continue(State(..state, sidecar: Starting(port)))
-    }
-
-    // Spawning itself failed. That counts as another failed attempt.
-    Error(Nil) -> sidecar_failed(state, -1)
+    Error(Nil) -> sidecar_failed(data, -1)
   }
 }
 
-/// The budget is spent: refuse everything from now on.
-fn give_up(state: State) -> actor.Next(State, Message) {
-  list.each(state.waiters, process.send(_, Error(StartFailed(NeverReady))))
-  notify(state, SidecarGaveUp)
-
-  actor.continue(State(..state, sidecar: GivenUp, waiters: []))
-}
-
 /// Tells every subscriber about an event.
-fn notify(state: State, event: Event) -> Nil {
-  list.each(state.subscribers, process.send(_, event))
+fn notify(data: Data, event: Event) -> Nil {
+  list.each(data.subscribers, process.send(_, event))
 }
 
 /// Asks the sidecar to exit and closes its port, which closes its stdin and
-/// ends it even if the request is ignored, then stops the actor. Pending
+/// ends it even if the request is ignored, then stops the machine. Pending
 /// requests are failed, not abandoned.
 fn stop(
-  state: State,
+  phase: Phase,
+  data: Data,
   reply_to: Subject(Result(Nil, TorError)),
-) -> actor.Next(State, Message) {
-  // A sidecar with a port is told to exit; a given-up one has nothing to close.
-  case current_port(state.sidecar) {
-    Some(port) -> {
+) -> sm.Next(Phase, Data, Message) {
+  // A sidecar with a port is told to exit; a dead one has nothing to close.
+  case phase {
+    Starting(port) | Serving(port) -> {
       let _ = ffi_port.send_frame(port, codec.encode_shutdown())
       let _ = ffi_port.close_port(port)
       Nil
     }
-    None -> Nil
+
+    Restarting | GivenUp -> Nil
   }
 
-  dict.each(state.pending, fn(_, pending) { fail(pending, -3) })
+  dict.each(data.pending, fn(_, pending) { fail(pending, -3) })
   process.send(reply_to, Ok(Nil))
 
-  actor.stop()
+  sm.stop()
 }

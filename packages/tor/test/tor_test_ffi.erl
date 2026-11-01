@@ -3,9 +3,17 @@
 %% `src` has its own shim.
 -module(tor_test_ffi).
 
--export([getenv/1, make_scratch_dir/0, remove_dir/1, pid_alive/1, kill_nine/1,
+-export([write_script/2, getenv/1, make_scratch_dir/0, remove_dir/1, pid_alive/1, kill_nine/1,
          monotonic_ms/0, rss_kb/1, file_size/1, start_echo/0, start_sink/0,
          drain_sink/1]).
+
+%% Writes an executable script, a stand-in sidecar that never speaks the
+%% control protocol: one that stays silent, or one that exits at once.
+write_script(Path, Body) ->
+    P = binary_to_list(Path),
+    ok = file:write_file(P, Body),
+    ok = file:change_mode(P, 8#755),
+    nil.
 
 getenv(Name) ->
     case os:getenv(binary_to_list(Name)) of
@@ -16,7 +24,10 @@ getenv(Name) ->
 %% A short path under /tmp: a unix socket path is limited to about 100
 %% bytes, and the platform temp directory can already use most of that.
 make_scratch_dir() ->
-    Dir = "/tmp/rwtor-" ++ integer_to_list(erlang:unique_integer([positive])),
+    %% The VM's unique integers restart at every run, so a directory left by an
+    %% earlier run would collide; the os pid keeps runs apart.
+    Dir = "/tmp/rwtor-" ++ os:getpid() ++ "-"
+          ++ integer_to_list(erlang:unique_integer([positive])),
     ok = file:make_dir(Dir),
     list_to_binary(Dir).
 

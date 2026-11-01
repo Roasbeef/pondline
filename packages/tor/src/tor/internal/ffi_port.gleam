@@ -48,13 +48,13 @@ pub fn close_port(port: Port) -> Result(Nil, Nil)
 @external(erlang, "tor_ffi", "port_os_pid")
 pub fn os_pid(port: Port) -> Result(Int, Nil)
 
-/// Recognises a port message in the actor's mailbox. The `Dynamic` is the
-/// raw message handed over by `select_other`; it is classified at once and
-/// never kept, and anything that is not a port `data` or `exit_status`
-/// message is `Error(Nil)`.
+/// Recognises a port message in the machine's mailbox. The `Dynamic` is the
+/// raw message handed over by `select_record` for one port; it is
+/// classified at once and never kept, and anything that is not a port
+/// `data` or `exit_status` message is `Error(Nil)`.
 ///
 /// Foreign function: `tor_ffi:classify_message/1`. No pure alternative
-/// exists; a port message is a tuple whose first element is a port, which
-/// `select_record` cannot match on.
+/// exists; the payload of a port message is an Erlang term that Gleam has
+/// no decoder for.
 @external(erlang, "tor_ffi", "classify_message")
 pub fn classify_message(message: Dynamic) -> Result(PortMessage, Nil)

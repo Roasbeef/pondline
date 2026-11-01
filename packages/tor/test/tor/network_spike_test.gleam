@@ -15,6 +15,7 @@ import tor
 import tor/address
 import tor/stream
 import tor/support
+import weft/poll
 
 pub fn run_spike() -> Nil {
   case support.network_enabled() {
@@ -33,23 +34,29 @@ fn seconds_since(started: Int) -> String {
 }
 
 /// Connects with backoff until the onion service is reachable, which can
-/// take a minute or more after its descriptor is published.
+/// take a minute or more after its descriptor is published. `within` is the
+/// whole budget in milliseconds.
 fn connect_when_reachable(
   t: tor.Tor,
   onion: address.OnionAddress,
   port: address.Port,
   group: String,
-  deadline: Int,
+  within: Int,
 ) -> stream.Stream {
-  case tor.connect(t, onion, port, group, 30_000) {
-    Ok(s) -> s
-    Error(error) -> {
-      let assert True = support.monotonic_ms() < deadline
-        as "onion service never became reachable"
-      report("connect retry: " <> string_of(error))
-      process.sleep(5000)
-      connect_when_reachable(t, onion, port, group, deadline)
+  let attempt = fn() {
+    case tor.connect(t, onion, port, group, 30_000) {
+      Ok(s) -> poll.Done(s)
+      Error(error) -> {
+        report("connect retry: " <> string_of(error))
+        poll.Retry
+      }
     }
+  }
+
+  case poll.until(within:, every: 5000, attempt:) {
+    poll.Answered(s) -> s
+    poll.Failed(Nil) | poll.Expired ->
+      panic as "onion service never became reachable"
   }
 }
 
@@ -97,7 +104,6 @@ fn spike() -> Nil {
   report("host_onion returned: " <> seconds_since(t2))
   // The first connect, polled until the descriptor is fetchable.
   let assert Ok(port80) = address.port(80)
-  let deadline = support.monotonic_ms() + 300_000
   let t3 = support.monotonic_ms()
   let s =
     connect_when_reachable(
@@ -105,7 +111,7 @@ fn spike() -> Nil {
       hosted.address,
       port80,
       "spike",
-      deadline,
+      300_000,
     )
   report("reachable (host_onion to first stream): " <> seconds_since(t2))
   report("last connect call: " <> seconds_since(t3))
@@ -149,7 +155,7 @@ fn spike() -> Nil {
       hosted.address,
       port80,
       "spike",
-      support.monotonic_ms() + 300_000,
+      300_000,
     )
   report("first connect after restart: " <> seconds_since(t5))
   let assert Ok(Nil) = stream.send(s2, <<"again":utf8>>, 10_000)
@@ -173,13 +179,7 @@ fn backpressure(host_side: tor.Tor, client_side: tor.Tor) -> Nil {
   let assert Ok(hosted) = tor.host_onion(host_side, "sink", sink_port, 60_000)
   let assert Ok(port80) = address.port(80)
   let s =
-    connect_when_reachable(
-      client_side,
-      hosted.address,
-      port80,
-      "sink",
-      support.monotonic_ms() + 300_000,
-    )
+    connect_when_reachable(client_side, hosted.address, port80, "sink", 300_000)
 
   let chunk = <<0:size(65_536 * 8)>>
   let sent = send_until_stalled(s, chunk, 0)

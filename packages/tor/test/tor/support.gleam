@@ -5,6 +5,10 @@ import gleam/erlang/process
 import gleam/io
 import gleam/result
 import tor
+import weft/poll
+
+@external(erlang, "tor_test_ffi", "write_script")
+pub fn write_script(path: String, body: String) -> Nil
 
 @external(erlang, "tor_test_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)
@@ -70,16 +74,16 @@ pub fn with_sidecar(body: fn(tor.Tor, String) -> a) -> a {
 
 /// Polls until the check holds or the time is up.
 pub fn wait_until(check: fn() -> Bool, timeout_ms: Int) -> Bool {
-  case check() {
-    True -> True
-    False ->
-      case timeout_ms <= 0 {
-        True -> False
-        False -> {
-          process.sleep(100)
-          wait_until(check, timeout_ms - 100)
-        }
+  case
+    poll.until(within: timeout_ms, every: 50, attempt: fn() {
+      case check() {
+        True -> poll.Done(Nil)
+        False -> poll.Retry
       }
+    })
+  {
+    poll.Answered(Nil) -> True
+    poll.Failed(Nil) | poll.Expired -> False
   }
 }
 
@@ -89,14 +93,26 @@ pub fn wait_event(
   wanted: fn(tor.Event) -> Bool,
   timeout_ms: Int,
 ) -> Result(tor.Event, Nil) {
-  let started = monotonic_ms()
-  case process.receive(events, timeout_ms) {
+  // Each attempt drains whatever has arrived; `Retry` means nothing wanted
+  // was in the mailbox yet.
+  let drain = fn() { drain_until_wanted(events, wanted) }
+
+  case poll.until(within: timeout_ms, every: 25, attempt: drain) {
+    poll.Answered(event) -> Ok(event)
+    poll.Failed(Nil) | poll.Expired -> Error(Nil)
+  }
+}
+
+fn drain_until_wanted(
+  events: process.Subject(tor.Event),
+  wanted: fn(tor.Event) -> Bool,
+) -> poll.Attempt(tor.Event, Nil) {
+  case process.receive(events, 0) {
     Ok(event) ->
       case wanted(event) {
-        True -> Ok(event)
-        False ->
-          wait_event(events, wanted, timeout_ms - { monotonic_ms() - started })
+        True -> poll.Done(event)
+        False -> drain_until_wanted(events, wanted)
       }
-    Error(Nil) -> Error(Nil)
+    Error(Nil) -> poll.Retry
   }
 }
