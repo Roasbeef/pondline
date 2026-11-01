@@ -34,7 +34,9 @@ primitive functions the shell builds from `packages/primitives`.
 - `core/time`: `Instant` in Unix seconds; `is_past` treats the deadline
   itself as still valid.
 - `core/limits`: the spec's §11.3 provisional limits and the ratchet's
-  skip bounds, as named constants, and `padded_size`.
+  skip bounds, as named constants, and `padded_size`. The shell's bounds
+  live here too: `max_process_attempts` (ADR-010), `max_send_key_bytes` and
+  `send_key_seconds` (ADR-011).
 - `core/tlv`: a BOLT #1 TLV codec (BigSize, `parse`/`Stream`, a `use`-style
   `Decoder` with `required`/`optional`/`run`, field codecs, `Builder`).
   Canonical by construction.
@@ -65,10 +67,14 @@ primitive functions the shell builds from `packages/primitives`.
   returning `#(State, output)`, and a total, bounded state codec.
 - `core/plan`: what a transition returns (`Plan`, `Record`, `Effect`),
   including `Fingerprint` and the `Remembered` record, the receiver's memory
-  of a ciphertext it stored a message from.
+  of a ciphertext it stored a message from, and `RepeatedMessage`, the
+  record of an ignored repeated identifier (ADR-010).
 - `core/relationship`: the relationship state machine; `fingerprint` and
   `resend_receipt` answer a ciphertext that arrives again with the same
-  logical receipt (ADR-006).
+  logical receipt (ADR-006). An inbound ratchet message is received in two
+  steps: `open` decrypts it into an opaque `Opened`, the shell looks
+  `opened_message` up and answers with an `IdHistory` (`FreshId`,
+  `UsedId`), and `receive(opened, history)` decides (ADR-010).
 - `core/retransmit`: end-to-end retransmission (ADR-006). `due_at` is the
   schedule (`limits.receipt_window_seconds`, doubling, at most
   `limits.max_retransmits` copies, never past the deadline);
@@ -122,11 +128,14 @@ None. `core` sends no messages and owns no processes.
   a stored count over the bound.
 - A sender never offers the mailbox's full retention by its own clock: the
   first offer sits `retention_slack_seconds` below it, the list of offers is
-  finite (`max_deadline_offers`), and no offer is `now` or earlier or past
-  the row's deadline (`test/core/retention_test.gleam`, with properties). A
-  mailbox whose clock trails the sender's by up to the slack accepts the
-  first offer. The pure simulation does not model clock skew and still
-  stores envelopes under the row's deadline.
+  finite (`max_deadline_offers`), no offer is past the row's deadline, and
+  for a row whose deadline is still ahead no offer is `now` or earlier (a
+  row exactly at its deadline is offered the deadline, which the mailbox
+  refuses) (`test/core/retention_test.gleam`, with properties). A mailbox
+  whose clock trails the sender's by up to the slack accepts the first
+  offer, and one up to 529 650 s (about 6.1 days) behind accepts some
+  offer. The pure simulation does not model clock skew and still stores
+  envelopes under the row's deadline.
 - A ticket's decoder is total and strict: lowercase, the checksum before
   the payload, exact lengths, zero padding; whatever it accepts re-encodes
   to the same text, and every single substitution and any eight are
@@ -136,6 +145,12 @@ None. `core` sends no messages and owns no processes.
   derived value has its own label. Mutation-checked: dropping the
   commitment check, or deriving the commitment key under the AEAD key's
   label, each fail a test there.
+- An application message the relationship would store under an identifier
+  it already used (`UsedId`) is ignored: the session advances, the plan is
+  the `Processed` record and one `RepeatedMessage`, with no delivery, receipt
+  or budget; only application messages consult the history
+  (`test/core/dedup_test.gleam`, ADR-010). Mutation-checked: ignoring the
+  history fails it.
 - The fake `Suite` used by tests lives under `test/` only, so it cannot be
   compiled into a release (spec §13.3).
 - A retransmit is the same committed padded ciphertext under a new envelope
@@ -171,6 +186,17 @@ None. `core` sends no messages and owns no processes.
   (prints the seed and run index of the first failure); replay one seed
   with `REEDWIRE_REPLAY=<hex> gleam test` or
   `core@swarm:replay("<hex>")`.
+- `core/tlv`, `limits.padded_size`, `envelope.pad`/`unpad`/`from_wire`,
+  `retention.offers` and `retransmit.due_at` are transcribed into Lean and
+  proved (`formal/lean`, `docs/formal/lean.md`). The proofs hold for Gleam
+  only while `test/core/formal_vectors_test.gleam` passes: it replays the
+  11 201 generated vectors in `test/core/formal_vectors.txt` against the real
+  functions. Changing one of these functions means changing its Lean
+  definition and rerunning `formal/lean/check.sh --write`; never edit the
+  vectors by hand. Mutation-checked: a non-minimal BigSize, a repeated type,
+  ignored unknown even types, an off-by-one halving, a dropped slack, `<`
+  for `<=` on the retransmit deadline or on a bucket, and a miscounted
+  length prefix each fail it.
 - `fake_suite.seeded(n)` draws identifiers from a seeded counter, so a
   simulation run depends only on its seed; `fake_suite.suite()` keeps a
   process-wide counter for tests that build several suites.
@@ -184,7 +210,9 @@ None. `core` sends no messages and owns no processes.
 - `docs/adr/008-deadline-slack.md` (retention slack and shorter offers).
 - `docs/adr/009-invitation-tickets.md` (tickets, the sealed blob) and
   `docs/crypto-profile-v1.md` §11.
+- `docs/adr/010-dedup-and-quarantine.md` (repeated identifiers).
 - `docs/crypto-profile-v1.md` (the profile, byte for byte),
   `docs/adr/002-pq-crypto-over-otp.md` and
   `docs/adr/005-hybrid-authentication.md`.
 - `docs/gleam-style.md` Part IV §5 (purity layering).
+- `docs/formal/lean.md` (the Lean proofs and the conformance vectors).

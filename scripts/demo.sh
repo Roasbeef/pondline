@@ -4,7 +4,13 @@
 # end to end (docs/demo.md).
 #
 #   scripts/demo.sh --carrier=loopback|tor [--pairing=ticket|file]
-#                   [--messages N] [--skip-build] [--keep]
+#                   [--messages N] [--skip-build] [--keep] [--release DIR]
+#
+# --release runs every program from a release tree instead of the Gleam
+# shipments: build/release/<platform>/reedwire, an unpacked tarball, or an
+# installed one ($PREFIX/lib/reedwire/current). Nothing is built, the Tor
+# sidecar is the tree's own, and the agents' sandbox is given the tree in
+# place of the host's Erlang (docs/demo.md).
 #
 # What runs, and where:
 #
@@ -46,6 +52,7 @@ PAIRING=ticket
 MESSAGES=6
 BUILD=yes
 KEEP=no
+RELEASE=""
 
 # The pairing's budget: how many application messages the acceptor may send
 # the inviter before the rest are held for the operator.
@@ -61,6 +68,8 @@ while [ $# -gt 0 ]; do
     --messages) shift; MESSAGES="${1:-}" ;;
     --skip-build) BUILD=no ;;
     --keep) KEEP=yes ;;
+    --release=*) RELEASE="${1#--release=}"; BUILD=no ;;
+    --release) shift; RELEASE="${1:-}"; BUILD=no ;;
     -h|--help)
       sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'
       exit 0
@@ -207,35 +216,56 @@ if [ "$BUILD" = yes ]; then
   fi
 fi
 
-DAEMON_SHIP="$ROOT/packages/daemon/build/erlang-shipment"
-MAILBOX_SHIP="$ROOT/packages/mailbox/build/erlang-shipment"
-SIDECAR="$ROOT/native/reedwire-tor/target/release/reedwire-tor"
+if [ -n "$RELEASE" ]; then
 
-[ -d "$DAEMON_SHIP" ] || die "no daemon shipment (run without --skip-build)"
-[ -d "$MAILBOX_SHIP" ] || die "no mailbox shipment (run without --skip-build)"
+  # A release tree carries the VM, both programs and the sidecar, so it
+  # stands in for the shipments and for the host's Erlang alike. Seatbelt
+  # matches real paths, so the symlinks of an installed tree are resolved.
+  [ -x "$RELEASE/bin/reedwire" ] || die "no release at $RELEASE (make release)"
+  RELEASE=$(cd "$RELEASE" && pwd -P)
+  DAEMON_SHIP=$RELEASE
+  OTP_ROOT=$RELEASE
+  SIDECAR="$RELEASE/bin/reedwire-tor"
+  step "running from the release $RELEASE ($(sed -n 's/^commit=//p' "$RELEASE/BUILD"))"
+else
+  DAEMON_SHIP="$ROOT/packages/daemon/build/erlang-shipment"
+  MAILBOX_SHIP="$ROOT/packages/mailbox/build/erlang-shipment"
+  SIDECAR="$ROOT/native/reedwire-tor/target/release/reedwire-tor"
+
+  [ -d "$DAEMON_SHIP" ] || die "no daemon shipment (run without --skip-build)"
+  [ -d "$MAILBOX_SHIP" ] || die "no mailbox shipment (run without --skip-build)"
+
+  # Seatbelt matches real paths, so the paths handed to the sandbox have
+  # their symlinks resolved. `erl` is a symlink into Homebrew's Cellar.
+  DAEMON_SHIP=$(cd "$DAEMON_SHIP" && pwd -P)
+  OTP_ROOT=$(dirname "$(dirname "$(readlink -f "$(command -v erl)")")")
+fi
 if [ "$CARRIER" = tor ] && [ ! -x "$SIDECAR" ]; then
   die "no Tor sidecar at $SIDECAR (run without --skip-build)"
 fi
-
-# Seatbelt matches real paths, so the paths handed to the sandbox have their
-# symlinks resolved. `erl` is a symlink into Homebrew's Cellar.
-DAEMON_SHIP=$(cd "$DAEMON_SHIP" && pwd -P)
-OTP_ROOT=$(dirname "$(dirname "$(readlink -f "$(command -v erl)")")")
 
 # --------------------------------------------------------------- the tools
 
 # The mailbox command (`mailbox serve|grant`).
 mailbox() {
-  erl -pa "$MAILBOX_SHIP"/*/ebin -eval 'mailbox:main(), erlang:halt(0)' \
-    -noshell -extra "$@"
+  if [ -n "$RELEASE" ]; then
+    "$RELEASE/bin/mailbox" "$@"
+  else
+    erl -pa "$MAILBOX_SHIP"/*/ebin -eval 'mailbox:main(), erlang:halt(0)' \
+      -noshell -extra "$@"
+  fi
 }
 
 # The operator's `reedwire`: it uses <state-dir>/operator.cred by default, so
 # the credential variable must not leak in from the caller's environment.
 reedwire() {
-  env -u REEDWIRE_CREDENTIAL_FILE \
-    erl -pa "$DAEMON_SHIP"/*/ebin -eval 'reedwire:main(), erlang:halt(0)' \
-    -noshell -extra "$@"
+  if [ -n "$RELEASE" ]; then
+    env -u REEDWIRE_CREDENTIAL_FILE "$RELEASE/bin/reedwire" "$@"
+  else
+    env -u REEDWIRE_CREDENTIAL_FILE \
+      erl -pa "$DAEMON_SHIP"/*/ebin -eval 'reedwire:main(), erlang:halt(0)' \
+      -noshell -extra "$@"
+  fi
 }
 
 # Runs a command inside the agent sandbox. The agent gets a scrubbed

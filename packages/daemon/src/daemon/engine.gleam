@@ -54,12 +54,29 @@
 //// processed-and-dropped, so the mailbox can still be acknowledged once the
 //// drop is durable.
 ////
+//// An envelope that is not a repeat is counted before it is processed
+//// (`store.count_attempt`, its own transaction). One that has failed
+//// `limits.max_process_attempts` times is quarantined instead (ADR-010):
+//// recorded as dropped, so the fetcher acknowledges it, and written as an
+//// incident for the operator, so one envelope that cannot be processed
+//// cannot block its queue. The count survives a crash of the engine, which
+//// is what makes a crash loop end too.
+////
 //// A `Ratchet` frame is first looked up by its fingerprint
 //// (`relationship.fingerprint`, `store.fingerprint`). A ciphertext the
 //// relationship already stored a message from is a sender's retransmit or a
 //// mailbox's replay: its key is spent, so it goes to
 //// `relationship.resend_receipt`, which queues the same logical receipt
 //// again and delivers nothing (ADR-006, spec §7.3).
+////
+//// Any other ratchet message is received in two steps (ADR-010):
+//// `relationship.open` decrypts it, the engine reads whether the
+//// relationship already stored a message under its identifier
+//// (`store.message_history`), and `relationship.receive` decides with that
+//// answer. A repeated identifier is ignored by the core and recorded as an
+//// incident for the operator, so a forging peer cannot make the commit fail
+//// on the deliveries' uniqueness and wedge its queue. A history that
+//// cannot be read is `Unavailable`, never a guess.
 ////
 //// ## Retransmitting
 ////
@@ -105,6 +122,7 @@ import core/id.{
   type Message as MessageKind, type Queue,
 }
 import core/invitation
+import core/limits
 import core/offer.{type Approval}
 import core/plan.{type EnvelopeRef, type Plan, EnvelopeRef}
 import core/relationship.{type Relationship}
@@ -119,6 +137,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
+import gleam/string
 import weft/actor
 
 /// How long a caller waits for the engine before the call is reported
@@ -218,6 +237,9 @@ pub type JobKind {
   MarkAcked
   OutboxPending
   Retransmit
+  Incidents
+  IncidentCount
+  DrainingInboxes
 }
 
 /// What the fault hook makes of one job. Only a simulation sets a hook; a
@@ -502,23 +524,43 @@ pub fn accept(
         "the file is not a valid invitation",
       )),
     )
-    use inbox <- result.try(new_inbox(state))
-
-    let terms =
-      relationship.Terms(inbox:, description:, budget: state.accept_budget)
-    use made <- result.try(
-      relationship.join(state.suite, invite, state.policy, terms, state.clock())
-      |> result.map_error(join_failure),
+    use earlier <- result.try(
+      fault(store.contact_by_invitation(state.store, invite.id)),
     )
 
-    use _ <- result.try(commit_change(
-      state,
-      store.Started(made, description),
-      Some(made.state.contact),
-    ))
-
-    Ok(made.state.contact)
+    // An invitation is redeemed once (ADR-011): accepting it again, as a
+    // caller retrying an answer it never saw does, returns the relationship
+    // it started and starts no second joiner, until that one is closed.
+    case earlier {
+      Some(contact) -> Ok(contact)
+      None -> join(state, invite, description)
+    }
   })
+}
+
+/// Starts a joiner for an invitation not redeemed before: a fresh identity
+/// and inbox, committed as `Joining`.
+fn join(
+  state: State,
+  invite: invitation.Invitation,
+  description: String,
+) -> Result(Id(Contact), Failure) {
+  use inbox <- result.try(new_inbox(state))
+
+  let terms =
+    relationship.Terms(inbox:, description:, budget: state.accept_budget)
+  use made <- result.try(
+    relationship.join(state.suite, invite, state.policy, terms, state.clock())
+    |> result.map_error(join_failure),
+  )
+
+  use _ <- result.try(commit_change(
+    state,
+    store.Started(made, description),
+    Some(made.state.contact),
+  ))
+
+  Ok(made.state.contact)
 }
 
 /// The mailbox created this queue. An offer opens, or a joiner's session
@@ -717,38 +759,142 @@ pub fn raise_budget(
 /// commit together, and the message identifier is returned. Nothing has been
 /// sent when this returns; the scheduler transmits the committed row.
 ///
+/// With a caller's idempotency `key` (ADR-011) a send is safe to retry
+/// after an answer the caller never saw: a key already used on this
+/// relationship for the same request answers with the first message and
+/// queues nothing, and one used for a different request is refused. The key
+/// commits in the send's own transaction, so it exists exactly when the
+/// message does. Without a key every call is a new message.
+///
 /// ## Examples
 ///
 /// ```gleam
-/// engine.send(name, contact, "text/plain", <<"hi">>, None)
+/// engine.send(name, contact, Some("order-17"), "text/plain", <<"hi">>, None)
 /// // -> Ok(message_id)
 /// ```
 pub fn send(
   name: Handle(Message),
   contact: Id(Contact),
+  key: Option(String),
   content_type: String,
   payload: BitArray,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), Failure) {
   run(name, Send, fn(state) {
-    use made <- result.try(
-      revise(state, contact, fn(current) {
-        relationship.send(
-          state.suite,
-          current,
-          state.clock(),
-          content_type,
-          payload,
-          in_reply_to,
-          None,
-        )
-      }),
-    )
+    let suite = state.suite
+    let clock = state.clock
+    let step = fn(current) {
+      relationship.send(
+        suite,
+        current,
+        clock(),
+        content_type,
+        payload,
+        in_reply_to,
+        None,
+      )
+    }
 
-    // The message identifier exists only inside the outbox record the plan
-    // carries.
-    sent_message(made.records)
+    // An unkeyed send is always new; a keyed one may be a retry.
+    case key {
+      None -> {
+        use made <- result.try(revise(state, contact, step))
+
+        // The message identifier exists only inside the outbox record the
+        // plan carries.
+        sent_message(made.records)
+      }
+
+      Some(key) -> {
+        let digest =
+          request_digest(state.suite, content_type, payload, in_reply_to)
+        keyed_send(state, contact, key, digest, step)
+      }
+    }
   })
+}
+
+/// A send under an idempotency key: the first message under the key on this
+/// relationship, a refusal for a key reused on another request, or a new
+/// send that commits the key with it.
+fn keyed_send(
+  state: State,
+  contact: Id(Contact),
+  key: String,
+  digest: BitArray,
+  step: fn(Relationship) -> Result(Plan(Relationship), relationship.Refusal),
+) -> Result(Id(MessageKind), Failure) {
+  use Nil <- result.try(check_send_key(key))
+  use prior <- result.try(
+    fault(store.send_by_key(state.store, contact, key, state.clock())),
+  )
+
+  // A remembered key answers for its first message, and only for it.
+  case prior {
+    Some(found) ->
+      case state.suite.constant_time_equal(found.digest, digest) {
+        True -> Ok(found.message)
+        False ->
+          Error(Refused("the idempotency key was used for a different message"))
+      }
+
+    None -> {
+      use found <- result.try(
+        fault(store.relationship_by_contact(state.store, contact)),
+      )
+      use record <- result.try(option.to_result(found, NotFound))
+      use made <- result.try(
+        step(record.relationship) |> result.map_error(refused),
+      )
+      use message <- result.try(sent_message(made.records))
+
+      let change =
+        store.KeyedSend(
+          plan: made,
+          version: record.version,
+          key: store.SendKey(key:, message:, digest:),
+        )
+      use _ <- result.try(commit_change(state, change, Some(contact)))
+
+      Ok(message)
+    }
+  }
+}
+
+/// Refuses an idempotency key that is empty or longer than
+/// `limits.max_send_key_bytes`.
+fn check_send_key(key: String) -> Result(Nil, Failure) {
+  let size = string.byte_size(key)
+
+  // The bound is in bytes, as the store and the wire count them.
+  case size >= 1 && size <= limits.max_send_key_bytes {
+    True -> Ok(Nil)
+    False -> Error(Refused("the idempotency key is empty or too long"))
+  }
+}
+
+/// SHA-256 over what a send asks for, each field framed so no two requests
+/// share an encoding: the content type with its length, whether a reply
+/// target follows and the target, then the payload.
+fn request_digest(
+  suite: Suite,
+  content_type: String,
+  payload: BitArray,
+  in_reply_to: Option(Id(MessageKind)),
+) -> BitArray {
+  // A tag byte says whether a reply target follows, so no request without
+  // one encodes like a request with one.
+  let reply = case in_reply_to {
+    Some(target) -> <<1, id.to_bytes(target):bits>>
+    None -> <<0>>
+  }
+
+  suite.sha256(<<
+    string.byte_size(content_type):32,
+    content_type:utf8,
+    reply:bits,
+    payload:bits,
+  >>)
 }
 
 /// The identifier of the application message a plan queued.
@@ -765,6 +911,7 @@ fn sent_message(
         | plan.Released(..)
         | plan.PeerReceived(..)
         | plan.Remembered(..)
+        | plan.RepeatedMessage(..)
         | plan.Audit(..) -> Error(Nil)
       }
     })
@@ -882,11 +1029,56 @@ fn handle_envelope(
     Some(stored) ->
       case state.suite.constant_time_equal(stored, digest) {
         True -> Ok(Repeat)
-        False -> new_envelope(state, ref, padded)
+        False -> attempt(state, ref, padded)
       }
 
-    None -> new_envelope(state, ref, padded)
+    None -> attempt(state, ref, padded)
   }
+}
+
+/// Counts this attempt durably, then processes the envelope, or quarantines
+/// it once it has failed `limits.max_process_attempts` times (ADR-010).
+///
+/// The count commits before the core sees the envelope, so an attempt that
+/// crashes the engine or fails its commit has counted, and a crash loop
+/// ends in quarantine like any other failure. An attempt whose commit
+/// landed is never counted again: its `Processed` row clears the count,
+/// and a redelivery of it is a `Repeat` above, which is how an ask that
+/// applied and then failed escapes being blamed on the envelope.
+fn attempt(
+  state: State,
+  ref: EnvelopeRef,
+  padded: Padded,
+) -> Result(Handled, Failure) {
+  use count <- result.try(
+    fault(store.count_attempt(state.store, ref.queue, ref.envelope)),
+  )
+
+  // Within the bound the envelope is processed; past it, set aside.
+  case count > limits.max_process_attempts {
+    False -> new_envelope(state, ref, padded)
+    True -> quarantine(state, ref, count - 1)
+  }
+}
+
+/// Drops and records an envelope that failed `failures` times, so the
+/// fetcher acknowledges it and the queue behind it moves. Nothing of the
+/// relationship changes: an honest message set aside this way is still
+/// unreceipted at its sender, whose retransmit is processed fresh.
+fn quarantine(
+  state: State,
+  ref: EnvelopeRef,
+  failures: Int,
+) -> Result(Handled, Failure) {
+  use owner <- result.try(
+    fault(store.relationship_by_queue(state.store, ref.queue)),
+  )
+
+  let contact = option.map(owner, fn(record) { record.relationship.contact })
+  let change = store.Quarantined(ref:, contact:, attempts: failures)
+  use _ <- result.try(commit_change(state, change, None))
+
+  Ok(Fresh)
 }
 
 /// Opens the frame and routes it by its tag.
@@ -981,19 +1173,18 @@ fn receive(
       // A ciphertext a message was already stored from is answered with its
       // receipt again and never decrypted; anything else goes through the
       // session.
-      let outcome = case known {
+      use outcome <- result.try(case known {
         Some(fingerprint) ->
-          relationship.resend_receipt(
+          Ok(relationship.resend_receipt(
             state.suite,
             current,
             state.clock(),
             ref,
             fingerprint,
-          )
+          ))
 
-        None ->
-          relationship.receive(state.suite, current, state.clock(), ref, bytes)
-      }
+        None -> open_and_receive(state, current, ref, bytes)
+      })
 
       // A plan commits with the relationship's new state; a refusal is
       // committed as a drop so the mailbox can still be acknowledged.
@@ -1004,6 +1195,38 @@ fn receive(
 
         Error(_) -> drop(state, ref)
       }
+    }
+  }
+}
+
+/// Opens a ratchet message and receives it with its identifier's history
+/// read from the deliveries (ADR-010). The outer `Result` is the store's:
+/// a history that cannot be read is `Unavailable` and commits nothing,
+/// because guessing it either way could deliver a message twice or lose
+/// one. The inner one is the core's, where a refusal becomes a drop.
+fn open_and_receive(
+  state: State,
+  current: Relationship,
+  ref: EnvelopeRef,
+  bytes: BitArray,
+) -> Result(Result(Plan(Relationship), relationship.Refusal), Failure) {
+  let opened =
+    relationship.open(state.suite, current, state.clock(), ref, bytes)
+
+  // Only a message the session opened has an identifier to look up.
+  case opened {
+    Error(refusal) -> Ok(Error(refusal))
+
+    Ok(opened) -> {
+      use history <- result.try(
+        fault(store.message_history(
+          state.store,
+          current.contact,
+          relationship.opened_message(opened),
+        )),
+      )
+
+      Ok(relationship.receive(opened, history))
     }
   }
 }
@@ -1076,6 +1299,36 @@ pub fn audit(
   run(name, Audit, fn(state) { fault(store.audit(state.store, contact, limit)) })
 }
 
+/// The most recent incidents, newest first: envelopes the daemon set aside
+/// without delivering them (ADR-010).
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.incidents(name, 20)
+/// // -> Ok([record])
+/// ```
+pub fn incidents(
+  name: Handle(Message),
+  limit: Int,
+) -> Result(List(store.IncidentRecord), Failure) {
+  run(name, Incidents, fn(state) { fault(store.incidents(state.store, limit)) })
+}
+
+/// How many incidents were ever recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.incident_count(name)
+/// // -> Ok(0)
+/// ```
+pub fn incident_count(name: Handle(Message)) -> Result(Int, Failure) {
+  run(name, IncidentCount, fn(state) {
+    fault(store.incident_count(state.store))
+  })
+}
+
 /// The inboxes to fetch from.
 ///
 /// ## Examples
@@ -1086,6 +1339,20 @@ pub fn audit(
 /// ```
 pub fn live_inboxes(name: Handle(Message)) -> Result(List(Inbox), Failure) {
   run(name, LiveInboxes, fn(state) { fault(store.live_inboxes(state.store)) })
+}
+
+/// The retired inboxes that still owe the mailbox an acknowledgement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.draining_inboxes(name)
+/// // -> Ok([])
+/// ```
+pub fn draining_inboxes(name: Handle(Message)) -> Result(List(Inbox), Failure) {
+  run(name, DrainingInboxes, fn(state) {
+    fault(store.draining_inboxes(state.store))
+  })
 }
 
 /// The inboxes whose queue the mailbox must still be asked to create.
@@ -1394,5 +1661,8 @@ pub fn kind_label(kind: JobKind) -> String {
     MarkAcked -> "mark_acked"
     OutboxPending -> "outbox_pending"
     Retransmit -> "retransmit"
+    Incidents -> "incidents"
+    IncidentCount -> "incident_count"
+    DrainingInboxes -> "draining_inboxes"
   }
 }

@@ -45,8 +45,11 @@
 //// ## Encoding
 ////
 //// A `Builder` holds at most one value per type and sorts on `encode`, so
+//// for types that fit in a u64 (every codec type here is a small constant)
 //// the encoder cannot emit a duplicate, an out-of-order record, or a
-//// non-minimal BigSize. Encoders are total: a number outside the width it
+//// non-minimal BigSize. Two types above 2^64 - 1 would clamp to the same
+//// BigSize and encode a stream `parse` refuses (`docs/formal/lean.md`).
+//// Encoders are total: a number outside the width it
 //// is written at is clamped to the nearest representable value, so callers
 //// hold values already bounded by `core/limits` and the codec never
 //// silently wraps around.

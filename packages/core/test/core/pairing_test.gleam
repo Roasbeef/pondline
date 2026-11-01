@@ -178,8 +178,9 @@ pub fn application_before_approval_is_never_delivered_test() {
   let assert Ok(queue) = id.from_bytes(<<1:128>>)
   let assert Ok(envelope_id) = id.from_bytes(<<2:128>>)
   let ref = plan.EnvelopeRef(queue:, envelope: envelope_id, digest: <<>>)
-  let assert Ok(received) =
-    relationship.receive(w.suite, inviter, Instant(1000), ref, bytes)
+  let assert Ok(opened) =
+    relationship.open(w.suite, inviter, Instant(1000), ref, bytes)
+  let assert Ok(received) = relationship.receive(opened, relationship.FreshId)
 
   let delivered =
     list.filter(received.records, fn(record) {

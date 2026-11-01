@@ -50,6 +50,20 @@ pub fn health_in_json_prints_the_response_line_test() {
     == "{\"ok\":true,\"result\":{\"mailbox\":\"reachable\"}}\n"
 }
 
+pub fn incidents_print_one_line_each_without_a_payload_test() {
+  use f <- fixture.with_server
+
+  let outcome = run(f, ["incidents", "--limit", "5"])
+
+  assert outcome.status == 0
+  assert stdout(outcome)
+    == "1700000002 repeated_message contact="
+    <> contact_hex()
+    <> " message="
+    <> message_hex()
+    <> " attempts=-\n"
+}
+
 pub fn contacts_list_prints_one_line_per_contact_test() {
   use f <- fixture.with_server
 

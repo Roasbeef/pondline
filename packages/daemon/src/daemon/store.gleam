@@ -227,6 +227,11 @@ pub type Commit {
   /// A transition of an existing relationship, computed from `version`.
   Revised(plan: Plan(Relationship), version: Int)
 
+  /// A send under a caller's idempotency key (ADR-011): `Revised`, and the
+  /// key remembered with the message it produced in the same transaction,
+  /// so a retry that finds the key finds a message that is committed.
+  KeyedSend(plan: Plan(Relationship), version: Int, key: SendKey)
+
   /// An invitation consumed: the offer is replaced and the relationship it
   /// produced is inserted, atomically, under the offer's label.
   Redeemed(
@@ -251,6 +256,12 @@ pub type Commit {
 
   /// A stored row that will not be sent again; its schedule ends.
   RetransmitStopped(envelope: Id(Envelope))
+
+  /// An envelope that failed to process `attempts` times, set aside
+  /// (ADR-010): its `Processed` row is written as dropped, so the fetcher
+  /// acknowledges it, and an incident tells the operator. Nothing else
+  /// changes, so its sender's retransmit can still be processed fresh.
+  Quarantined(ref: EnvelopeRef, contact: Option(Id(Contact)), attempts: Int)
 }
 
 /// Proof that a `Commit` is durable, and the effects the engine may now
@@ -330,6 +341,55 @@ pub type AuditRecord {
     content_type: String,
     payload: secret.Secret,
     at: Instant,
+  )
+}
+
+/// Why the daemon set an inbound envelope aside without delivering it
+/// (ADR-010). Both are written for the operator, never for the agent.
+pub type IncidentKind {
+  /// An authenticated peer sent an application message under an identifier
+  /// it had already used on the relationship. The session advanced past
+  /// it; nothing was delivered.
+  RepeatedMessageId
+
+  /// An envelope failed to process `limits.max_process_attempts` times and
+  /// was dropped and acknowledged so the queue behind it could move.
+  QuarantinedEnvelope
+}
+
+/// One incident as the operator reads it: identifiers, a count and a time,
+/// never a payload.
+pub type IncidentRecord {
+  IncidentRecord(
+    /// What happened.
+    kind: IncidentKind,
+    /// The queue the envelope came from.
+    queue: Id(Queue),
+    /// The envelope.
+    envelope: Id(Envelope),
+    /// The relationship that owns the queue, when one does.
+    contact: Option(Id(Contact)),
+    /// The repeated message identifier, for a `RepeatedMessageId`.
+    message: Option(Id(MessageKind)),
+    /// How many times the envelope was handed to the core, when counted.
+    attempts: Option(Int),
+    /// When it was recorded.
+    at: Instant,
+  )
+}
+
+/// A caller's idempotency key for one send on one relationship, with what
+/// it produced (ADR-011).
+pub type SendKey {
+  SendKey(
+    /// The caller's key, 1 to `limits.max_send_key_bytes` bytes.
+    key: String,
+    /// The message the first send under the key queued.
+    message: Id(MessageKind),
+    /// SHA-256 over the request the key named (content type, payload and
+    /// reply target), so a reuse of the key for another message is told
+    /// apart from a retry.
+    digest: BitArray,
   )
 }
 
@@ -615,6 +675,14 @@ fn apply(
       settle(store, now, plan)
     }
 
+    KeyedSend(plan:, version:, key:) -> {
+      use _ <- result.try(update_relationship(store, plan.state, version))
+      use committed <- result.try(settle(store, now, plan))
+      use _ <- result.try(put_send_key(store, now, plan.state.contact, key))
+
+      Ok(committed)
+    }
+
     Redeemed(offer:, offer_version:, description:, plan:) -> {
       use _ <- result.try(update_offer(store, offer, offer_version))
       use _ <- result.try(insert_relationship(store, plan.state, description))
@@ -638,6 +706,24 @@ fn apply(
 
     RetransmitStopped(envelope:) -> {
       use _ <- result.try(end_schedule(store, envelope))
+      Ok(Committed(effects: []))
+    }
+
+    Quarantined(ref:, contact:, attempts:) -> {
+      use _ <- result.try(put_record(store, now, None, plan.dropped(ref)))
+      use _ <- result.try(write(
+        store,
+        sql.insert_incident(
+          kind: incident_kind_name(QuarantinedEnvelope),
+          queue: id.to_bytes(ref.queue),
+          envelope: id.to_bytes(ref.envelope),
+          contact: option.map(contact, id.to_bytes),
+          message_id: None,
+          attempts: Some(attempts),
+          at: now.unix_seconds,
+        ),
+      ))
+
       Ok(Committed(effects: []))
     }
   }
@@ -690,12 +776,45 @@ fn settle(
   Ok(Committed(effects: plan.effects))
 }
 
+/// Remembers a send's key, after dropping the keys whose window passed, so
+/// the table holds at most the keys of `limits.send_key_seconds` of sends.
+fn put_send_key(
+  store: Store,
+  now: Instant,
+  contact: Id(Contact),
+  key: SendKey,
+) -> Result(Nil, Error) {
+  use _ <- result.try(write(store, sql.prune_send_keys(now: now.unix_seconds)))
+
+  write(
+    store,
+    sql.put_send_key(
+      contact: id.to_bytes(contact),
+      key: key.key,
+      message_id: id.to_bytes(key.message),
+      digest: key.digest,
+      expires_at: now.unix_seconds + limits.send_key_seconds,
+    ),
+  )
+}
+
 /// Inserts a new relationship at version 1.
 fn insert_relationship(
   store: Store,
   relationship: Relationship,
   description: String,
 ) -> Result(Nil, Error) {
+  // A joiner names the invitation it redeems, which is what makes a retried
+  // accept find it (ADR-011); a relationship an offer produced names none.
+  let invitation = case relationship.phase {
+    relationship.Joining(invitation:, ..) -> Some(id.to_bytes(invitation.id))
+
+    relationship.AwaitingAccept(_)
+    | relationship.PendingApproval(_)
+    | relationship.Active(_)
+    | relationship.Closed(_) -> None
+  }
+
   write(
     store,
     sql.insert_relationship(
@@ -705,6 +824,7 @@ fn insert_relationship(
       inbox_queue: id.to_bytes(relationship.inbox.queue),
       inbox: route.encode_inbox(relationship.inbox),
       blob: secret.expose(snapshot.encode_relationship(relationship)),
+      invitation:,
     ),
   )
 }
@@ -798,16 +918,25 @@ fn put_record(
 ) -> Result(Nil, Error) {
   // The record's own variant says which table it lands in.
   case record, owner {
-    plan.Processed(queue:, envelope:, digest:, outcome:), _ ->
-      write(
+    // An envelope that is settled has no more attempts to count, so its
+    // count goes in the same transaction and the table holds only
+    // envelopes still in doubt.
+    plan.Processed(queue:, envelope:, digest:, outcome:), _ -> {
+      let queue = id.to_bytes(queue)
+      let envelope = id.to_bytes(envelope)
+
+      use _ <- result.try(write(
         store,
         sql.put_processed(
-          queue: id.to_bytes(queue),
-          envelope: id.to_bytes(envelope),
+          queue:,
+          envelope:,
           digest:,
           outcome: outcome_name(outcome),
         ),
-      )
+      ))
+
+      write(store, sql.clear_attempts(queue:, envelope:))
+    }
 
     plan.Outbound(envelope:, route:, padded:, retention_deadline:, kind:),
       Some(contact)
@@ -913,6 +1042,21 @@ fn put_record(
           content_type:,
           payload: secret.expose(payload),
           at: at.unix_seconds,
+        ),
+      )
+
+    // The core ignored a repeated identifier; the operator hears of it.
+    plan.RepeatedMessage(contact:, message:, queue:, envelope:), _ ->
+      write(
+        store,
+        sql.insert_incident(
+          kind: incident_kind_name(RepeatedMessageId),
+          queue: id.to_bytes(queue),
+          envelope: id.to_bytes(envelope),
+          contact: Some(id.to_bytes(contact)),
+          message_id: Some(id.to_bytes(message)),
+          attempts: None,
+          at: now.unix_seconds,
         ),
       )
 
@@ -1107,6 +1251,21 @@ pub fn invitation_file(
 /// ```
 pub fn live_inboxes(store: Store) -> Result(List(Inbox), Error) {
   use rows <- result.try(query(store, sql.live_inboxes()))
+  decode_inboxes(list.map(rows, fn(row) { row.inbox }))
+}
+
+/// The inboxes no longer fetched (a closed relationship, a consumed or
+/// expired offer) that still hold committed envelopes not acknowledged to
+/// the mailbox. Each gets a fetcher that acknowledges them and stops.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.draining_inboxes(store)
+/// // -> Ok([])
+/// ```
+pub fn draining_inboxes(store: Store) -> Result(List(Inbox), Error) {
+  use rows <- result.try(query(store, sql.draining_inboxes()))
   decode_inboxes(list.map(rows, fn(row) { row.inbox }))
 }
 
@@ -1405,6 +1564,138 @@ pub fn fingerprint(
   }
 }
 
+/// Counts one more attempt to process an envelope, durably and in a
+/// transaction of its own, and returns the count including this one
+/// (ADR-010). It commits before the envelope is handed to the core, so an
+/// attempt that crashes the engine, or whose commit fails, has already
+/// counted; the `Processed` row that settles the envelope clears it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.count_attempt(store, queue, envelope)
+/// // -> Ok(1)
+/// ```
+pub fn count_attempt(
+  store: Store,
+  queue: Id(Queue),
+  envelope: Id(Envelope),
+) -> Result(Int, Error) {
+  transaction(store, fn() {
+    use rows <- result.try(query(
+      store,
+      sql.count_attempt(
+        queue: id.to_bytes(queue),
+        envelope: id.to_bytes(envelope),
+      ),
+    ))
+
+    // An upsert with `RETURNING` always returns its row.
+    case rows {
+      [row, ..] -> Ok(row.count)
+      [] -> Error(Corrupt("the attempt count returned no row"))
+    }
+  })
+}
+
+/// Whether a relationship already stored a message under `message`, held,
+/// ready, consumed or recorded expired: the `IdHistory` the core's
+/// `relationship.receive` is told (ADR-010). `UNIQUE (contact, message_id)`
+/// admits one row at most.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.message_history(store, contact, message)
+/// // -> Ok(relationship.FreshId)
+/// ```
+pub fn message_history(
+  store: Store,
+  contact: Id(Contact),
+  message: Id(MessageKind),
+) -> Result(relationship.IdHistory, Error) {
+  use rows <- result.try(query(
+    store,
+    sql.delivery_of(
+      contact: id.to_bytes(contact),
+      message_id: id.to_bytes(message),
+    ),
+  ))
+
+  // Any row at all means the identifier was used.
+  case rows {
+    [] -> Ok(relationship.FreshId)
+    [_, ..] -> Ok(relationship.UsedId)
+  }
+}
+
+/// The relationship a joiner started by redeeming `invitation` and has not
+/// closed, if any (ADR-011). A closed one releases its invitation, so an
+/// operator can close a joiner that cannot move (its `Hello` was quarantined
+/// at the inviter, say) and accept the invitation again while the offer is
+/// open.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.contact_by_invitation(store, invitation)
+/// // -> Ok(Some(contact))
+/// ```
+pub fn contact_by_invitation(
+  store: Store,
+  invitation: Id(InvitationKind),
+) -> Result(Option(Id(Contact)), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.relationship_by_invitation(invitation: Some(id.to_bytes(invitation))),
+  ))
+
+  // The partial unique index admits one open row at most.
+  case rows {
+    [] -> Ok(None)
+
+    [row, ..] ->
+      id.from_bytes(row.contact)
+      |> result.map(Some)
+      |> result.map_error(fn(_) { corrupt("relationships") })
+  }
+}
+
+/// What a send under `key` on a relationship produced, while the key is
+/// remembered (ADR-011).
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.send_by_key(store, contact, "order-17", now)
+/// // -> Ok(Some(SendKey(..)))
+/// ```
+pub fn send_by_key(
+  store: Store,
+  contact: Id(Contact),
+  key: String,
+  now: Instant,
+) -> Result(Option(SendKey), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.send_by_key(contact: id.to_bytes(contact), key:, now: now.unix_seconds),
+  ))
+
+  // The primary key admits one row at most.
+  case rows {
+    [] -> Ok(None)
+
+    [row, ..] -> {
+      use message <- result.try(
+        id.from_bytes(row.message_id)
+        |> result.map_error(fn(_) { corrupt("send_keys") }),
+      )
+
+      Ok(Some(SendKey(key:, message:, digest: row.digest)))
+    }
+  }
+}
+
 /// The envelopes of `queue` that are processed and committed but not yet
 /// acknowledged to the mailbox. This is the only list a fetcher acknowledges
 /// from.
@@ -1559,6 +1850,37 @@ pub fn audit(
   list.try_map(rows, audit_record)
 }
 
+/// The most recent incidents, newest first (ADR-010).
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.incidents(store, 20)
+/// // -> Ok([IncidentRecord(..)])
+/// ```
+pub fn incidents(
+  store: Store,
+  limit: Int,
+) -> Result(List(IncidentRecord), Error) {
+  use rows <- result.try(query(store, sql.incidents(max: limit)))
+
+  list.try_map(rows, incident_record)
+}
+
+/// How many incidents were ever recorded, for the daemon's health.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.incident_count(store)
+/// // -> Ok(0)
+/// ```
+pub fn incident_count(store: Store) -> Result(Int, Error) {
+  use rows <- result.try(query(store, sql.incident_count()))
+
+  Ok(first_or(list.map(rows, fn(row) { row.total }), 0))
+}
+
 // ------------------------------------------------------------------ meta
 
 /// A stored daemon-wide value, such as the agent identifier.
@@ -1656,7 +1978,7 @@ fn delivery_record(row: sql.ReadyDeliveries) -> Result(DeliveryRecord, Error) {
     id.from_bytes(row.contact)
     |> result.map_error(fn(_) { corrupt("deliveries") }),
   )
-  use in_reply_to <- result.try(optional_id(row.in_reply_to))
+  use in_reply_to <- result.try(optional_id(row.in_reply_to, "deliveries"))
 
   Ok(DeliveryRecord(
     message:,
@@ -1668,16 +1990,21 @@ fn delivery_record(row: sql.ReadyDeliveries) -> Result(DeliveryRecord, Error) {
   ))
 }
 
-/// An optional identifier column: absent is fine, present must decode.
-fn optional_id(bytes: Option(BitArray)) -> Result(Option(Id(kind)), Error) {
-  // A reply target is optional, but a stored one must decode.
+/// An optional identifier column of `table`: absent is fine, present must
+/// decode.
+fn optional_id(
+  bytes: Option(BitArray),
+  table: String,
+) -> Result(Option(Id(kind)), Error) {
+  // A reply target or an incident's contact is optional, but a stored one
+  // must decode.
   case bytes {
     None -> Ok(None)
 
     Some(raw) ->
       id.from_bytes(raw)
       |> result.map(Some)
-      |> result.map_error(fn(_) { corrupt("deliveries") })
+      |> result.map_error(fn(_) { corrupt(table) })
   }
 }
 
@@ -1711,6 +2038,49 @@ fn audit_record(row: sql.AuditEntries) -> Result(AuditRecord, Error) {
     payload: secret.new(row.payload),
     at: Instant(row.at),
   ))
+}
+
+/// Builds an incident record from its row.
+fn incident_record(row: sql.Incidents) -> Result(IncidentRecord, Error) {
+  use kind <- result.try(parse_incident_kind(row.kind))
+  use queue <- result.try(
+    id.from_bytes(row.queue) |> result.map_error(fn(_) { corrupt("incidents") }),
+  )
+  use envelope <- result.try(
+    id.from_bytes(row.envelope)
+    |> result.map_error(fn(_) { corrupt("incidents") }),
+  )
+  use contact <- result.try(optional_id(row.contact, "incidents"))
+  use message <- result.try(optional_id(row.message_id, "incidents"))
+
+  Ok(IncidentRecord(
+    kind:,
+    queue:,
+    envelope:,
+    contact:,
+    message:,
+    attempts: row.attempts,
+    at: Instant(row.at),
+  ))
+}
+
+/// The `kind` column of an incident.
+fn incident_kind_name(kind: IncidentKind) -> String {
+  case kind {
+    RepeatedMessageId -> "repeated_message"
+    QuarantinedEnvelope -> "quarantined"
+  }
+}
+
+/// The incident kind a `kind` column names; only the writer's names are
+/// valid.
+fn parse_incident_kind(name: String) -> Result(IncidentKind, Error) {
+  // Any other text is a damaged row.
+  case name {
+    "repeated_message" -> Ok(RepeatedMessageId)
+    "quarantined" -> Ok(QuarantinedEnvelope)
+    _ -> Error(corrupt("incidents"))
+  }
 }
 
 fn corrupt(table: String) -> Error {

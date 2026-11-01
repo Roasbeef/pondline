@@ -6,7 +6,7 @@ import daemon/cli.{
   DaemonOptions, DeclineContact, Encoded, FromInvitation, FromTicket,
   HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput, ListContacts,
   MessageStatus, RaiseBudget, Raw, ReceiveMessages, RunDaemon, SendMessage,
-  ShowAudit, ShowHealth, Target, TicketAndFile, TicketOnly,
+  ShowAudit, ShowHealth, ShowIncidents, Target, TicketAndFile, TicketOnly,
 }
 import daemon/local_api_protocol as protocol
 import gleam/json
@@ -137,6 +137,7 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
       "application/octet-stream",
       InputFile("p.bin"),
       None,
+      None,
     )
 
   let assert Ok(Client(action:, ..)) =
@@ -157,7 +158,20 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
       "text/plain",
       InputStdin,
       Some(identifier(hex2)),
+      None,
     )
+
+  let assert Ok(Client(action:, ..)) =
+    parse([
+      "send",
+      "--contact",
+      hex,
+      "--stdin",
+      "--idempotency-key",
+      "order-17",
+      ..common
+    ])
+  let assert SendMessage(idempotency_key: Some("order-17"), ..) = action
 
   assert parse(["send", "--contact", hex, ..common])
     == Error("give exactly one of --file and --stdin")
@@ -200,6 +214,13 @@ pub fn ack_status_audit_health_test() {
   let assert Ok(Client(action:, ..)) =
     parse(["audit", "--contact", hex, "--limit", "7", ..common])
   assert action == ShowAudit(Some(identifier(hex)), 7)
+
+  let assert Ok(Client(action:, ..)) = parse(["incidents", ..common])
+  assert action == ShowIncidents(50)
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["incidents", "--limit", "9", ..common])
+  assert action == ShowIncidents(9)
 
   let assert Ok(Client(action:, ..)) = parse(["health", ..common])
   assert action == ShowHealth
@@ -302,6 +323,7 @@ fn every_command() -> List(List(String)) {
     ["ack", "--message", hex],
     ["status", "--message", hex],
     ["audit"],
+    ["incidents"],
     ["health"],
     ["daemon", "--mailbox", "h:80", "--provision-file", "p"],
   ]
@@ -399,6 +421,24 @@ pub fn requests_carry_the_wire_shape_test() {
     <> "\",\"content_type\":\"application/octet-stream\",\"payload\":\"aGk=\",\"in_reply_to\":\""
     <> hex2
     <> "\"}"
+
+  // A key, when given, rides along as `idempotency_key`.
+  let assert Ok(Client(action:, ..)) =
+    parse([
+      "send",
+      "--contact",
+      hex,
+      "--file",
+      "p",
+      "--idempotency-key",
+      "k-9",
+      ..common
+    ])
+  let #(_, args) = cli.request(action, <<"hi":utf8>>)
+  assert json.to_string(args)
+    == "{\"contact\":\""
+    <> hex
+    <> "\",\"content_type\":\"application/octet-stream\",\"payload\":\"aGk=\",\"in_reply_to\":null,\"idempotency_key\":\"k-9\"}"
 
   let #(op, _) = cli.request(ShowHealth, <<>>)
   assert op == "health"

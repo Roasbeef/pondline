@@ -73,12 +73,25 @@
 //// 1. `join` starts a joiner's relationship, and `joined` opens its session
 ////    once its queue exists; an inviter's starts in `core/offer`.
 //// 2. `approve` or `decline` settles a pending one.
-//// 3. `send` seals an application message; `receive` reads an inbound one
-////    and hands it to `in_active`, `in_awaiting` or `in_pending`, and
-////    `store_application` stores and receipts it.
+//// 3. `send` seals an application message. An inbound one is received in
+////    two steps: `open` decrypts it and picks `in_active`, `in_awaiting` or
+////    `in_pending`, the shell looks its identifier up (`opened_message`),
+////    and `receive` hands it on with that `IdHistory`; `store_application`
+////    stores and receipts a fresh one and ignores a repeated one.
 //// 4. `resend_receipt` answers a ciphertext that arrives again, looked up by
 ////    `fingerprint`.
 //// 5. `raise_budget` releases held messages, and `close` ends it.
+////
+//// ## A message identifier used twice
+////
+//// The store keeps one delivery per message identifier and refuses a
+//// second, so a peer that seals two different messages under one
+//// identifier must not reach the commit with both. Only the store knows
+//// which identifiers were used, and only after decryption is the
+//// identifier known, so receiving takes two steps: `open`, then
+//// `receive(opened, history)` with the shell's answer. A repeat is ignored
+//// as `RepeatedMessage` (ADR-010): the session advances, the envelope is
+//// processed and acknowledged, and nothing reaches the agent.
 ////
 //// ## What the shell does with the result
 ////
@@ -105,7 +118,7 @@ import core/message.{
 import core/plan.{
   type EnvelopeRef, type Fingerprint, type Plan, type Record, Audit, ControlOut,
   CreateQueue, Delivered, Fingerprint, Held, In, Out, Outbound, PeerReceived,
-  Plan, Ready, ReceiptOut, Released, Remembered,
+  Plan, Ready, ReceiptOut, Released, Remembered, RepeatedMessage,
 }
 import core/route.{type Inbox, type Route}
 import core/secret
@@ -586,31 +599,62 @@ type Arrival {
     link: Link,
     records: List(Record),
     digest: BitArray,
+    envelope: EnvelopeRef,
   )
 }
 
-/// Processes one inbound ratchet message for a relationship.
+/// Whether a message identifier was already used on this relationship: the
+/// shell's answer, read from the deliveries it stored, to the question
+/// `opened_message` asks (ADR-010). Only an application message the
+/// relationship would store consults it.
+pub type IdHistory {
+  /// No message was stored under this identifier on this relationship.
+  FreshId
+
+  /// A message was already stored under this identifier on this
+  /// relationship, delivered, held or since consumed. An honest peer never
+  /// reuses one: a retransmit is the same ciphertext and is answered by its
+  /// fingerprint before it is ever opened.
+  UsedId
+}
+
+/// An inbound ratchet message the session decrypted and decoded, which
+/// nothing has acted on yet. It holds the advanced session and the phase's
+/// reading of the body, so `receive` only has to be told the identifier's
+/// history. Building one changes nothing: a shell that drops it commits
+/// nothing, exactly as after a refusal.
+pub opaque type Opened {
+  Opened(arrival: Arrival, incoming: Message, read: Reader)
+}
+
+/// One phase's reading of an opened message.
+type Reader =
+  fn(Arrival, Message, IdHistory) -> Result(Plan(Relationship), Refusal)
+
+/// Decrypts and decodes one inbound ratchet message for a relationship,
+/// the first of the two steps of receiving it. The second, `receive`, needs
+/// to know whether the message's identifier was used before, which only
+/// the shell's store can say and which cannot be asked before the
+/// identifier is decrypted.
 ///
 /// A failure to decrypt, or a plaintext that is not a message, is a refusal
 /// that changes nothing: the caller still holds the old session, so a forged
 /// or corrupted envelope cannot burn a message key (spec §8.3). The shell
 /// then records the envelope as processed and dropped, and acknowledges it.
-/// On success the plan carries a `Processed` record, and what else it
-/// carries depends on the phase and the body (the table above).
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// relationship.receive(suite, active, now, envelope_ref, ratchet_bytes)
-/// // -> Ok(Plan(_, [Processed(..), Delivered(..), Audit(..), Outbound(..), Remembered(..)], _))
+/// relationship.open(suite, active, now, envelope_ref, ratchet_bytes)
+/// // -> Ok(opened)
 /// ```
-pub fn receive(
+pub fn open(
   suite: Suite,
   relationship: Relationship,
   now: Instant,
   envelope: EnvelopeRef,
   ratchet_bytes: BitArray,
-) -> Result(Plan(Relationship), Refusal) {
+) -> Result(Opened, Refusal) {
   let arrival = fn(link) {
     Arrival(
       suite:,
@@ -619,6 +663,7 @@ pub fn receive(
       link:,
       records: [plan.applied(envelope)],
       digest: fingerprint(suite, ratchet_bytes),
+      envelope:,
     )
   }
 
@@ -633,6 +678,44 @@ pub fn receive(
 
     Joining(..) | Closed(_) -> Error(NoSession)
   }
+}
+
+/// The identifier of an opened message, which the shell looks up among the
+/// deliveries of the relationship before calling `receive`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// relationship.opened_message(opened)
+/// // -> message_id
+/// ```
+pub fn opened_message(opened: Opened) -> Id(MessageKind) {
+  opened.incoming.id
+}
+
+/// Acts on an opened message, the second step of receiving it, given
+/// whether its identifier was used before on this relationship. On success
+/// the plan carries a `Processed` record, and what else it carries depends
+/// on the phase and the body (the table above).
+///
+/// An application message the relationship would store under an identifier
+/// it already used is ignored (ADR-010): the session advances past it, the
+/// envelope is recorded as processed, and the only other record is
+/// `RepeatedMessage`, for the operator. It is not delivered, earns no
+/// receipt and spends no budget, so a peer that repeats an identifier
+/// cannot make the store refuse the commit and wedge the queue behind it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// relationship.receive(opened, relationship.FreshId)
+/// // -> Ok(Plan(_, [Processed(..), Delivered(..), Audit(..), Outbound(..), Remembered(..)], _))
+/// ```
+pub fn receive(
+  opened: Opened,
+  history: IdHistory,
+) -> Result(Plan(Relationship), Refusal) {
+  opened.read(opened.arrival, opened.incoming, history)
 }
 
 /// The fingerprint of a ratchet message: SHA-256 of the bytes inside the
@@ -714,14 +797,15 @@ fn check_answerable(known: Fingerprint, now: Instant) -> Result(Nil, Refusal) {
   }
 }
 
-/// Decrypts and decodes the message, then hands the arrival, with the
-/// advanced session in its link, to the phase's reading of the body. Both
-/// failures return before anything is built, so a refusal changes nothing.
+/// Decrypts and decodes the message, and keeps the arrival, with the
+/// advanced session in its link, beside the phase's reading of the body.
+/// Both failures return before anything is built, so a refusal changes
+/// nothing.
 fn arrive(
   arrival: Arrival,
   ratchet_bytes: BitArray,
-  handler: fn(Arrival, Message) -> Result(Plan(Relationship), Refusal),
-) -> Result(Plan(Relationship), Refusal) {
+  read: Reader,
+) -> Result(Opened, Refusal) {
   use #(session, plaintext) <- result.try(
     ratchet.decrypt(arrival.suite, arrival.link.session, ratchet_bytes)
     |> result.map_error(Undecryptable),
@@ -731,17 +815,24 @@ fn arrive(
     |> result.map_error(MalformedMessage),
   )
 
-  handler(Arrival(..arrival, link: Link(..arrival.link, session:)), incoming)
+  let arrival = Arrival(..arrival, link: Link(..arrival.link, session:))
+  Ok(Opened(arrival:, incoming:, read:))
 }
 
 /// What each body means to an active relationship.
 fn in_active(
   arrival: Arrival,
   incoming: Message,
+  history: IdHistory,
 ) -> Result(Plan(Relationship), Refusal) {
   case incoming.body {
     Application(content_type:, payload:, in_reply_to:) ->
-      store_application(arrival, incoming, content_type, payload, in_reply_to)
+      store_application(
+        arrival,
+        incoming,
+        Stored(content_type:, payload:, in_reply_to:),
+        history,
+      )
 
     Receipt(of:) ->
       Ok(
@@ -767,6 +858,7 @@ fn in_active(
 fn in_awaiting(
   arrival: Arrival,
   incoming: Message,
+  history: IdHistory,
 ) -> Result(Plan(Relationship), Refusal) {
   case incoming.body {
     Accept -> Ok(stay(arrival, Active, []))
@@ -776,7 +868,12 @@ fn in_awaiting(
     Close -> Ok(finish(arrival, ClosedByPeer))
 
     Application(content_type:, payload:, in_reply_to:) ->
-      store_application(arrival, incoming, content_type, payload, in_reply_to)
+      store_application(
+        arrival,
+        incoming,
+        Stored(content_type:, payload:, in_reply_to:),
+        history,
+      )
 
     Receipt(_) -> Ok(stay(arrival, AwaitingAccept, []))
   }
@@ -784,10 +881,12 @@ fn in_awaiting(
 
 /// What each body means to an inviter whose operator has not decided.
 /// Application messages MUST NOT reach the host before the relationship is
-/// authorized (spec §4.3), so they advance the session and nothing more.
+/// authorized (spec §4.3), so they advance the session and nothing more;
+/// an identifier's history does not matter to a message nothing stores.
 fn in_pending(
   arrival: Arrival,
   incoming: Message,
+  _history: IdHistory,
 ) -> Result(Plan(Relationship), Refusal) {
   case incoming.body {
     Close -> Ok(finish(arrival, ClosedByPeer))
@@ -797,83 +896,116 @@ fn in_pending(
   }
 }
 
+/// The fields of an application message that a delivery stores.
+type Stored {
+  Stored(
+    content_type: String,
+    payload: secret.Secret,
+    in_reply_to: Option(Id(MessageKind)),
+  )
+}
+
 /// Stores an application message from an authenticated, authorized session
 /// (an `Active` one, or an `AwaitingAccept` one that this message accepts).
 /// An expired one is not stored at all: no payload is written, only the
 /// `Processed` record, and it earns no receipt, since a receipt tells the
-/// sender the message will be acted on. A live one is `Ready`
-/// within the budget and `Held` beyond it, and either way is durably stored
-/// by this plan, so a receipt is queued in the same transaction.
+/// sender the message will be acted on. One whose identifier the
+/// relationship already used is not stored either (ADR-010): a second
+/// delivery under one identifier is what the store refuses, so storing it
+/// would fail the commit and leave the envelope unacknowledged forever. A
+/// live, fresh one is `Ready` within the budget and `Held` beyond it, and
+/// either way is durably stored by this plan, so a receipt is queued in the
+/// same transaction.
 fn store_application(
   arrival: Arrival,
   incoming: Message,
-  content_type: String,
-  payload: secret.Secret,
-  in_reply_to: Option(Id(MessageKind)),
+  body: Stored,
+  history: IdHistory,
+) -> Result(Plan(Relationship), Refusal) {
+  // Expiry is judged after decryption, because only an authenticated
+  // message may advance the session, and it never changes the ratchet. A
+  // used identifier is judged next: both leave the session advanced and
+  // store nothing the agent could read.
+  case time.is_past(arrival.now, incoming.expires_at), history {
+    True, _ -> Ok(stay(arrival, Active, []))
+
+    False, UsedId -> {
+      let repeated =
+        RepeatedMessage(
+          contact: arrival.relationship.contact,
+          message: incoming.id,
+          queue: arrival.envelope.queue,
+          envelope: arrival.envelope.envelope,
+        )
+
+      Ok(stay(arrival, Active, [repeated]))
+    }
+
+    False, FreshId -> deliver(arrival, incoming, body)
+  }
+}
+
+/// Stores a live application message under a fresh identifier: counted
+/// against the budget, audited, receipted, and its fingerprint remembered.
+fn deliver(
+  arrival: Arrival,
+  incoming: Message,
+  body: Stored,
 ) -> Result(Plan(Relationship), Refusal) {
   let contact = arrival.relationship.contact
   let message_id = incoming.id
   let now = arrival.now
-  let stored = fn(status) {
+
+  use #(budget, status) <- result.try(admit(
+    arrival.relationship.budget,
+    incoming.id,
+  ))
+  use #(link, receipt, _) <- result.try(seal_message(
+    arrival.suite,
+    arrival.link,
+    Receipt([incoming.id]),
+    arrival.now,
+    limits.message_retention_seconds,
+  ))
+
+  let relationship = Relationship(..arrival.relationship, budget:)
+  let arrival = Arrival(..arrival, relationship:, link:)
+
+  let stored =
     Delivered(
       message: message_id,
       contact:,
-      content_type:,
-      payload:,
-      in_reply_to:,
+      content_type: body.content_type,
+      payload: body.payload,
+      in_reply_to: body.in_reply_to,
       status:,
       at: now,
     )
-  }
+  let audit =
+    Audit(
+      direction: In,
+      contact:,
+      message: message_id,
+      content_type: body.content_type,
+      payload: body.payload,
+      at: now,
+    )
 
-  // Expiry is judged after decryption, because only an authenticated
-  // message may advance the session, and it never changes the ratchet.
-  case time.is_past(arrival.now, incoming.expires_at) {
-    True -> Ok(stay(arrival, Active, []))
+  // The fingerprint commits with the delivery, so a copy of this
+  // ciphertext arriving later is answered with a receipt and never
+  // delivered again.
+  let remembered =
+    Remembered(
+      contact,
+      Fingerprint(
+        digest: arrival.digest,
+        message: message_id,
+        expires_at: incoming.expires_at,
+        receipts: 1,
+      ),
+    )
 
-    False -> {
-      use #(budget, status) <- result.try(admit(
-        arrival.relationship.budget,
-        incoming.id,
-      ))
-      use #(link, receipt, _) <- result.try(seal_message(
-        arrival.suite,
-        arrival.link,
-        Receipt([incoming.id]),
-        arrival.now,
-        limits.message_retention_seconds,
-      ))
-
-      let relationship = Relationship(..arrival.relationship, budget:)
-      let arrival = Arrival(..arrival, relationship:, link:)
-
-      let audit =
-        Audit(
-          direction: In,
-          contact:,
-          message: message_id,
-          content_type:,
-          payload:,
-          at: now,
-        )
-
-      // The fingerprint commits with the delivery, so a copy of this
-      // ciphertext arriving later is answered with a receipt and never
-      // delivered again.
-      let remembered =
-        Remembered(
-          contact,
-          Fingerprint(
-            digest: arrival.digest,
-            message: message_id,
-            expires_at: incoming.expires_at,
-            receipts: 1,
-          ),
-        )
-
-      Ok(stay(arrival, Active, [stored(status), audit, receipt, remembered]))
-    }
-  }
+  Ok(stay(arrival, Active, [stored, audit, receipt, remembered]))
 }
 
 /// Counts one live application message against the budget: `Ready` while

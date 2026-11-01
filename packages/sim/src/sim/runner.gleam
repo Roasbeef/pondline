@@ -1496,33 +1496,6 @@ fn view(state: State) -> #(oracle.View, State) {
 /// What the runner did, as the oracle needs it.
 fn facts(state: State) -> oracle.Facts {
   let entries = dict.to_list(state.ops)
-  let retried_tags =
-    list.flat_map(entries, fn(entry) {
-      case entry.1.1 {
-        Some(world.Sent(retried:, ..)) -> retried
-        _ -> []
-      }
-    })
-  let retried_accepts =
-    list.fold(entries, dict.new(), fn(acc, entry) {
-      let #(op, outcome) = entry.1
-
-      // An accept that answered `Unavailable` may still have committed its relationship.
-      let count = case op, outcome {
-        seed.Accept(..), Some(world.Accepted(retried:)) -> retried
-        seed.Accept(..), Some(world.Unavailable) -> ops.attempts
-        _, _ -> 0
-      }
-
-      // Only an op on a daemon has a daemon to count against.
-      case party_of(op) {
-        Ok(party) ->
-          dict.upsert(acc, seed.party_name(party), fn(found) {
-            option.unwrap(found, 0) + count
-          })
-        Error(Nil) -> acc
-      }
-    })
 
   // An op with no outcome never returned; one with `Other` returned
   // something it should not have.
@@ -1543,8 +1516,6 @@ fn facts(state: State) -> oracle.Facts {
 
   oracle.Facts(
     lied_appends: state.lied,
-    retried_tags: set.from_list(retried_tags),
-    retried_accepts:,
     unfinished: list.sort(unfinished, int.compare),
     unexpected: list.sort(unexpected, fn(x, y) { int.compare(x.0, y.0) }),
     tombstoned: state.tombstoned,

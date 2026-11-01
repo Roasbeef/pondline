@@ -207,6 +207,35 @@ pub type AuditEntry {
   )
 }
 
+/// Why the daemon set an inbound envelope aside (ADR-010).
+pub type IncidentKind {
+  /// An authenticated peer reused a message identifier; the message was
+  /// ignored.
+  RepeatedMessageId
+
+  /// An envelope failed to process `limits.max_process_attempts` times and
+  /// was dropped and acknowledged; its sender's retransmit may still
+  /// deliver it.
+  QuarantinedEnvelope
+}
+
+/// One envelope the daemon set aside without delivering it, as the operator
+/// reads it. It names identifiers and a count, never a payload.
+pub type Incident {
+  Incident(
+    /// What happened.
+    kind: IncidentKind,
+    /// The relationship whose queue it arrived on, when one owns it.
+    contact: Option(Id(Contact)),
+    /// The repeated message identifier, for a `RepeatedMessageId`.
+    message: Option(Id(MessageKind)),
+    /// How many times the envelope was handed to the core, when counted.
+    attempts: Option(Int),
+    /// When it was recorded.
+    at: Instant,
+  )
+}
+
 /// What subscribers hear. Neither carries data: the subscriber reads the
 /// committed store through this API.
 pub type Event {
@@ -228,6 +257,8 @@ pub type Health {
     mailbox: status.MailboxStatus,
     /// Outbox rows still waiting for a mailbox.
     outbox_pending: Int,
+    /// Incidents ever recorded (ADR-010); `incidents` lists them.
+    incidents: Int,
   )
 }
 
@@ -380,7 +411,10 @@ fn await_file(
 }
 
 /// Imports an invitation file. The relationship starts `Joining`; its queue
-/// is created and its first message sent in the background.
+/// is created and its first message sent in the background. Accepting an
+/// invitation this daemon already accepted returns that first relationship
+/// and starts nothing new (ADR-011), so a retry after `Unavailable` is
+/// safe.
 ///
 /// ## Examples
 ///
@@ -728,7 +762,40 @@ pub fn send(
   payload: BitArray,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), ApiError) {
-  engine.send(daemon.engine, contact, content_type, payload, in_reply_to)
+  engine.send(daemon.engine, contact, None, content_type, payload, in_reply_to)
+  |> result.map_error(from_failure)
+}
+
+/// `send` under a caller's idempotency key, so a retry after an answer the
+/// caller never saw (`Unavailable` after the commit landed) cannot queue
+/// the message twice (ADR-011). The key is scoped to the contact and
+/// remembered for `limits.send_key_seconds`; it is 1 to
+/// `limits.max_send_key_bytes` bytes. The same key with the same content
+/// type, payload and reply target answers with the first message's
+/// identifier and queues nothing; with anything else it is `Refused`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.send_with_key(daemon, contact, "order-17", "text/plain", <<"hi">>, None)
+/// // -> Ok(message)
+/// ```
+pub fn send_with_key(
+  daemon: Daemon,
+  contact: Id(Contact),
+  key: String,
+  content_type: String,
+  payload: BitArray,
+  in_reply_to: Option(Id(MessageKind)),
+) -> Result(Id(MessageKind), ApiError) {
+  engine.send(
+    daemon.engine,
+    contact,
+    Some(key),
+    content_type,
+    payload,
+    in_reply_to,
+  )
   |> result.map_error(from_failure)
 }
 
@@ -810,6 +877,26 @@ pub fn audit(
   Ok(list.map(records, audit_entry))
 }
 
+/// The most recent incidents, newest first: inbound envelopes the daemon
+/// set aside without delivering them (ADR-010). For the operator only.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.incidents(daemon, 20)
+/// // -> Ok([Incident(..)])
+/// ```
+pub fn incidents(
+  daemon: Daemon,
+  limit: Int,
+) -> Result(List(Incident), ApiError) {
+  use records <- result.try(
+    engine.incidents(daemon.engine, limit) |> result.map_error(from_failure),
+  )
+
+  Ok(list.map(records, incident))
+}
+
 /// Subscribes a subject to `Event`s. Nothing is replayed.
 ///
 /// ## Examples
@@ -823,7 +910,7 @@ pub fn subscribe(daemon: Daemon, subscriber: Subject(Event)) -> Nil {
 }
 
 /// The daemon's account of itself. An engine that does not answer reads as
-/// zero pending.
+/// zero pending and zero incidents.
 ///
 /// ## Examples
 ///
@@ -840,11 +927,18 @@ pub fn health(daemon: Daemon) -> Health {
     Error(_) -> 0
   }
 
+  // The same goes for the incident count.
+  let incidents = case engine.incident_count(daemon.engine) {
+    Ok(count) -> count
+    Error(_) -> 0
+  }
+
   Health(
     carrier: daemon.carrier,
     tor: seen.tor,
     mailbox: seen.mailbox,
     outbox_pending: pending,
+    incidents:,
   )
 }
 
@@ -921,6 +1015,20 @@ fn message_state(state: store.SentState) -> MessageState {
     store.ReceivedByPeer -> ReceivedByPeer
     store.Failed -> Failed
   }
+}
+
+/// A stored incident as the contract's `Incident`.
+fn incident(record: store.IncidentRecord) -> Incident {
+  Incident(
+    kind: case record.kind {
+      store.RepeatedMessageId -> RepeatedMessageId
+      store.QuarantinedEnvelope -> QuarantinedEnvelope
+    },
+    contact: record.contact,
+    message: record.message,
+    attempts: record.attempts,
+    at: record.at,
+  )
 }
 
 /// A stored audit row as the contract's `AuditEntry`.

@@ -40,15 +40,20 @@
 //// once. The mailbox's own retry semantics make every step safe to repeat.
 ////
 //// The process ends by itself when its queue is no longer live (the
-//// relationship closed, the offer expired), checked at the start of each
-//// round, so retiring a queue needs no signal.
+//// relationship closed, the offer expired), checked after each round's
+//// acknowledgements, so retiring a queue needs no signal and leaves nothing
+//// the store committed unacknowledged at the mailbox. A fetcher whose
+//// acknowledgement fails keeps backing off and retrying even for a retired
+//// queue, for the same reason. A queue that retired while no fetcher ran
+//// (a restart between the commit and the acknowledgement) is given one by
+//// the fetch manager, which acknowledges and stops.
 ////
 //// ## Flow
 ////
 //// 1. `start` builds the machine, which handles `Begin` before anything else.
-//// 2. `begin_round` stops the machine if the queue is retired, otherwise
-////    runs `ack_pending` and enters `Acking`.
-//// 3. `acked` runs `fetch_batch` and `process_batch` and enters `Polling`.
+//// 2. `begin_round` runs `ack_pending` and enters `Acking`.
+//// 3. `acked` stops the machine if the queue is retired (`after_ack`),
+////    otherwise runs `fetch_batch` and `process_batch` and enters `Polling`.
 //// 4. `polled` begins the next round, or `failed` enters `BackingOff`.
 
 import core/envelope.{type StoredEnvelope}
@@ -234,21 +239,28 @@ fn handle(
   }
 }
 
-/// Starts a round: ends the machine if the queue is retired, otherwise
-/// starts the acknowledging run.
+/// Starts a round with the acknowledging run. Every round acknowledges
+/// first, a retired queue's included: liveness is checked only once the
+/// acknowledgements are done (`after_ack`), so the envelopes the last round
+/// committed are never left on the mailbox by a queue that closed under
+/// them.
 fn begin_round(data: Data) -> sm.Next(State, Data, Message) {
+  let config = data.config
+  start_run(data.acks, config, config.ack_deadline_ms, fn() {
+    ack_pending(config)
+  })
+
+  sm.transition(to: Acking, data:)
+}
+
+/// What follows a finished acknowledgement: the long poll for a live
+/// queue, and the end of the machine for a retired one, which has nothing
+/// committed and unacknowledged left.
+fn after_ack(data: Data) -> sm.Next(State, Data, Message) {
   // A retired queue ends the process; a live or unknowable one keeps going.
   case liveness(data.config) {
     Retired -> sm.stop()
-
-    Live -> {
-      let config = data.config
-      start_run(data.acks, config, config.ack_deadline_ms, fn() {
-        ack_pending(config)
-      })
-
-      sm.transition(to: Acking, data:)
-    }
+    Live -> begin_poll(data)
   }
 }
 
@@ -259,7 +271,7 @@ fn acked(data: Data, pulled: Pulled) -> sm.Next(State, Data, Message) {
   case pulled {
     weft.PulledOutcome(outcome:) ->
       case step_result(outcome) {
-        Ok(Nil) -> begin_poll(data)
+        Ok(Nil) -> after_ack(data)
         Error(RoundFailed) -> failed(data)
       }
 

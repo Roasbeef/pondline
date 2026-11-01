@@ -17,6 +17,8 @@
 ////   with mode 0600. It refuses to overwrite a file and prints only the
 ////   path, never the capability.
 ////
+//// - `--version` prints the build's version and commit (`mailbox/build`).
+////
 //// Anything else prints a one-line message on stderr and exits with status
 //// 1. The server listens on the loopback interface only, because the onion
 //// service forwards to it and this program never serves a public address.
@@ -39,6 +41,7 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import mailbox/build
 import mailbox/http
 import mailbox/internal/ffi_system
 import mailbox/node
@@ -81,6 +84,9 @@ pub type TorHosting {
 pub type Command {
   Serve(db: String, port: Int, tor: Option(TorHosting))
   Grant(db: String, queues: Int, out: String)
+
+  /// Print the build's version and commit and exit.
+  Version
 }
 
 /// The entry point for `gleam run -m mailbox`.
@@ -115,6 +121,8 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
   // The first word names the subcommand; its options are checked against
   // that subcommand's own list.
   case arguments {
+    ["--version"] | ["version"] -> Ok(Version)
+
     ["serve", ..rest] -> {
       use options <- result.try(
         pairs(rest, ["--db", "--port", "--tor-bin", "--tor-state"]),
@@ -137,7 +145,7 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
 
     _ ->
       Error(
-        "usage: serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>] | grant --db <path> --queues <n> --out <file>",
+        "usage: serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>] | grant --db <path> --queues <n> --out <file> | --version",
       )
   }
 }
@@ -224,6 +232,12 @@ fn run(command: Command) -> Result(Nil, String) {
   case command {
     Serve(db:, port:, tor:) -> serve(db, port, tor)
     Grant(db:, queues:, out:) -> grant(db, queues, out)
+
+    // The identity is the launcher's, so it needs no database.
+    Version -> {
+      io.println(build.describe(build.current()))
+      Ok(Nil)
+    }
   }
 }
 

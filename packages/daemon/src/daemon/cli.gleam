@@ -16,10 +16,11 @@
 //// - `contacts list`, `contact approve|decline|close --contact HEX` and
 ////   `contact budget --contact HEX --add N`.
 //// - `send --contact HEX [--content-type T] (--file F | --stdin)
-////   [--reply-to HEX]`.
+////   [--reply-to HEX] [--idempotency-key KEY]`.
 //// - `receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]`.
 //// - `ack --message HEX`, `status --message HEX`, `audit [--contact HEX]
-////   [--limit N]` and `health`.
+////   [--limit N]`, `incidents [--limit N]` and `health`.
+//// - `--version` prints the build's version and commit.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
 //// the daemon, `--credential-file F` to name the credential (default
@@ -89,11 +90,14 @@ commands:
   contact approve|decline|close --contact HEX
   contact budget --contact HEX --add N
   send --contact HEX [--content-type T] (--file F | --stdin) [--reply-to HEX]
+       [--idempotency-key KEY]
   receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]
   ack --message HEX
   status --message HEX
   audit [--contact HEX] [--limit N]
+  incidents [--limit N]
   health
+  --version
 
 client options: --state-dir D | --socket P, --credential-file F, --json
 exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
@@ -186,6 +190,7 @@ pub type Action {
     content_type: String,
     source: Input,
     in_reply_to: Option(Id(Message)),
+    idempotency_key: Option(String),
   )
   ReceiveMessages(
     contact: Option(Id(Contact)),
@@ -196,6 +201,7 @@ pub type Action {
   Acknowledge(message: Id(Message))
   MessageStatus(message: Id(Message))
   ShowAudit(contact: Option(Id(Contact)), limit: Int)
+  ShowIncidents(limit: Int)
   ShowHealth
 }
 
@@ -204,6 +210,9 @@ pub type Command {
   RunDaemon(DaemonOptions)
   Client(target: Target, output: Output, action: Action)
   Help
+
+  /// Print the build's version and commit (`daemon/build`) and exit.
+  Version
 }
 
 /// The options found on a command line.
@@ -233,6 +242,8 @@ pub fn parse(
   // rest.
   case arguments {
     ["help"] | ["--help"] -> Ok(Help)
+
+    ["--version"] | ["version"] -> Ok(Version)
 
     ["daemon", ..rest] -> parse_daemon(rest)
 
@@ -332,6 +343,13 @@ pub fn parse(
         },
       )
 
+    ["incidents", ..rest] ->
+      client(rest, env_credential_file, ["--limit"], [], fn(options) {
+        use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
+
+        Ok(ShowIncidents(limit:))
+      })
+
     ["health", ..rest] ->
       client(rest, env_credential_file, [], [], fn(_) { Ok(ShowHealth) })
 
@@ -381,11 +399,15 @@ fn parse_send(
   client(
     rest,
     env,
-    ["--contact", "--content-type", "--file", "--reply-to"],
+    ["--contact", "--content-type", "--file", "--reply-to", "--idempotency-key"],
     ["--stdin"],
     fn(options) {
       use contact <- result.try(contact(options))
       use in_reply_to <- result.try(optional_message(options, "--reply-to"))
+
+      // A key makes the send safe to retry (ADR-011); the daemon checks it.
+      let idempotency_key =
+        dict.get(options.values, "--idempotency-key") |> option.from_result
 
       let content_type =
         dict_get(options, "--content-type", "application/octet-stream")
@@ -400,6 +422,7 @@ fn parse_send(
             content_type:,
             source: InputFile(path),
             in_reply_to:,
+            idempotency_key:,
           ))
 
         Error(Nil), True ->
@@ -408,6 +431,7 @@ fn parse_send(
             content_type:,
             source: InputStdin,
             in_reply_to:,
+            idempotency_key:,
           ))
 
         _, _ -> Error("give exactly one of --file and --stdin")
@@ -775,6 +799,7 @@ pub fn input_of(action: Action) -> Input {
     | Acknowledge(..)
     | MessageStatus(..)
     | ShowAudit(..)
+    | ShowIncidents(..)
     | ShowHealth -> NoInput
   }
 }
@@ -857,13 +882,14 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
       ]),
     )
 
-    SendMessage(contact:, content_type:, in_reply_to:, ..) -> #(
+    SendMessage(contact:, content_type:, in_reply_to:, idempotency_key:, ..) -> #(
       "send",
       json.object([
         #("contact", json.string(id.to_hex(contact))),
         #("content_type", json.string(content_type)),
         #("payload", json.string(bit_array.base64_encode(input, True))),
         #("in_reply_to", json.nullable(in_reply_to, hex_json)),
+        ..key_args(idempotency_key)
       ]),
     )
 
@@ -885,6 +911,11 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
         #("contact", json.nullable(contact, hex_json)),
         #("limit", json.int(limit)),
       ]),
+    )
+
+    ShowIncidents(limit:) -> #(
+      "incidents",
+      json.object([#("limit", json.int(limit))]),
     )
 
     ShowHealth -> #("health", json.object([]))
@@ -911,6 +942,15 @@ pub fn invitation_path(output: InviteOutput) -> Option(String) {
   case output {
     InvitationFile(path:) | TicketAndFile(path:) -> Some(path)
     TicketOnly -> None
+  }
+}
+
+/// The `idempotency_key` argument of a send, present only when the operator
+/// gave one, so an unkeyed send's request is what it always was.
+fn key_args(key: Option(String)) -> List(#(String, Json)) {
+  case key {
+    Some(key) -> [#("idempotency_key", json.string(key))]
+    None -> []
   }
 }
 

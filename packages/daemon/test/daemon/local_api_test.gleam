@@ -105,6 +105,11 @@ pub fn every_operator_op_round_trips_test() {
   assert first_string(audit, "entries", "payload")
     == bit_array.base64_encode(<<"hello audit":utf8>>, True)
 
+  let incidents =
+    ask(f, f.operator, "incidents", [#("limit", json.int(3))]) |> succeeded
+  assert first_string(incidents, "incidents", "kind") == "repeated_message"
+  assert first_string(incidents, "incidents", "message") == message_hex()
+
   assert fixture.calls(f.fake)
     == [
       "invite for bob AutoApprove 5",
@@ -115,6 +120,7 @@ pub fn every_operator_op_round_trips_test() {
       "close " <> contact_hex(),
       "raise_budget " <> contact_hex() <> " 7",
       "audit 10",
+      "incidents 3",
     ]
 }
 
@@ -185,6 +191,7 @@ pub fn the_agent_credential_is_forbidden_on_operator_ops_test() {
       #("by", json.int(1)),
     ]),
     #("audit", []),
+    #("incidents", []),
   ]
 
   list.each(operator_ops, fn(op) {
@@ -362,7 +369,7 @@ pub fn backend_errors_map_to_stable_categories_test() {
       ..fixture.backend(fake),
       approve: fn(_) { Error(local_api_types.NotFound) },
       accept: fn(_, _) { Error(local_api_types.InvalidInvitation("expired")) },
-      send: fn(_, _, _, _) { Error(local_api_types.Refused("budget spent")) },
+      send: fn(_, _, _, _, _) { Error(local_api_types.Refused("budget spent")) },
       status: fn(_) { Error(local_api_types.Unavailable) },
     )
   }
@@ -513,4 +520,28 @@ pub fn accept_takes_exactly_one_source_test() {
   assert category(neither) == protocol.Invalid
   assert !string.contains(string.inspect(both), "rw1secretticket")
   assert fixture.calls(f.fake) == []
+}
+
+/// An `idempotency_key` reaches the backend with the send, and its absence
+/// (or `null`) is no key at all (ADR-011).
+pub fn a_send_carries_its_idempotency_key_test() {
+  use f <- fixture.with_server
+
+  let base = [
+    #("contact", json.string(contact_hex())),
+    #("content_type", json.string("text/plain")),
+    #("payload", json.string(bit_array.base64_encode(<<1>>, True))),
+  ]
+  let _ =
+    ask(f, f.agent, "send", [#("idempotency_key", json.string("k-1")), ..base])
+    |> succeeded
+  let _ =
+    ask(f, f.agent, "send", [#("idempotency_key", json.null()), ..base])
+    |> succeeded
+
+  assert fixture.calls(f.fake)
+    == [
+      "send " <> contact_hex() <> " text/plain 01 None key=k-1",
+      "send " <> contact_hex() <> " text/plain 01 None",
+    ]
 }

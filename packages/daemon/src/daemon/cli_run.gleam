@@ -30,9 +30,11 @@
 
 import core/limits
 import core/secret
+import daemon/build
 import daemon/cli.{
   type Action, type Command, type Input, type Output, type Target, Client,
   CreateInvite, Help, InputFile, InputStdin, JsonOutput, NoInput, RunDaemon,
+  Version,
 }
 import daemon/cli_render
 import daemon/credential
@@ -71,6 +73,11 @@ pub type Outcome {
 pub fn run(command: Command) -> Outcome {
   case command {
     Help -> Outcome(cli.exit_ok, <<cli.usage:utf8, "\n">>, "")
+
+    // The identity is the launcher's, so `--version` needs no daemon.
+    Version ->
+      Outcome(cli.exit_ok, <<build.describe(build.current()):utf8, "\n">>, "")
+
     RunDaemon(options) -> run_daemon(options)
     Client(target:, output:, action:) -> run_client(target, output, action)
   }

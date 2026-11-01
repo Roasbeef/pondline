@@ -81,8 +81,12 @@ while :; do
   jq -nc --arg input "$input" --arg output "$output" \
     '{task:"sha256",input:$input,output:$output}' >"$reply"
 
+  # The reply is keyed by the message it answers (ADR-011): a crash after
+  # this send and before the ack re-delivers the message, and answering it
+  # again then names the first reply instead of sending a second one.
   sent=$("$rw" send --contact "$contact" --content-type application/json \
-    --file "$reply" --reply-to "$message") && pace "$sent"
+    --file "$reply" --reply-to "$message" --idempotency-key "reply-$message") &&
+    pace "$sent"
   "$rw" ack --message "$message" >/dev/null
   echo "answered $input" >>"$log"
 done

@@ -92,7 +92,7 @@ pub fn summary(report: Report) -> String {
 ///
 /// ```gleam
 /// list.length(sim.corpus())
-/// // -> 16
+/// // -> 17
 /// ```
 pub fn corpus() -> List(String) {
   [
@@ -131,6 +131,12 @@ pub fn corpus() -> List(String) {
     // BadDeadline and the row failed for good; the slack below the
     // mailbox's maximum now covers it.
     "00800003000850040108500000000108500201020008500f03000008c0",
+    // H2, fixed by ADR-010: A, as an authenticated byzantine peer, repeats
+    // a message id it already sent. B's commit failed on UNIQUE (contact,
+    // message_id), the envelope was never acknowledged and every later one
+    // on that queue waited behind it; the core now ignores the repeat and
+    // records it as an incident.
+    "00000103000850040108500000000108500201020008501000000008c0",
   ]
 }
 
@@ -144,19 +150,10 @@ pub fn corpus() -> List(String) {
 ///
 /// ```gleam
 /// sim.regressions()
-/// // -> [#("0000..", "queues_drained")]
+/// // -> []
 /// ```
 pub fn regressions() -> List(#(String, String)) {
-  [
-    // H2: A, as an authenticated byzantine peer, repeats a message id it
-    // already sent; B's commit fails on UNIQUE (contact, message_id), the
-    // envelope is never acknowledged, and every later envelope on that
-    // queue waits behind it.
-    #(
-      "00000103000850040108500000000108500201020008501000000008c0",
-      "queues_drained",
-    ),
-  ]
+  []
 }
 
 /// The corpus decoded, skipping anything that is not hex.

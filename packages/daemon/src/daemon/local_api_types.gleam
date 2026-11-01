@@ -94,6 +94,28 @@ pub type AuditEntry {
   )
 }
 
+/// Why the daemon set an inbound envelope aside (ADR-010).
+pub type IncidentKind {
+  /// An authenticated peer reused a message identifier; it was ignored.
+  RepeatedMessageId
+
+  /// An envelope that failed to process too often was dropped and
+  /// acknowledged.
+  QuarantinedEnvelope
+}
+
+/// One inbound envelope the daemon set aside without delivering it. It
+/// carries identifiers and a count, never a payload.
+pub type Incident {
+  Incident(
+    kind: IncidentKind,
+    contact: Option(Id(Contact)),
+    message: Option(Id(Message)),
+    attempts: Option(Int),
+    at: Instant,
+  )
+}
+
 /// What the runtime tells subscribers.
 pub type Event {
   /// A delivery for this contact is ready to receive.
@@ -124,12 +146,13 @@ pub type Backend {
     decline: fn(Id(Contact)) -> Result(Nil, ApiError),
     close: fn(Id(Contact)) -> Result(Nil, ApiError),
     raise_budget: fn(Id(Contact), Int) -> Result(Nil, ApiError),
-    send: fn(Id(Contact), String, BitArray, Option(Id(Message))) ->
+    send: fn(Id(Contact), Option(String), String, BitArray, Option(Id(Message))) ->
       Result(Id(Message), ApiError),
     receive: fn(Option(Id(Contact)), Int) -> Result(List(Delivery), ApiError),
     acknowledge: fn(Id(Message)) -> Result(Nil, ApiError),
     status: fn(Id(Message)) -> Result(MessageState, ApiError),
     audit: fn(Option(Id(Contact)), Int) -> Result(List(AuditEntry), ApiError),
+    incidents: fn(Int) -> Result(List(Incident), ApiError),
     subscribe: fn(Subject(Event)) -> Nil,
     health: fn() -> Health,
   )

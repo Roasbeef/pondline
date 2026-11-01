@@ -12,6 +12,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 import mailbox.{Serve, TorHosting}
+import mailbox/build
 import mailbox/http
 import mailbox/node
 import mailbox/support
@@ -99,4 +100,11 @@ fn host() -> Nil {
   let assert Ok(host) = hosted
   assert string.ends_with(host, ".onion:80")
   assert string.length(host) == 56 + string.length(".onion:80")
+}
+
+pub fn version_is_a_command_of_its_own_test() {
+  assert mailbox.parse(["--version"]) == Ok(mailbox.Version)
+  assert mailbox.parse(["version"]) == Ok(mailbox.Version)
+  assert build.describe(build.from_lookup(fn(_) { Error(Nil) }))
+    == "mailbox dev (commit unknown)"
 }

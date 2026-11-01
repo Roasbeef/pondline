@@ -41,10 +41,17 @@ must_fail "cannot read the original agent.cred" cat "$STATE_DIR/agent.cred"
 must_fail "cannot list the state directory" ls "$STATE_DIR"
 
 # So the operator credential cannot be used: the CLI cannot even open it.
+# The CLI is the release's launcher when REEDWIRE_RUNTIME is a release tree,
+# and the shipment on the host's erl otherwise.
+if [ -x "$REEDWIRE_RUNTIME/bin/reedwire" ]; then
+  set -- "$REEDWIRE_RUNTIME/bin/reedwire"
+else
+  set -- erl -pa "$REEDWIRE_RUNTIME"/*/ebin \
+    -eval 'reedwire:main(), erlang:halt(0)' -noshell -extra
+fi
 must_fail "cannot use the operator credential" \
   env REEDWIRE_CREDENTIAL_FILE="$STATE_DIR/operator.cred" \
-  erl -pa "$REEDWIRE_RUNTIME"/*/ebin -eval 'reedwire:main(), erlang:halt(0)' \
-  -noshell -extra health --socket "$API_SOCK"
+  "$@" health --socket "$API_SOCK"
 
 # The agent's own credential is refused for operator actions, by the daemon.
 # Exit status 3 is "unauthorized or forbidden".

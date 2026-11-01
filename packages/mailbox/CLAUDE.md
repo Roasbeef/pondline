@@ -55,8 +55,12 @@ process.
   address a daemon dials; runs until stopped) and `grant --db <path> --queues <n> --out <file>` (writes
   the 32-byte provisioning capability to a new 0600 file, prints the path
   only, never overwrites). Bad arguments print one line and exit 1.
+  `--version` prints the build's identity (`mailbox/build`, the same shape
+  as `daemon/build`: `REEDWIRE_BUILD_VERSION` and `REEDWIRE_BUILD_COMMIT`
+  from the release launcher, `dev` and `unknown` from source).
 - `mailbox/internal/ffi_system`: the wall clock, a monotonic clock for
-  durations, an exclusive 0600 file create, and `halt` (`src/mailbox_ffi.erl`).
+  durations, an exclusive 0600 file create, the environment and `halt`
+  (`src/mailbox_ffi.erl`).
 - `mailbox/node`: the `rest_for_one` supervisor, `Names`, `Node`, and
   `handle`, which also performs the long poll in the caller's own process.
 

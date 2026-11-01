@@ -65,7 +65,7 @@ import daemon/internal/ffi_local_system
 import daemon/local_api_protocol as protocol
 import daemon/local_api_types.{
   type ApiError, type AuditEntry, type Backend, type ContactView, type Delivery,
-  type Event, type Health, type MessageState,
+  type Event, type Health, type Incident, type MessageState,
 }
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -84,6 +84,9 @@ const idle_timeout_ms = 60_000
 
 /// The most audit entries one call returns.
 const max_audit = 256
+
+/// The most incidents one call returns.
+const max_incidents = 256
 
 /// The most payload bytes one `receive` or `audit` response carries, so the
 /// response line stays under `max_line_bytes` once base64 and the envelope
@@ -120,6 +123,7 @@ type Operation {
   AcknowledgeOp
   StatusOp
   AuditOp
+  IncidentsOp
   HealthOp
 }
 
@@ -144,6 +148,7 @@ type Call {
   RaiseBudget(contact: Id(Contact), by: Int)
   Send(
     contact: Id(Contact),
+    key: Option(String),
     content_type: String,
     payload: BitArray,
     in_reply_to: Option(Id(Message)),
@@ -152,6 +157,7 @@ type Call {
   Acknowledge(message: Id(Message))
   Status(message: Id(Message))
   Audit(contact: Option(Id(Contact)), limit: Int)
+  Incidents(limit: Int)
   Health
 }
 
@@ -428,6 +434,7 @@ fn parse_operation(name: String) -> Result(Operation, Nil) {
     "acknowledge" -> Ok(AcknowledgeOp)
     "status" -> Ok(StatusOp)
     "audit" -> Ok(AuditOp)
+    "incidents" -> Ok(IncidentsOp)
     "health" -> Ok(HealthOp)
     _ -> Error(Nil)
   }
@@ -447,7 +454,8 @@ fn required_scope(operation: Operation) -> Scope {
     | DeclineOp
     | CloseOp
     | RaiseBudgetOp
-    | AuditOp -> Operator
+    | AuditOp
+    | IncidentsOp -> Operator
   }
 }
 
@@ -521,6 +529,12 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
       Ok(Audit(contact:, limit: int.clamp(limit, 1, max_audit)))
     }
 
+    IncidentsOp -> {
+      use limit <- result.try(optional(args, "limit", decode.int, 50))
+
+      Ok(Incidents(limit: int.clamp(limit, 1, max_incidents)))
+    }
+
     HealthOp -> Ok(Health)
   }
 }
@@ -549,7 +563,9 @@ fn parse_accept(args: Dynamic) -> Result(Call, Failure) {
 }
 
 /// Reads a `send`: the payload is base64 and is bounded by the protocol's
-/// body limit once decoded.
+/// body limit once decoded. An optional `idempotency_key` makes a retry of
+/// the same send answer with the first message (ADR-011); the daemon checks
+/// its bounds.
 fn parse_send(args: Dynamic) -> Result(Call, Failure) {
   use contact <- result.try(contact_id(args))
   use content_type <- result.try(optional(
@@ -561,6 +577,12 @@ fn parse_send(args: Dynamic) -> Result(Call, Failure) {
   use text <- result.try(required(args, "payload", decode.string))
   use payload <- result.try(base64(text, "payload"))
   use in_reply_to <- result.try(optional_id(args, "in_reply_to"))
+  use key <- result.try(optional(
+    args,
+    "idempotency_key",
+    decode.optional(decode.string),
+    None,
+  ))
 
   // The bound is checked after decoding so that padding does not count.
   case bit_array.byte_size(payload) > limits.max_body_bytes {
@@ -572,7 +594,7 @@ fn parse_send(args: Dynamic) -> Result(Call, Failure) {
           <> " bytes",
       ))
 
-    False -> Ok(Send(contact:, content_type:, payload:, in_reply_to:))
+    False -> Ok(Send(contact:, key:, content_type:, payload:, in_reply_to:))
   }
 }
 
@@ -713,8 +735,8 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
     Close(contact:) -> unit(backend.close(contact))
     RaiseBudget(contact:, by:) -> unit(backend.raise_budget(contact, by))
 
-    Send(contact:, content_type:, payload:, in_reply_to:) ->
-      backend.send(contact, content_type, payload, in_reply_to)
+    Send(contact:, key:, content_type:, payload:, in_reply_to:) ->
+      backend.send(contact, key, content_type, payload, in_reply_to)
       |> lift
       |> result.map(fn(message) {
         json.object([#("message", json.string(id.to_hex(message)))])
@@ -742,6 +764,13 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
         let kept =
           within_budget(entries, fn(entry) { secret.byte_size(entry.payload) })
         json.object([#("entries", json.array(kept, audit_json))])
+      })
+
+    Incidents(limit:) ->
+      backend.incidents(limit)
+      |> lift
+      |> result.map(fn(found) {
+        json.object([#("incidents", json.array(found, incident_json))])
       })
 
     Health -> Ok(health_json(backend.health()))
@@ -964,6 +993,30 @@ fn audit_json(entry: AuditEntry) -> Json {
     #("content_type", json.string(entry.content_type)),
     #("payload", json.string(encode64(secret.expose(entry.payload)))),
     #("at", json.int(entry.at.unix_seconds)),
+  ])
+}
+
+/// The JSON of an incident: identifiers in hex, a count, a time, and no
+/// payload, since the envelope's content was never delivered.
+fn incident_json(found: Incident) -> Json {
+  // The kind is a word on the wire.
+  let kind = case found.kind {
+    local_api_types.RepeatedMessageId -> "repeated_message"
+    local_api_types.QuarantinedEnvelope -> "quarantined"
+  }
+
+  json.object([
+    #("kind", json.string(kind)),
+    #(
+      "contact",
+      json.nullable(found.contact, fn(c) { json.string(id.to_hex(c)) }),
+    ),
+    #(
+      "message",
+      json.nullable(found.message, fn(m) { json.string(id.to_hex(m)) }),
+    ),
+    #("attempts", json.nullable(found.attempts, json.int)),
+    #("at", json.int(found.at.unix_seconds)),
   ])
 }
 

@@ -13,7 +13,7 @@
 import daemon/cli.{
   type Action, AcceptInvite, Acknowledge, ApproveContact, CloseContact,
   CreateInvite, DeclineContact, ListContacts, MessageStatus, RaiseBudget, Raw,
-  ReceiveMessages, SendMessage, ShowAudit, ShowHealth,
+  ReceiveMessages, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
 }
 import gleam/bit_array
 import gleam/dict
@@ -21,6 +21,7 @@ import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
+import gleam/option
 import gleam/result
 import gleam/string
 
@@ -85,6 +86,7 @@ pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
     ReceiveMessages(view:, ..) -> deliveries(result, view)
     MessageStatus(..) -> state_line(result)
     ShowAudit(..) -> audit(result)
+    ShowIncidents(..) -> incidents(result)
     ShowHealth -> health(result)
   }
 }
@@ -253,6 +255,43 @@ fn audit(result: Dynamic) -> Result(Rendered, String) {
   }
 
   use lines <- result.try(field(result, "entries", decode.list(row)))
+  Ok(lines_of(lines))
+}
+
+/// The incidents as one line per entry:
+/// `<at> <kind> contact=<hex|-> message=<hex|-> attempts=<n|->`. An
+/// incident carries no payload, so there is none to show.
+fn incidents(result: Dynamic) -> Result(Rendered, String) {
+  // An absent identifier or count is `null` on the wire and `-` here.
+  let text_or_dash =
+    decode.optional(decode.string)
+    |> decode.map(option.unwrap(_, "-"))
+  let count_or_dash =
+    decode.optional(decode.int)
+    |> decode.map(fn(count) {
+      option.map(count, int.to_string) |> option.unwrap("-")
+    })
+
+  let row = {
+    use at <- decode.field("at", decode.int)
+    use kind <- decode.field("kind", decode.string)
+    use contact <- decode.field("contact", text_or_dash)
+    use message <- decode.field("message", text_or_dash)
+    use attempts <- decode.field("attempts", count_or_dash)
+
+    decode.success(string.join(
+      [
+        int.to_string(at),
+        kind,
+        "contact=" <> contact,
+        "message=" <> message,
+        "attempts=" <> attempts,
+      ],
+      " ",
+    ))
+  }
+
+  use lines <- result.try(field(result, "incidents", decode.list(row)))
   Ok(lines_of(lines))
 }
 

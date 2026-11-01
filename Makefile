@@ -51,9 +51,37 @@ sidecar: ## Build the reedwire-tor Arti sidecar (release); the tor package's tes
 demo: ## Run the two-daemon, two-sandboxed-agent demo: make demo CARRIER=loopback|tor
 	scripts/demo.sh --carrier=$(or $(CARRIER),loopback)
 
+# ---------------------------------------------------------------- releasing
+
+# One self-contained tree, build/release/<platform>/reedwire, holding both
+# programs (bin/reedwire and bin/mailbox) over its own ERTS, OpenSSL and Tor
+# sidecar (docs/adr/003-packaging.md and its addendum). release.sh builds the
+# sidecar itself unless REEDWIRE_TOR_BIN names one already built, which is
+# how a worktree reuses another checkout's.
 .PHONY: release
-release: sidecar ## Build the self-contained mailbox release into build/release/<platform>/
-	scripts/release.sh
+release: ## Build the self-contained release into build/release/<platform>/reedwire
+	@scripts/release.sh
+
+.PHONY: release-smoke
+release-smoke: ## Boot the release with no erl, gleam or Homebrew: mailbox, two daemons, pair, send
+	@scripts/release-smoke.sh
+
+.PHONY: dist
+dist: release release-smoke ## Package the release as dist/reedwire-<version>-<platform>.tar.gz + .sha256
+	@scripts/dist.sh
+
+# Installs the release under $(PREFIX): the tree in $(PREFIX)/lib/reedwire and
+# the reedwire and reedwire-mailbox commands in $(PREFIX)/bin.
+# scripts/install.sh says what lands where and why.
+PREFIX ?= $(HOME)/.local
+
+.PHONY: install
+install: release ## Install reedwire and reedwire-mailbox under PREFIX (default ~/.local)
+	@PREFIX="$(PREFIX)" scripts/install.sh
+
+.PHONY: uninstall
+uninstall: ## Remove what make install put under PREFIX (state directories are untouched)
+	@PREFIX="$(PREFIX)" scripts/install.sh --uninstall
 
 # ---------------------------------------------------------------- formatting
 
@@ -89,11 +117,24 @@ doc-check: ## Gate the per-package CLAUDE.md/AGENTS.md graph and docs/ citations
 gen-sql: ## Regenerate the SQL modules after editing any .sql file (needs sqlite3, and the network once; ADR-007)
 	@scripts/gen-sql.sh
 
+# ---------------------------------------------------------------- formal
+
+# Each formal/<tool>/check.sh runs one prover or model checker and exits
+# non-zero on a failed property or a broken-variant model that no longer
+# fails (docs/formal/). They need tools `make check` does not (Lean, P, TLC,
+# a protocol prover), so they run here rather than in the gate.
+.PHONY: formal
+formal: ## Run every formal check under formal/ (proofs, model checkers; docs/formal/)
+	@set -e; for script in formal/*/check.sh; do \
+		echo "==> $$script"; bash "$$script"; \
+	done
+
 # ---------------------------------------------------------------- housekeeping
 
 .PHONY: clean
-clean: ## Remove every package's build directory
+clean: ## Remove every package's build directory, the releases and dist/
 	@for p in $(PACKAGES); do rm -rf packages/$$p/build; done
+	@rm -rf build/release build/dist-stage dist
 
 .PHONY: help
 help: ## Show this help
