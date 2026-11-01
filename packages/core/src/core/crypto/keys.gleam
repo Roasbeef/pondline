@@ -507,7 +507,7 @@ pub fn dh(
 /// ```gleam
 /// let assert Ok(sig) = keys.sign(suite, secret, <<"m">>)
 /// ```
-pub fn sign(
+fn sign(
   suite: Suite,
   secret: Ed25519Secret,
   message: BitArray,
@@ -521,7 +521,9 @@ pub fn sign(
   signature(bytes)
 }
 
-/// Whether `signature` is a valid signature over `message` by `public`.
+/// Whether `signature` is a valid Ed25519 signature over `message` by
+/// `public`. Private on purpose: the only verifier a caller can reach is
+/// `hybrid_verify`, so no code path can accept the classical half alone.
 ///
 /// ## Examples
 ///
@@ -529,7 +531,7 @@ pub fn sign(
 /// keys.verify(suite, public, <<"m">>, sig)
 /// // -> True
 /// ```
-pub fn verify(
+fn verify(
   suite: Suite,
   public: Ed25519Public,
   message: BitArray,

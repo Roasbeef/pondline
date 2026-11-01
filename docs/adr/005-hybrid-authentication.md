@@ -79,9 +79,10 @@ Evidence, from this machine (OTP 29.0.5, OpenSSL 3.6.3):
   3309 bytes; signing is hedged, so two signatures of one message differ.
   `crypto:generate_key(mldsa65, [], {seed, Seed})` raises, so there is no
   seeded key generation and no fixed-output vector; `crypto:verify` raises
-  (with the key in its error) on a wrong-sized public key, which the shim
-  catches. `packages/primitives/test/primitives/mldsa_test.gleam` checks
-  sizes, round trips and rejections.
+  on a wrong-sized public key, and an uncaught raise would put the key into
+  a crash report through the stack-trace arguments, so the shim catches it.
+  `packages/primitives/test/primitives/mldsa_test.gleam` checks sizes, round
+  trips and rejections.
 - `packages/primitives/test/primitives/hybrid_auth_test.gleam` checks over
   the real primitives that each of the three signature checks refuses a
   pair with exactly one valid half, in both directions; that a genuine
