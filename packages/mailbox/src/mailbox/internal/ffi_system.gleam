@@ -1,7 +1,7 @@
 //// The few operating-system calls the mailbox binary needs.
 ////
-//// There is no pure Gleam way to read the wall clock without a package, or
-//// to create a file readable only by its owner. Both live behind this one
+//// There is no pure Gleam way to read the wall clock without a package, to
+//// create a file readable only by its owner, or to read the environment. Both live behind this one
 //// module so the rest of the package stays free of `@external`, and so a
 //// test can replace the clock by passing a function instead.
 
@@ -19,6 +19,10 @@ pub fn monotonic_ms() -> Int
 /// The error is the POSIX reason, such as `eexist`.
 @external(erlang, "mailbox_ffi", "create_private_file")
 pub fn create_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
+
+/// The value of an environment variable.
+@external(erlang, "mailbox_ffi", "getenv")
+pub fn getenv(name: String) -> Result(String, Nil)
 
 /// Stops the VM with `code` after flushing output.
 @external(erlang, "erlang", "halt")
