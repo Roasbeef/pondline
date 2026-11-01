@@ -44,3 +44,24 @@ pub fn crashing_sidecar_is_given_up_test() {
   assert tor.start(config) == Error(tor.StartFailed(tor.NeverReady))
   support.remove_dir(dir)
 }
+
+/// With the default budget shape (several restarts, so the backoff sum is
+/// larger than the margin), a sidecar that is silent every time still ends
+/// in `NeverReady`. Bounding `start`'s wait by the ready timeouts alone
+/// leaves out the backoff before each respawn (200, 400 and 600 ms here), so
+/// the caller gave up first with `Timeout`.
+pub fn the_wait_for_ready_covers_the_restart_backoff_test() {
+  let dir = support.make_scratch_dir()
+  let script = dir <> "/silent.sh"
+  support.write_script(script, "#!/bin/sh\ncat > /dev/null\n")
+
+  let config =
+    tor.Config(
+      binary_path: script,
+      state_dir: dir,
+      max_restarts: 3,
+      ready_timeout_ms: 1,
+    )
+  assert tor.start(config) == Error(tor.StartFailed(tor.NeverReady))
+  support.remove_dir(dir)
+}

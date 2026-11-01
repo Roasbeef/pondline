@@ -60,6 +60,9 @@ change; `Bootstrap` and `HostOnion` outside `Serving` are answered at once
 with `SidecarUnavailable`. Each port gets its own selector
 (`with_selector` at `Respawn`), so a dead port's last messages are never
 read as the new port's. A request's reply deadline belongs to its caller.
+`start`'s own wait is the worst case of a sidecar silent every time: one
+ready timeout per start plus the summed respawn backoffs, derived from the
+same `backoff_ms` the machine arms (`lifecycle_test`).
 
 ## Traffic
 

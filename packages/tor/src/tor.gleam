@@ -73,6 +73,9 @@
 //// timeout on `Starting`, so any move out of that phase cancels it and a
 //// late fire cannot be mistaken for a current one. The restart backoff is
 //// the named timeout `respawn`, armed in `sidecar_failed` and nowhere else.
+//// `start` waits for the worst case of both, a sidecar silent every time: a
+//// ready timeout per start plus `total_backoff_ms`, the backoffs before each
+//// respawn, so it ends in `NeverReady` and not in its own `Timeout`.
 //// A request's reply deadline belongs to its caller, which waits on its own
 //// reply subject and sends `Abandon*` when it gives up.
 ////
@@ -303,8 +306,14 @@ pub fn start(config: Config) -> Result(Tor, TorError) {
   let tor = started.data
 
   // The machine answers once the sidecar reports ready, or once the restart
-  // budget is spent. The extra second covers the machine's own scheduling.
-  let wait = config.ready_timeout_ms * { config.max_restarts + 1 } + 1000
+  // budget is spent. The worst case is a sidecar that is silent every time:
+  // one ready timeout per start, plus the backoff before each respawn. The
+  // extra second covers the machine's own scheduling.
+  let wait =
+    config.ready_timeout_ms
+    * { config.max_restarts + 1 }
+    + total_backoff_ms(config.max_restarts)
+    + 1000
 
   // The reply decides whether the caller gets a handle or a failure.
   case ask(tor.subject, AwaitReady, wait) {
@@ -313,6 +322,22 @@ pub fn start(config: Config) -> Result(Tor, TorError) {
       let _ = ask(tor.subject, Stop, 1000)
       Error(error)
     }
+  }
+}
+
+/// The backoff before the respawn that follows the `restarts`-th
+/// consecutive failure, in milliseconds. It grows linearly, so a crash loop
+/// does not spin. `sidecar_failed` arms it and `start` bounds its wait by it.
+fn backoff_ms(restarts: Int) -> Int {
+  200 * restarts
+}
+
+/// The backoffs of every respawn a budget of `restarts` allows, summed. The
+/// failure that spends the budget gives up and waits for nothing.
+fn total_backoff_ms(restarts: Int) -> Int {
+  case restarts < 1 {
+    True -> 0
+    False -> backoff_ms(restarts) + total_backoff_ms(restarts - 1)
   }
 }
 
@@ -607,10 +632,17 @@ fn handle(
     }
 
     // A caller that timed out no longer wants its reply, in any phase.
-    _, AbandonBootstrap(reply_to) ->
-      forget(data, fn(pending) { pending == PendingBootstrap(reply_to) })
+    Starting(..), AbandonBootstrap(reply_to)
+    | Serving(..), AbandonBootstrap(reply_to)
+    | Restarting, AbandonBootstrap(reply_to)
+    | GivenUp, AbandonBootstrap(reply_to)
+    -> forget(data, fn(pending) { pending == PendingBootstrap(reply_to) })
 
-    _, AbandonHost(reply_to) ->
+    Starting(..), AbandonHost(reply_to)
+    | Serving(..), AbandonHost(reply_to)
+    | Restarting, AbandonHost(reply_to)
+    | GivenUp, AbandonHost(reply_to)
+    ->
       forget(data, fn(pending) {
         case pending {
           PendingHost(reply_to: other, ..) -> other == reply_to
@@ -618,8 +650,11 @@ fn handle(
         }
       })
 
-    _, Subscribe(subscriber) ->
-      sm.keep(Data(..data, subscribers: [subscriber, ..data.subscribers]))
+    Starting(..), Subscribe(subscriber)
+    | Serving(..), Subscribe(subscriber)
+    | Restarting, Subscribe(subscriber)
+    | GivenUp, Subscribe(subscriber)
+    -> sm.keep(Data(..data, subscribers: [subscriber, ..data.subscribers]))
 
     Starting(port), GetPid(reply_to) | Serving(port), GetPid(reply_to) -> {
       process.send(
@@ -636,9 +671,11 @@ fn handle(
 
     // The selector only delivers the current port's messages, so a frame in
     // `Starting` or `Serving` is from the sidecar this phase owns.
-    Starting(..), FromPort(Ok(PortData(_, bytes)))
-    | Serving(..), FromPort(Ok(PortData(_, bytes)))
-    -> frame(phase, data, bytes)
+    Starting(port), FromPort(Ok(PortData(_, bytes))) ->
+      frame(data, bytes, port, Booting)
+
+    Serving(port), FromPort(Ok(PortData(_, bytes))) ->
+      frame(data, bytes, port, Listening)
 
     Starting(..), FromPort(Ok(PortExit(_, status)))
     | Serving(..), FromPort(Ok(PortExit(_, status)))
@@ -674,7 +711,11 @@ fn handle(
     Starting(..), Respawn | Serving(..), Respawn | GivenUp, Respawn ->
       sm.keep(data)
 
-    _, Stop(reply_to) -> stop(phase, data, reply_to)
+    Starting(..), Stop(reply_to)
+    | Serving(..), Stop(reply_to)
+    | Restarting, Stop(reply_to)
+    | GivenUp, Stop(reply_to)
+    -> stop(phase, data, reply_to)
   }
 }
 
@@ -739,37 +780,47 @@ fn forget(
   sm.keep(Data(..data, pending:))
 }
 
-/// Handles a frame from the current sidecar.
+/// The two phases that own a port, as far as a frame cares: the caller
+/// holds the port and the phase's payload is not needed again.
+type Owned {
+  /// `Starting`: a `Ready` frame ends it.
+  Booting
+
+  /// `Serving`: a `Ready` frame is a repeat.
+  Listening
+}
+
+/// Handles a frame from the current sidecar, which is the port of the phase
+/// it arrived in (`Restarting` and `GivenUp` have no port and never get here).
 fn frame(
-  phase: Phase,
   data: Data,
   bytes: BitArray,
+  port: Port,
+  owned: Owned,
 ) -> sm.Next(Phase, Data, Message) {
-  case codec.decode_event(bytes), phase {
-    Ok(event), _ -> on_event(phase, data, event)
+  case codec.decode_event(bytes) {
+    Ok(event) -> on_event(data, event, port, owned)
 
     // Undecodable bytes mean the two ends disagree about the protocol.
     // Nothing the sidecar says can be trusted after that, so close it and
     // take the restart path.
-    Error(_), Starting(port) | Error(_), Serving(port) -> {
+    Error(_) -> {
       let _ = ffi_port.close_port(port)
       sidecar_failed(data, -1)
     }
-
-    // A frame is only handled in a phase that has a port.
-    Error(_), Restarting | Error(_), GivenUp -> sm.keep(data)
   }
 }
 
 /// Applies one decoded event.
 fn on_event(
-  phase: Phase,
   data: Data,
   event: codec.Event,
+  port: Port,
+  owned: Owned,
 ) -> sm.Next(Phase, Data, Message) {
   // Each event either answers a pending request or changes sidecar state.
   case event {
-    codec.Ready(_) -> on_ready(phase, data)
+    codec.Ready(_) -> on_ready(data, port, owned)
 
     codec.Bootstrapped(id) -> {
       let data = Data(..data, restarts: 0)
@@ -825,10 +876,14 @@ fn on_event(
 /// The sidecar is listening: requests may flow, and the `AwaitReady`
 /// callers postponed in `Starting` are replayed by this very transition. A
 /// ready after a restart is announced.
-fn on_ready(phase: Phase, data: Data) -> sm.Next(Phase, Data, Message) {
+fn on_ready(
+  data: Data,
+  port: Port,
+  owned: Owned,
+) -> sm.Next(Phase, Data, Message) {
   // Only a starting sidecar becomes ready; a repeat `Ready` changes nothing.
-  case phase {
-    Starting(port) -> {
+  case owned {
+    Booting -> {
       // Restarts only go up while the machine is running, so a positive
       // count here means this ready follows a restart, not the first start.
       case data.restarts > 0 {
@@ -839,7 +894,7 @@ fn on_ready(phase: Phase, data: Data) -> sm.Next(Phase, Data, Message) {
       sm.transition(to: Serving(port), data:)
     }
 
-    Serving(..) | Restarting | GivenUp -> sm.keep(data)
+    Listening -> sm.keep(data)
   }
 }
 
@@ -867,7 +922,7 @@ fn sidecar_failed(data: Data, status: Int) -> sm.Next(Phase, Data, Message) {
       sm.transition(to: Restarting, data:)
       |> sm.with_named_timeout(
         name: "respawn",
-        after: 200 * restarts,
+        after: backoff_ms(restarts),
         sending: Respawn,
       )
   }
