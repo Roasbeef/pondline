@@ -15,6 +15,7 @@
 
 import core/endpoint.{type Endpoint, Loopback, Onion, TorOnly, TorOrLoopback}
 import daemon/api
+import daemon/build
 import daemon/cli.{type DaemonOptions}
 import daemon/config
 import daemon/local_api_types.{
@@ -294,9 +295,14 @@ fn forward(inbox: Subject(api.Event), subscriber: Subject(Event)) -> Nil {
   forward(inbox, subscriber)
 }
 
-/// The runtime's health as the local API's flat string map.
+/// The runtime's health as the local API's flat string map, with the
+/// build's identity first, so an operator can tell which build answered.
 fn health(report: api.Health) -> local_api_types.Health {
+  let identity = build.current()
+
   Health([
+    #("version", identity.version),
+    #("commit", identity.commit),
     #("carrier", case report.carrier {
       TorOnly -> "tor"
       TorOrLoopback -> "tor-or-loopback"

@@ -320,6 +320,12 @@ the operator, and the `reedwire` command that speaks to it.
 - `daemon/cli` (pure parse and request building, exit codes), `cli_render`
   (human output), `cli_run` (effects), and the top-level `reedwire` module
   (`gleam run -m reedwire -- <command>`).
+- `daemon/build`: the running build's identity (`Identity(version,
+  commit)`), read from `REEDWIRE_BUILD_VERSION` and `REEDWIRE_BUILD_COMMIT`,
+  which the release launcher exports (`scripts/release.sh`, ADR-003
+  addendum); a build run from source reports `dev` and `unknown`. It is
+  printed by `reedwire --version` and is the `version` and `commit` fields
+  of `health` (added in `local_api_backend`, so a test backend has none).
 - `daemon/internal/ffi_local_socket` and `ffi_local_system` over
   `src/daemon_local_ffi.erl`: Unix sockets, the monotonic clock, private
   files and directories, raw stdout and stdin, the environment.
