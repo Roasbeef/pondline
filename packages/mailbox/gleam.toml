@@ -7,6 +7,10 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 sqlight = ">= 1.2.0 and < 2.0.0"
+mist = ">= 6.0.0 and < 7.0.0"
+gleam_http = ">= 4.0.0 and < 5.0.0"
+argv = ">= 1.0.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
 core = { path = "../core" }
 primitives = { path = "../primitives" }
 
