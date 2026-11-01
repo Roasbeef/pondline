@@ -27,7 +27,8 @@
 #     bundled crypto NIF rewritten to load it by a path relative to itself;
 #   - the reedwire-tor sidecar, with any non-system library it links
 #     bundled the same way;
-#   - BUILD, the version, commit and platform the launchers report.
+#   - BUILD, the version, commit and platform the launchers report, and
+#     install.sh, so an unpacked tarball can install itself.
 #
 # Why one bundle and not one per program: the two share everything that
 # has weight (ERTS, the OTP libraries, libcrypto and the 16 MB sidecar are
@@ -315,6 +316,10 @@ fi
 # names the installed tree after it.
 printf 'version=%s\ncommit=%s\nplatform=%s\n' "$VERSION" "$COMMIT" "$PLATFORM" \
   > "$REL/BUILD"
+
+# The installer travels with the release, so an unpacked tarball installs
+# itself (`<tree>/install.sh`, PREFIX in the environment).
+cp "$ROOT/scripts/install.sh" "$REL/install.sh"
 
 # --------------------------------------------------------------- launchers
 

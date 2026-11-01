@@ -66,6 +66,19 @@ release: ## Build the self-contained release into build/release/<platform>/reedw
 release-smoke: ## Boot the release with no erl, gleam or Homebrew: mailbox, two daemons, pair, send
 	@scripts/release-smoke.sh
 
+# Installs the release under $(PREFIX): the tree in $(PREFIX)/lib/reedwire and
+# the reedwire and reedwire-mailbox commands in $(PREFIX)/bin.
+# scripts/install.sh says what lands where and why.
+PREFIX ?= $(HOME)/.local
+
+.PHONY: install
+install: release ## Install reedwire and reedwire-mailbox under PREFIX (default ~/.local)
+	@PREFIX="$(PREFIX)" scripts/install.sh
+
+.PHONY: uninstall
+uninstall: ## Remove what make install put under PREFIX (state directories are untouched)
+	@PREFIX="$(PREFIX)" scripts/install.sh --uninstall
+
 # ---------------------------------------------------------------- formatting
 
 .PHONY: fmt
