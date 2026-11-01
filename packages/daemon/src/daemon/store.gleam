@@ -2,15 +2,27 @@
 //// read and write it, and `commit`, the only way a `Plan` becomes durable
 //// (spec §8.1, §8.2, §8.3).
 ////
-//// This module owns the schema, the durability pragmas and every SQL string
-//// in the daemon. Nothing above it writes SQL, and nothing below it knows
-//// what a transition is. The schema's text is the migration files under
-//// `packages/daemon/sql/`, one per version, which `make gen-sql` embeds in
-//// the generated `daemon/schema` (ADR-007); this module applies them. The shape follows `mailbox/store`: a connection
+//// This module owns the schema, the durability pragmas and every statement
+//// the daemon runs. Nothing above it writes SQL, and nothing below it knows
+//// what a transition is. The shape follows `mailbox/store`: a connection
 //// held by exactly one process (the engine), pragmas that make a commit
 //// durable (a write-ahead log, `synchronous=FULL`, `fullfsync` because
 //// macOS `fsync` does not flush the drive cache), and `user_version`
 //// migrations that refuse a file written by a newer build.
+////
+//// ## Where the SQL text lives
+////
+//// None of the static SQL is written in this file (ADR-007). The schema is
+//// the migration files under `packages/daemon/sql/`, one per version, which
+//// `make gen-sql` embeds in the generated `daemon/schema`. Every statement
+//// is a named query under `src/daemon/sql/`, which parrot turns into the
+//// generated `daemon/sql`: one function per statement, returning its text,
+//// its parameters typed by the columns they bind, and a decoder for its rows.
+//// `query` and `write` are the bridge that binds those parameters as sqlight
+//// values. What stays hand-written here is what is not a static statement:
+//// the pragmas, `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK`, and the runner
+//// that applies each migration. After editing a `.sql` file, run `make
+//// gen-sql`; `test/daemon/sql_drift_test.gleam` fails until it is run.
 ////
 //// ## The commit is the gate
 ////
@@ -101,11 +113,13 @@ import core/secret
 import core/snapshot
 import core/time.{type Instant, Instant}
 import daemon/schema
+import daemon/sql
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import parrot/dev
 import sqlight
 
 /// The schema version this build writes and understands: the number of
@@ -642,20 +656,12 @@ fn copy_row(
 ) -> Result(Nil, Error) {
   use rows <- result.try(query(
     store,
-    "INSERT INTO outbox
-       (envelope, contact, kind, message_id, route, padded, deadline, status,
-        attempts, next_attempt_at, retransmits)
-     SELECT ?, contact, kind, message_id, route, padded, deadline, 'queued',
-            0, ?, ?
-     FROM outbox WHERE envelope = ? AND retransmit_at IS NOT NULL
-     RETURNING envelope",
-    [
-      sqlight.blob(id.to_bytes(retransmission.envelope)),
-      sqlight.int(now.unix_seconds),
-      sqlight.int(retransmission.retransmits),
-      sqlight.blob(id.to_bytes(retransmission.replaces)),
-    ],
-    decode.success(Nil),
+    sql.copy_for_retransmit(
+      fresh: id.to_bytes(retransmission.envelope),
+      now: now.unix_seconds,
+      retransmits: retransmission.retransmits,
+      replaces: id.to_bytes(retransmission.replaces),
+    ),
   ))
   use _ <- result.try(one_row_or_conflict(rows))
 
@@ -664,9 +670,7 @@ fn copy_row(
 
 /// Ends one row's retransmit schedule.
 fn end_schedule(store: Store, envelope: Id(Envelope)) -> Result(Nil, Error) {
-  write(store, "UPDATE outbox SET retransmit_at = NULL WHERE envelope = ?", [
-    sqlight.blob(id.to_bytes(envelope)),
-  ])
+  write(store, sql.end_schedule(envelope: id.to_bytes(envelope)))
 }
 
 /// Writes a relationship plan's records, in order, under its contact.
@@ -694,17 +698,14 @@ fn insert_relationship(
 ) -> Result(Nil, Error) {
   write(
     store,
-    "INSERT INTO relationships
-       (contact, version, phase, description, inbox_queue, inbox, blob)
-     VALUES (?, 1, ?, ?, ?, ?, ?)",
-    [
-      sqlight.blob(id.to_bytes(relationship.contact)),
-      sqlight.text(relationship_phase(relationship)),
-      sqlight.text(description),
-      sqlight.blob(id.to_bytes(relationship.inbox.queue)),
-      sqlight.blob(route.encode_inbox(relationship.inbox)),
-      sqlight.blob(secret.expose(snapshot.encode_relationship(relationship))),
-    ],
+    sql.insert_relationship(
+      contact: id.to_bytes(relationship.contact),
+      phase: relationship_phase(relationship),
+      description:,
+      inbox_queue: id.to_bytes(relationship.inbox.queue),
+      inbox: route.encode_inbox(relationship.inbox),
+      blob: secret.expose(snapshot.encode_relationship(relationship)),
+    ),
   )
 }
 
@@ -717,17 +718,12 @@ fn update_relationship(
 ) -> Result(Nil, Error) {
   use rows <- result.try(query(
     store,
-    "UPDATE relationships
-     SET version = version + 1, phase = ?, blob = ?
-     WHERE contact = ? AND version = ?
-     RETURNING version",
-    [
-      sqlight.text(relationship_phase(relationship)),
-      sqlight.blob(secret.expose(snapshot.encode_relationship(relationship))),
-      sqlight.blob(id.to_bytes(relationship.contact)),
-      sqlight.int(version),
-    ],
-    decode.success(Nil),
+    sql.update_relationship(
+      phase: relationship_phase(relationship),
+      blob: secret.expose(snapshot.encode_relationship(relationship)),
+      contact: id.to_bytes(relationship.contact),
+      version:,
+    ),
   ))
 
   one_row_or_conflict(rows)
@@ -746,20 +742,16 @@ fn insert_offer(
     offer.Provisioning(stock) | offer.Open(stock) ->
       write(
         store,
-        "INSERT INTO offers
-           (invitation, version, phase, description, deadline, inbox_queue,
-            inbox, blob, file)
-         VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?)",
-        [
-          sqlight.blob(id.to_bytes(offer.id)),
-          sqlight.text(offer_phase(offer)),
-          sqlight.text(description),
-          sqlight.int(stock.invitation.expires_at.unix_seconds),
-          sqlight.blob(id.to_bytes(stock.inbox.queue)),
-          sqlight.blob(route.encode_inbox(stock.inbox)),
-          sqlight.blob(secret.expose(snapshot.encode_offer(offer))),
-          sqlight.blob(secret.expose(invitation.encode(stock.invitation))),
-        ],
+        sql.insert_offer(
+          invitation: id.to_bytes(offer.id),
+          phase: offer_phase(offer),
+          description:,
+          deadline: stock.invitation.expires_at.unix_seconds,
+          inbox_queue: id.to_bytes(stock.inbox.queue),
+          inbox: route.encode_inbox(stock.inbox),
+          blob: secret.expose(snapshot.encode_offer(offer)),
+          file: secret.expose(invitation.encode(stock.invitation)),
+        ),
       )
 
     offer.Consumed(..) | offer.Expired ->
@@ -775,24 +767,20 @@ fn update_offer(
 ) -> Result(Nil, Error) {
   use rows <- result.try(query(
     store,
-    "UPDATE offers
-     SET version = version + 1, phase = ?, blob = ?
-     WHERE invitation = ? AND version = ?
-     RETURNING version",
-    [
-      sqlight.text(offer_phase(offer)),
-      sqlight.blob(secret.expose(snapshot.encode_offer(offer))),
-      sqlight.blob(id.to_bytes(offer.id)),
-      sqlight.int(version),
-    ],
-    decode.success(Nil),
+    sql.update_offer(
+      phase: offer_phase(offer),
+      blob: secret.expose(snapshot.encode_offer(offer)),
+      invitation: id.to_bytes(offer.id),
+      version:,
+    ),
   ))
 
   one_row_or_conflict(rows)
 }
 
-/// A state write that touched no row lost a race.
-fn one_row_or_conflict(rows: List(Nil)) -> Result(Nil, Error) {
+/// A state write that touched no row lost a race. The rows are whatever the
+/// statement's `RETURNING` clause gave back; only their number matters.
+fn one_row_or_conflict(rows: List(a)) -> Result(Nil, Error) {
   case rows {
     [_] -> Ok(Nil)
     [] | [_, ..] -> Error(Conflict)
@@ -813,15 +801,12 @@ fn put_record(
     plan.Processed(queue:, envelope:, digest:, outcome:), _ ->
       write(
         store,
-        "INSERT OR REPLACE INTO processed
-           (queue, envelope, digest, outcome, acked)
-         VALUES (?, ?, ?, ?, 0)",
-        [
-          sqlight.blob(id.to_bytes(queue)),
-          sqlight.blob(id.to_bytes(envelope)),
-          sqlight.blob(digest),
-          sqlight.text(outcome_name(outcome)),
-        ],
+        sql.put_processed(
+          queue: id.to_bytes(queue),
+          envelope: id.to_bytes(envelope),
+          digest:,
+          outcome: outcome_name(outcome),
+        ),
       )
 
     plan.Outbound(envelope:, route:, padded:, retention_deadline:, kind:),
@@ -856,31 +841,25 @@ fn put_record(
       // keeping the first row.
       write(
         store,
-        "INSERT INTO deliveries
-           (contact, message_id, content_type, payload, in_reply_to, status,
-            received_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)",
-        [
-          sqlight.blob(id.to_bytes(contact)),
-          sqlight.blob(id.to_bytes(message)),
-          sqlight.text(content_type),
-          sqlight.blob(secret.expose(payload)),
-          sqlight.nullable(sqlight.blob, option.map(in_reply_to, id.to_bytes)),
-          sqlight.text(delivery_status(status)),
-          sqlight.int(at.unix_seconds),
-        ],
+        sql.insert_delivery(
+          contact: id.to_bytes(contact),
+          message_id: id.to_bytes(message),
+          content_type:,
+          payload: secret.expose(payload),
+          in_reply_to: option.map(in_reply_to, id.to_bytes),
+          status: delivery_status(status),
+          received_at: at.unix_seconds,
+        ),
       )
 
     plan.Released(contact:, messages:), _ ->
       list.try_each(messages, fn(message) {
         write(
           store,
-          "UPDATE deliveries SET status = 'ready'
-           WHERE contact = ? AND message_id = ? AND status = 'held'",
-          [
-            sqlight.blob(id.to_bytes(contact)),
-            sqlight.blob(id.to_bytes(message)),
-          ],
+          sql.release_delivery(
+            contact: id.to_bytes(contact),
+            message_id: id.to_bytes(message),
+          ),
         )
       })
 
@@ -889,23 +868,19 @@ fn put_record(
     // received changes nothing.
     plan.PeerReceived(contact:, messages:), _ ->
       list.try_each(messages, fn(message) {
-        let key = [
-          sqlight.blob(id.to_bytes(contact)),
-          sqlight.blob(id.to_bytes(message)),
-        ]
+        let contact = id.to_bytes(contact)
+        let message_id = id.to_bytes(message)
 
         use _ <- result.try(write(
           store,
-          "UPDATE sent_messages SET state = 'received_by_peer'
-           WHERE contact = ? AND message_id = ?",
-          key,
+          sql.mark_received_by_peer(contact:, message_id:),
         ))
 
+        // `outbox.message_id` is nullable, so sqlc makes the parameter
+        // optional; a receipt always names its message.
         write(
           store,
-          "UPDATE outbox SET retransmit_at = NULL
-           WHERE contact = ? AND message_id = ? AND kind = 'application'",
-          key,
+          sql.end_message_schedules(contact:, message_id: Some(message_id)),
         )
       })
 
@@ -913,42 +888,32 @@ fn put_record(
     // regenerated receipt counts. Expired fingerprints are pruned in the
     // same transaction, so the table holds only messages still alive.
     plan.Remembered(contact:, fingerprint:), _ -> {
-      use _ <- result.try(
-        write(
-          store,
-          "INSERT OR REPLACE INTO fingerprints
-           (contact, digest, message_id, expires_at, receipts)
-         VALUES (?, ?, ?, ?, ?)",
-          [
-            sqlight.blob(id.to_bytes(contact)),
-            sqlight.blob(fingerprint.digest),
-            sqlight.blob(id.to_bytes(fingerprint.message)),
-            sqlight.int(fingerprint.expires_at.unix_seconds),
-            sqlight.int(fingerprint.receipts),
-          ],
+      use _ <- result.try(write(
+        store,
+        sql.put_fingerprint(
+          contact: id.to_bytes(contact),
+          digest: fingerprint.digest,
+          message_id: id.to_bytes(fingerprint.message),
+          expires_at: fingerprint.expires_at.unix_seconds,
+          receipts: fingerprint.receipts,
         ),
-      )
+      ))
 
-      write(store, "DELETE FROM fingerprints WHERE expires_at < ?", [
-        sqlight.int(now.unix_seconds),
-      ])
+      write(store, sql.prune_fingerprints(now: now.unix_seconds))
     }
 
     plan.Audit(direction:, contact:, message:, content_type:, payload:, at:), _
     ->
       write(
         store,
-        "INSERT INTO audit
-           (contact, direction, message_id, content_type, payload, at)
-         VALUES (?, ?, ?, ?, ?, ?)",
-        [
-          sqlight.blob(id.to_bytes(contact)),
-          sqlight.text(direction_name(direction)),
-          sqlight.blob(id.to_bytes(message)),
-          sqlight.text(content_type),
-          sqlight.blob(secret.expose(payload)),
-          sqlight.int(at.unix_seconds),
-        ],
+        sql.insert_audit(
+          contact: id.to_bytes(contact),
+          direction: direction_name(direction),
+          message_id: id.to_bytes(message),
+          content_type:,
+          payload: secret.expose(payload),
+          at: at.unix_seconds,
+        ),
       )
 
     plan.Outbound(..), None ->
@@ -970,37 +935,29 @@ fn put_outbound(
 ) -> Result(Nil, Error) {
   let #(kind_name, message) = outbound_kind(kind)
 
-  use _ <- result.try(
-    write(
-      store,
-      "INSERT INTO outbox
-       (envelope, contact, kind, message_id, route, padded, deadline, status,
-        attempts, next_attempt_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', 0, ?)",
-      [
-        sqlight.blob(id.to_bytes(envelope)),
-        sqlight.blob(id.to_bytes(contact)),
-        sqlight.text(kind_name),
-        sqlight.nullable(sqlight.blob, option.map(message, id.to_bytes)),
-        sqlight.blob(route.encode(target)),
-        sqlight.blob(envelope.to_wire(padded)),
-        sqlight.int(deadline.unix_seconds),
-        sqlight.int(now.unix_seconds),
-      ],
+  use _ <- result.try(write(
+    store,
+    sql.insert_outbound(
+      envelope: id.to_bytes(envelope),
+      contact: id.to_bytes(contact),
+      kind: kind_name,
+      message_id: option.map(message, id.to_bytes),
+      route: route.encode(target),
+      padded: envelope.to_wire(padded),
+      deadline: deadline.unix_seconds,
+      next_attempt_at: now.unix_seconds,
     ),
-  )
+  ))
 
   // Only application messages have a state the agent can ask about.
   case kind {
     plan.ApplicationOut(message: sent) ->
       write(
         store,
-        "INSERT INTO sent_messages (message_id, contact, state)
-         VALUES (?, ?, 'locally_queued')",
-        [
-          sqlight.blob(id.to_bytes(sent)),
-          sqlight.blob(id.to_bytes(contact)),
-        ],
+        sql.insert_sent_message(
+          message_id: id.to_bytes(sent),
+          contact: id.to_bytes(contact),
+        ),
       )
 
     plan.Handshake | plan.ReceiptOut(_) | plan.ControlOut(_) -> Ok(Nil)
@@ -1023,12 +980,12 @@ pub fn relationship_by_contact(
 ) -> Result(Option(ContactRecord), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT version, description, blob FROM relationships WHERE contact = ?",
-    [sqlight.blob(id.to_bytes(contact))],
-    contact_row(),
+    sql.relationship_by_contact(contact: id.to_bytes(contact)),
   ))
 
-  one_contact(store, rows)
+  rows
+  |> list.map(fn(row) { #(row.version, row.description, row.blob) })
+  |> one_contact(store, _)
 }
 
 /// The relationship whose inbox is this queue, if any.
@@ -1045,13 +1002,12 @@ pub fn relationship_by_queue(
 ) -> Result(Option(ContactRecord), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT version, description, blob FROM relationships
-     WHERE inbox_queue = ?",
-    [sqlight.blob(id.to_bytes(queue))],
-    contact_row(),
+    sql.relationship_by_queue(inbox_queue: id.to_bytes(queue)),
   ))
 
-  one_contact(store, rows)
+  rows
+  |> list.map(fn(row) { #(row.version, row.description, row.blob) })
+  |> one_contact(store, _)
 }
 
 /// Every relationship, oldest first.
@@ -1063,14 +1019,11 @@ pub fn relationship_by_queue(
 /// // -> Ok([record])
 /// ```
 pub fn contacts(store: Store) -> Result(List(ContactRecord), Error) {
-  use rows <- result.try(query(
-    store,
-    "SELECT version, description, blob FROM relationships ORDER BY rowid",
-    [],
-    contact_row(),
-  ))
+  use rows <- result.try(query(store, sql.relationships()))
 
-  list.try_map(rows, fn(row) { contact_record(store, row) })
+  list.try_map(rows, fn(row) {
+    contact_record(store, #(row.version, row.description, row.blob))
+  })
 }
 
 /// The offer whose inbox is this queue, if any.
@@ -1087,12 +1040,12 @@ pub fn offer_by_queue(
 ) -> Result(Option(OfferRecord), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT version, description, blob FROM offers WHERE inbox_queue = ?",
-    [sqlight.blob(id.to_bytes(queue))],
-    contact_row(),
+    sql.offer_by_queue(inbox_queue: id.to_bytes(queue)),
   ))
 
-  one_offer(store, rows)
+  rows
+  |> list.map(fn(row) { #(row.version, row.description, row.blob) })
+  |> one_offer(store, _)
 }
 
 /// Offers still waiting to be redeemed whose acceptance deadline is before
@@ -1110,13 +1063,12 @@ pub fn expirable_offers(
 ) -> Result(List(OfferRecord), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT version, description, blob FROM offers
-     WHERE phase IN ('provisioning', 'open') AND deadline < ?",
-    [sqlight.int(now.unix_seconds)],
-    contact_row(),
+    sql.expirable_offers(now: now.unix_seconds),
   ))
 
-  list.try_map(rows, fn(row) { offer_record(store, row) })
+  list.try_map(rows, fn(row) {
+    offer_record(store, #(row.version, row.description, row.blob))
+  })
 }
 
 /// The invitation file of an offer, once its queue exists.
@@ -1131,24 +1083,16 @@ pub fn invitation_file(
   store: Store,
   invitation: Id(InvitationKind),
 ) -> Result(InvitationFile, Error) {
-  let row = {
-    use phase <- decode.field(0, decode.string)
-    use file <- decode.field(1, decode.bit_array)
-    decode.success(#(phase, file))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT phase, file FROM offers WHERE invitation = ?",
-    [sqlight.blob(id.to_bytes(invitation))],
-    row,
+    sql.invitation_file(invitation: id.to_bytes(invitation)),
   ))
 
   // The phase column says whether the file may leave the daemon yet.
   case rows {
-    [#("open", file), ..] -> Ok(FileReady(file))
-    [#("provisioning", _), ..] -> Ok(FileNotYet)
-    [#(_, _), ..] | [] -> Ok(FileGone)
+    [sql.InvitationFile(phase: "open", file:), ..] -> Ok(FileReady(file))
+    [sql.InvitationFile(phase: "provisioning", file: _), ..] -> Ok(FileNotYet)
+    [sql.InvitationFile(..), ..] | [] -> Ok(FileGone)
   }
 }
 
@@ -1162,13 +1106,8 @@ pub fn invitation_file(
 /// // -> Ok([inbox])
 /// ```
 pub fn live_inboxes(store: Store) -> Result(List(Inbox), Error) {
-  inboxes(
-    store,
-    "SELECT inbox FROM offers WHERE phase = 'open'
-     UNION ALL
-     SELECT inbox FROM relationships
-     WHERE phase IN ('awaiting', 'pending', 'active')",
-  )
+  use rows <- result.try(query(store, sql.live_inboxes()))
+  decode_inboxes(list.map(rows, fn(row) { row.inbox }))
 }
 
 /// The inboxes whose queue the mailbox has not been asked to create yet:
@@ -1181,23 +1120,12 @@ pub fn live_inboxes(store: Store) -> Result(List(Inbox), Error) {
 /// // -> Ok([inbox])
 /// ```
 pub fn pending_inboxes(store: Store) -> Result(List(Inbox), Error) {
-  inboxes(
-    store,
-    "SELECT inbox FROM offers WHERE phase = 'provisioning'
-     UNION ALL
-     SELECT inbox FROM relationships WHERE phase = 'joining'",
-  )
+  use rows <- result.try(query(store, sql.pending_inboxes()))
+  decode_inboxes(list.map(rows, fn(row) { row.inbox }))
 }
 
-/// Runs a query that selects one inbox column and decodes each value.
-fn inboxes(store: Store, sql: String) -> Result(List(Inbox), Error) {
-  use rows <- result.try(query(
-    store,
-    sql,
-    [],
-    decode.field(0, decode.bit_array, decode.success),
-  ))
-
+/// Decodes the stored inbox columns an inbox query selected.
+fn decode_inboxes(rows: List(BitArray)) -> Result(List(Inbox), Error) {
   list.try_map(rows, fn(bytes) {
     route.decode_inbox(bytes)
     |> result.replace_error(Corrupt("a stored inbox does not decode"))
@@ -1220,35 +1148,21 @@ pub fn due(
   now: Instant,
   limit: Int,
 ) -> Result(List(OutboxRow), Error) {
-  let row = {
-    use envelope <- decode.field(0, decode.bit_array)
-    use route <- decode.field(1, decode.bit_array)
-    use padded <- decode.field(2, decode.bit_array)
-    use deadline <- decode.field(3, decode.int)
-    use attempts <- decode.field(4, decode.int)
-    decode.success(#(envelope, route, padded, deadline, attempts))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT envelope, route, padded, deadline, attempts FROM outbox
-     WHERE status = 'queued' AND next_attempt_at <= ?
-     ORDER BY rowid LIMIT ?",
-    [sqlight.int(now.unix_seconds), sqlight.int(limit)],
-    row,
+    sql.due(now: now.unix_seconds, max: limit),
   ))
 
-  list.try_map(rows, fn(columns) {
-    let #(envelope, route_bytes, padded, deadline, attempts) = columns
-
+  list.try_map(rows, fn(row) {
     use envelope <- result.try(
-      id.from_bytes(envelope) |> result.map_error(fn(_) { corrupt("outbox") }),
+      id.from_bytes(row.envelope)
+      |> result.map_error(fn(_) { corrupt("outbox") }),
     )
     use route <- result.try(
-      route.decode(route_bytes) |> result.map_error(fn(_) { corrupt("outbox") }),
+      route.decode(row.route) |> result.map_error(fn(_) { corrupt("outbox") }),
     )
     use padded <- result.try(
-      envelope.from_wire(padded)
+      envelope.from_wire(row.padded)
       |> result.map_error(fn(_) { corrupt("outbox") }),
     )
 
@@ -1256,8 +1170,8 @@ pub fn due(
       envelope:,
       route:,
       padded:,
-      deadline: Instant(deadline),
-      attempts:,
+      deadline: Instant(row.deadline),
+      attempts: row.attempts,
     ))
   })
 }
@@ -1280,7 +1194,7 @@ pub fn record_send(
   envelope: Id(Envelope),
   outcome: SendOutcome,
 ) -> Result(Nil, Error) {
-  let key = sqlight.blob(id.to_bytes(envelope))
+  let key = id.to_bytes(envelope)
 
   // One transaction per report, so a row never says `stored` while its
   // message still says `locally_queued`.
@@ -1289,45 +1203,30 @@ pub fn record_send(
     case outcome {
       Stored(receipt:) -> {
         use due <- result.try(retransmit_schedule(store, now, envelope))
-        use _ <- result.try(
-          write(
-            store,
-            "UPDATE outbox SET status = 'stored', receipt = ?, retransmit_at = ?
-             WHERE envelope = ?",
-            [
-              sqlight.blob(receipt),
-              sqlight.nullable(
-                sqlight.int,
-                option.map(due, fn(at) { at.unix_seconds }),
-              ),
-              key,
-            ],
+        use _ <- result.try(write(
+          store,
+          sql.mark_stored(
+            receipt: Some(receipt),
+            retransmit_at: option.map(due, fn(at) { at.unix_seconds }),
+            envelope: key,
           ),
-        )
+        ))
         advance_message(store, key, "stored_by_mailbox")
       }
 
       Rejected -> {
-        use _ <- result.try(
-          write(
-            store,
-            "UPDATE outbox SET status = 'failed' WHERE envelope = ?",
-            [key],
-          ),
-        )
+        use _ <- result.try(write(store, sql.mark_failed(envelope: key)))
         advance_message(store, key, "failed")
       }
 
       Retry(attempts:, next_attempt_at:) ->
         write(
           store,
-          "UPDATE outbox SET attempts = ?, next_attempt_at = ?
-           WHERE envelope = ?",
-          [
-            sqlight.int(attempts),
-            sqlight.int(next_attempt_at.unix_seconds),
-            key,
-          ],
+          sql.reschedule(
+            attempts:,
+            next_attempt_at: next_attempt_at.unix_seconds,
+            envelope: key,
+          ),
         )
     }
   })
@@ -1342,24 +1241,9 @@ fn retransmit_schedule(
   now: Instant,
   envelope: Id(Envelope),
 ) -> Result(Option(Instant), Error) {
-  let row = {
-    use kind <- decode.field(0, decode.string)
-    use message <- decode.field(1, decode.optional(decode.bit_array))
-    use deadline <- decode.field(2, decode.int)
-    use retransmits <- decode.field(3, decode.int)
-    use receipted <- decode.field(4, decode.int)
-    decode.success(#(kind, message, deadline, retransmits, receipted))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT kind, message_id, deadline, retransmits,
-            EXISTS (SELECT 1 FROM sent_messages AS sent
-                    WHERE sent.message_id = outbox.message_id
-                      AND sent.state = 'received_by_peer')
-     FROM outbox WHERE envelope = ?",
-    [sqlight.blob(id.to_bytes(envelope))],
-    row,
+    sql.retransmit_schedule(envelope: id.to_bytes(envelope)),
   ))
 
   // A row that is gone has nothing to schedule; a receipted message needs
@@ -1367,17 +1251,17 @@ fn retransmit_schedule(
   case rows {
     [] -> Ok(None)
 
-    [#(_, _, _, _, 1), ..] -> Ok(None)
+    [sql.RetransmitSchedule(receipted: True, ..), ..] -> Ok(None)
 
-    [#(kind, message, deadline, retransmits, _), ..] -> {
-      use kind <- result.try(outbound_kind_of(kind, message))
+    [sql.RetransmitSchedule(receipted: False, ..) as row, ..] -> {
+      use kind <- result.try(outbound_kind_of(row.kind, row.message_id))
 
       Ok(retransmit.due_at(
         limits.receipt_window_seconds,
         kind,
         now,
-        retransmits,
-        Instant(deadline),
+        row.retransmits,
+        Instant(row.deadline),
       ))
     }
   }
@@ -1397,44 +1281,31 @@ pub fn due_retransmits(
   now: Instant,
   limit: Int,
 ) -> Result(List(DueRetransmit), Error) {
-  let row = {
-    use envelope <- decode.field(0, decode.bit_array)
-    use contact <- decode.field(1, decode.bit_array)
-    use kind <- decode.field(2, decode.string)
-    use message <- decode.field(3, decode.optional(decode.bit_array))
-    use deadline <- decode.field(4, decode.int)
-    use retransmits <- decode.field(5, decode.int)
-    decode.success(#(envelope, contact, kind, message, deadline, retransmits))
-  }
-
+  // sqlc types the bound instant by the column it is compared with, and
+  // `retransmit_at` is nullable, so the generated parameter is optional.
   use rows <- result.try(query(
     store,
-    "SELECT envelope, contact, kind, message_id, deadline, retransmits
-     FROM outbox
-     WHERE retransmit_at IS NOT NULL AND retransmit_at <= ?
-     ORDER BY retransmit_at LIMIT ?",
-    [sqlight.int(now.unix_seconds), sqlight.int(limit)],
-    row,
+    sql.due_retransmits(now: Some(now.unix_seconds), max: limit),
   ))
 
-  list.try_map(rows, fn(columns) {
-    let #(envelope, contact, kind, message, deadline, retransmits) = columns
-
+  list.try_map(rows, fn(row) {
     use envelope <- result.try(
-      id.from_bytes(envelope) |> result.map_error(fn(_) { corrupt("outbox") }),
+      id.from_bytes(row.envelope)
+      |> result.map_error(fn(_) { corrupt("outbox") }),
     )
     use contact <- result.try(
-      id.from_bytes(contact) |> result.map_error(fn(_) { corrupt("outbox") }),
+      id.from_bytes(row.contact)
+      |> result.map_error(fn(_) { corrupt("outbox") }),
     )
-    use kind <- result.try(outbound_kind_of(kind, message))
+    use kind <- result.try(outbound_kind_of(row.kind, row.message_id))
 
     Ok(DueRetransmit(
       contact:,
       row: retransmit.Unreceipted(
         envelope:,
         kind:,
-        deadline: Instant(deadline),
-        retransmits:,
+        deadline: Instant(row.deadline),
+        retransmits: row.retransmits,
       ),
     ))
   })
@@ -1444,16 +1315,10 @@ pub fn due_retransmits(
 /// `locally_queued`, and never out of a later state.
 fn advance_message(
   store: Store,
-  envelope_key: sqlight.Value,
+  envelope: BitArray,
   to: String,
 ) -> Result(Nil, Error) {
-  write(
-    store,
-    "UPDATE sent_messages SET state = ?
-     WHERE state = 'locally_queued'
-       AND message_id = (SELECT message_id FROM outbox WHERE envelope = ?)",
-    [sqlight.text(to), envelope_key],
-  )
+  write(store, sql.advance_message(state: to, envelope:))
 }
 
 /// How many outbox rows are still waiting to be stored by a mailbox.
@@ -1465,14 +1330,12 @@ fn advance_message(
 /// // -> Ok(0)
 /// ```
 pub fn pending_count(store: Store) -> Result(Int, Error) {
-  use rows <- result.try(query(
-    store,
-    "SELECT COUNT(*) FROM outbox WHERE status = 'queued'",
-    [],
-    decode.field(0, decode.int, decode.success),
-  ))
+  use rows <- result.try(query(store, sql.pending_count()))
 
-  Ok(first_or(rows, 0))
+  rows
+  |> list.map(fn(row) { row.pending })
+  |> first_or(0)
+  |> Ok
 }
 
 // ------------------------------------------------------- the inbound log
@@ -1492,15 +1355,13 @@ pub fn processed_digest(
 ) -> Result(Option(BitArray), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT digest FROM processed WHERE queue = ? AND envelope = ?",
-    [
-      sqlight.blob(id.to_bytes(queue)),
-      sqlight.blob(id.to_bytes(envelope)),
-    ],
-    decode.field(0, decode.bit_array, decode.success),
+    sql.processed_digest(
+      queue: id.to_bytes(queue),
+      envelope: id.to_bytes(envelope),
+    ),
   ))
 
-  Ok(first(rows))
+  Ok(first(list.map(rows, fn(row) { row.digest })))
 }
 
 /// The fingerprint a relationship remembers for a ratchet message's digest,
@@ -1517,28 +1378,18 @@ pub fn fingerprint(
   contact: Id(Contact),
   digest: BitArray,
 ) -> Result(Option(plan.Fingerprint), Error) {
-  let row = {
-    use message <- decode.field(0, decode.bit_array)
-    use expires_at <- decode.field(1, decode.int)
-    use receipts <- decode.field(2, decode.int)
-    decode.success(#(message, expires_at, receipts))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT message_id, expires_at, receipts FROM fingerprints
-     WHERE contact = ? AND digest = ?",
-    [sqlight.blob(id.to_bytes(contact)), sqlight.blob(digest)],
-    row,
+    sql.fingerprint(contact: id.to_bytes(contact), digest:),
   ))
 
   // The primary key admits one row at most.
   case rows {
     [] -> Ok(None)
 
-    [#(message, expires_at, receipts), ..] -> {
+    [row, ..] -> {
       use message <- result.try(
-        id.from_bytes(message)
+        id.from_bytes(row.message_id)
         |> result.map_error(fn(_) { corrupt("fingerprints") }),
       )
 
@@ -1546,8 +1397,8 @@ pub fn fingerprint(
         Some(plan.Fingerprint(
           digest:,
           message:,
-          expires_at: Instant(expires_at),
-          receipts:,
+          expires_at: Instant(row.expires_at),
+          receipts: row.receipts,
         )),
       )
     }
@@ -1570,14 +1421,12 @@ pub fn unacked(
 ) -> Result(List(Id(Envelope)), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT envelope FROM processed
-     WHERE queue = ? AND acked = 0 LIMIT ?",
-    [sqlight.blob(id.to_bytes(queue)), sqlight.int(unacked_batch)],
-    decode.field(0, decode.bit_array, decode.success),
+    sql.unacked(queue: id.to_bytes(queue), max: unacked_batch),
   ))
 
-  list.try_map(rows, fn(bytes) {
-    id.from_bytes(bytes) |> result.map_error(fn(_) { corrupt("processed") })
+  list.try_map(rows, fn(row) {
+    id.from_bytes(row.envelope)
+    |> result.map_error(fn(_) { corrupt("processed") })
   })
 }
 
@@ -1602,11 +1451,10 @@ pub fn mark_acked(
     list.try_each(envelopes, fn(envelope) {
       write(
         store,
-        "UPDATE processed SET acked = 1 WHERE queue = ? AND envelope = ?",
-        [
-          sqlight.blob(id.to_bytes(queue)),
-          sqlight.blob(id.to_bytes(envelope)),
-        ],
+        sql.mark_acked(
+          queue: id.to_bytes(queue),
+          envelope: id.to_bytes(envelope),
+        ),
       )
     })
   })
@@ -1627,35 +1475,9 @@ pub fn ready_deliveries(
   contact: Option(Id(Contact)),
   max: Int,
 ) -> Result(List(DeliveryRecord), Error) {
-  let row = {
-    use message <- decode.field(0, decode.bit_array)
-    use contact <- decode.field(1, decode.bit_array)
-    use content_type <- decode.field(2, decode.string)
-    use payload <- decode.field(3, decode.bit_array)
-    use in_reply_to <- decode.field(4, decode.optional(decode.bit_array))
-    use received_at <- decode.field(5, decode.int)
-    decode.success(#(
-      message,
-      contact,
-      content_type,
-      payload,
-      in_reply_to,
-      received_at,
-    ))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT message_id, contact, content_type, payload, in_reply_to,
-            received_at
-     FROM deliveries
-     WHERE status = 'ready' AND (?1 IS NULL OR contact = ?1)
-     ORDER BY seq LIMIT ?2",
-    [
-      sqlight.nullable(sqlight.blob, option.map(contact, id.to_bytes)),
-      sqlight.int(max),
-    ],
-    row,
+    sql.ready_deliveries(contact: option.map(contact, id.to_bytes), max:),
   ))
 
   list.try_map(rows, delivery_record)
@@ -1674,11 +1496,7 @@ pub fn ready_deliveries(
 pub fn consume(store: Store, message: Id(MessageKind)) -> Result(Bool, Error) {
   use rows <- result.try(query(
     store,
-    "UPDATE deliveries SET status = 'consumed'
-     WHERE message_id = ? AND status = 'ready'
-     RETURNING seq",
-    [sqlight.blob(id.to_bytes(message))],
-    decode.success(Nil),
+    sql.consume(message_id: id.to_bytes(message)),
   ))
 
   // An update that touched a row consumed a ready delivery.
@@ -1702,17 +1520,15 @@ pub fn sent_state(
 ) -> Result(Option(SentState), Error) {
   use rows <- result.try(query(
     store,
-    "SELECT state FROM sent_messages WHERE message_id = ?",
-    [sqlight.blob(id.to_bytes(message))],
-    decode.field(0, decode.string, decode.success),
+    sql.sent_state(message_id: id.to_bytes(message)),
   ))
 
   // The column's text names the state; any other text is a damaged row.
   case rows {
     [] -> Ok(None)
 
-    [name, ..] ->
-      case name {
+    [sql.SentState(state:), ..] ->
+      case state {
         "locally_queued" -> Ok(Some(LocallyQueued))
         "stored_by_mailbox" -> Ok(Some(StoredByMailbox))
         "received_by_peer" -> Ok(Some(ReceivedByPeer))
@@ -1735,27 +1551,9 @@ pub fn audit(
   contact: Option(Id(Contact)),
   limit: Int,
 ) -> Result(List(AuditRecord), Error) {
-  let row = {
-    use contact <- decode.field(0, decode.bit_array)
-    use direction <- decode.field(1, decode.string)
-    use message <- decode.field(2, decode.bit_array)
-    use content_type <- decode.field(3, decode.string)
-    use payload <- decode.field(4, decode.bit_array)
-    use at <- decode.field(5, decode.int)
-    decode.success(#(contact, direction, message, content_type, payload, at))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT contact, direction, message_id, content_type, payload, at
-     FROM audit
-     WHERE (?1 IS NULL OR contact = ?1)
-     ORDER BY seq DESC LIMIT ?2",
-    [
-      sqlight.nullable(sqlight.blob, option.map(contact, id.to_bytes)),
-      sqlight.int(limit),
-    ],
-    row,
+    sql.audit_entries(contact: option.map(contact, id.to_bytes), max: limit),
   ))
 
   list.try_map(rows, audit_record)
@@ -1772,14 +1570,9 @@ pub fn audit(
 /// // -> Ok(Some(<<...>>))
 /// ```
 pub fn meta_get(store: Store, key: String) -> Result(Option(BitArray), Error) {
-  use rows <- result.try(query(
-    store,
-    "SELECT value FROM meta WHERE key = ?",
-    [sqlight.text(key)],
-    decode.field(0, decode.bit_array, decode.success),
-  ))
+  use rows <- result.try(query(store, sql.meta_get(key:)))
 
-  Ok(first(rows))
+  Ok(first(list.map(rows, fn(row) { row.value })))
 }
 
 /// Stores a daemon-wide value, replacing any earlier one.
@@ -1795,23 +1588,13 @@ pub fn meta_put(
   key: String,
   value: BitArray,
 ) -> Result(Nil, Error) {
-  write(store, "INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)", [
-    sqlight.text(key),
-    sqlight.blob(value),
-  ])
+  write(store, sql.meta_put(key:, value:))
 }
 
 // --------------------------------------------------------------- helpers
 
-/// The raw columns of a state row: version, description, blob.
-fn contact_row() -> decode.Decoder(#(Int, String, BitArray)) {
-  use version <- decode.field(0, decode.int)
-  use description <- decode.field(1, decode.string)
-  use blob <- decode.field(2, decode.bit_array)
-  decode.success(#(version, description, blob))
-}
-
-/// Decodes a relationship row's snapshot.
+/// Decodes a relationship row's snapshot from its version, description and
+/// blob columns, the three every state reader selects.
 fn contact_record(
   store: Store,
   row: #(Int, String, BitArray),
@@ -1863,28 +1646,25 @@ fn one_offer(
   }
 }
 
-/// Builds a delivery record from its raw columns.
-fn delivery_record(
-  columns: #(BitArray, BitArray, String, BitArray, Option(BitArray), Int),
-) -> Result(DeliveryRecord, Error) {
-  let #(message, contact, content_type, payload, in_reply_to, received_at) =
-    columns
-
+/// Builds a delivery record from its row, decoding each identifier.
+fn delivery_record(row: sql.ReadyDeliveries) -> Result(DeliveryRecord, Error) {
   use message <- result.try(
-    id.from_bytes(message) |> result.map_error(fn(_) { corrupt("deliveries") }),
+    id.from_bytes(row.message_id)
+    |> result.map_error(fn(_) { corrupt("deliveries") }),
   )
   use contact <- result.try(
-    id.from_bytes(contact) |> result.map_error(fn(_) { corrupt("deliveries") }),
+    id.from_bytes(row.contact)
+    |> result.map_error(fn(_) { corrupt("deliveries") }),
   )
-  use in_reply_to <- result.try(optional_id(in_reply_to))
+  use in_reply_to <- result.try(optional_id(row.in_reply_to))
 
   Ok(DeliveryRecord(
     message:,
     contact:,
-    content_type:,
-    payload: secret.new(payload),
+    content_type: row.content_type,
+    payload: secret.new(row.payload),
     in_reply_to:,
-    received_at: Instant(received_at),
+    received_at: Instant(row.received_at),
   ))
 }
 
@@ -1911,27 +1691,25 @@ fn parse_direction(name: String) -> Result(Direction, Error) {
   }
 }
 
-/// Builds an audit record from its raw columns.
-fn audit_record(
-  columns: #(BitArray, String, BitArray, String, BitArray, Int),
-) -> Result(AuditRecord, Error) {
-  let #(contact, direction, message, content_type, payload, at) = columns
-
+/// Builds an audit record from its row, decoding each identifier and the
+/// direction.
+fn audit_record(row: sql.AuditEntries) -> Result(AuditRecord, Error) {
   use contact <- result.try(
-    id.from_bytes(contact) |> result.map_error(fn(_) { corrupt("audit") }),
+    id.from_bytes(row.contact) |> result.map_error(fn(_) { corrupt("audit") }),
   )
   use message <- result.try(
-    id.from_bytes(message) |> result.map_error(fn(_) { corrupt("audit") }),
+    id.from_bytes(row.message_id)
+    |> result.map_error(fn(_) { corrupt("audit") }),
   )
-  use direction <- result.try(parse_direction(direction))
+  use direction <- result.try(parse_direction(row.direction))
 
   Ok(AuditRecord(
     contact:,
     direction:,
     message:,
-    content_type:,
-    payload: secret.new(payload),
-    at: Instant(at),
+    content_type: row.content_type,
+    payload: secret.new(row.payload),
+    at: Instant(row.at),
   ))
 }
 
@@ -2033,52 +1811,93 @@ fn first_or(rows: List(a), default: a) -> a {
   }
 }
 
-fn run(store: Store, sql: String) -> Result(Nil, Error) {
-  sqlight.exec(sql, on: store.connection) |> result.map_error(Sql)
+/// Runs hand-written SQL with no parameters and no rows: a pragma, a
+/// transaction boundary, or a whole migration, which may hold several
+/// statements.
+fn run(store: Store, statements: String) -> Result(Nil, Error) {
+  sqlight.exec(statements, on: store.connection) |> result.map_error(Sql)
 }
 
-/// Runs a statement for its effect and discards any rows.
-fn write(
-  store: Store,
-  sql: String,
-  arguments: List(sqlight.Value),
-) -> Result(Nil, Error) {
-  query(store, sql, arguments, decode.success(Nil))
-  |> result.replace(Nil)
-}
+// ---------------------------------------------------------- the bridge
+//
+// A generated function in `daemon/sql` returns its statement's text, its
+// parameters as parrot's `dev.Param`, and, for a statement that returns rows,
+// the decoder for them. `query` and `write` bind those parameters as sqlight
+// values and run the statement, so values travel as bound parameters and are
+// never spliced into the SQL.
 
-/// Runs a parameterized statement and decodes every row with `decoder`.
-/// Values travel as bound parameters, never spliced into the SQL.
+/// Runs a generated statement and decodes every row it returns with the
+/// decoder generated beside it.
 fn query(
   store: Store,
-  sql: String,
-  arguments: List(sqlight.Value),
-  decoder: decode.Decoder(a),
+  statement: #(String, List(dev.Param), decode.Decoder(a)),
 ) -> Result(List(a), Error) {
-  sqlight.query(sql, on: store.connection, with: arguments, expecting: decoder)
+  let #(text, parameters, decoder) = statement
+  use arguments <- result.try(list.try_map(parameters, bind))
+
+  sqlight.query(text, on: store.connection, with: arguments, expecting: decoder)
   |> result.map_error(Sql)
 }
 
-/// Reads one integer pragma, such as `user_version`.
+/// Runs a generated statement for its effect.
+fn write(
+  store: Store,
+  statement: #(String, List(dev.Param)),
+) -> Result(Nil, Error) {
+  let #(text, parameters) = statement
+
+  query(store, #(text, parameters, decode.success(Nil)))
+  |> result.replace(Nil)
+}
+
+/// One generated parameter as the sqlight value it binds as.
+///
+/// Every table is `STRICT` over `INTEGER`, `TEXT` and `BLOB`, so sqlc types
+/// each parameter as an integer, a string or a bit array, optional where
+/// the column is nullable. Parrot's type also has variants sqlight cannot
+/// bind (a timestamp, a date, a list, a dynamic value), which no statement
+/// here produces and `make gen-sql` refuses; one would fail as a type
+/// mismatch, naming no value, rather than crash the engine.
+fn bind(parameter: dev.Param) -> Result(sqlight.Value, Error) {
+  case parameter {
+    dev.ParamInt(value) -> Ok(sqlight.int(value))
+    dev.ParamString(value) -> Ok(sqlight.text(value))
+    dev.ParamBitArray(value) -> Ok(sqlight.blob(value))
+    dev.ParamFloat(value) -> Ok(sqlight.float(value))
+    dev.ParamBool(value) -> Ok(sqlight.bool(value))
+    dev.ParamNullable(Some(inner)) -> bind(inner)
+    dev.ParamNullable(None) -> Ok(sqlight.null())
+
+    dev.ParamTimestamp(_)
+    | dev.ParamDate(_)
+    | dev.ParamList(_)
+    | dev.ParamDynamic(_) ->
+      Error(
+        Sql(sqlight.SqlightError(
+          sqlight.Mismatch,
+          "a generated parameter has no SQLite binding",
+          -1,
+        )),
+      )
+  }
+}
+
+/// Reads one integer pragma, such as `user_version`. A pragma's name is
+/// composed here, so it is the one read that does not come from
+/// `daemon/sql`.
 fn pragma_int(store: Store, name: String) -> Result(Int, Error) {
-  use rows <- result.try(query(
-    store,
-    "PRAGMA " <> name,
-    [],
-    decode.field(0, decode.int, decode.success),
-  ))
+  use rows <- result.try(
+    query(store, #("PRAGMA " <> name, [], decode.at([0], decode.int))),
+  )
 
   first_or_corrupt(rows, name)
 }
 
 /// Reads one text pragma, such as `journal_mode`.
 fn pragma_text(store: Store, name: String) -> Result(String, Error) {
-  use rows <- result.try(query(
-    store,
-    "PRAGMA " <> name,
-    [],
-    decode.field(0, decode.string, decode.success),
-  ))
+  use rows <- result.try(
+    query(store, #("PRAGMA " <> name, [], decode.at([0], decode.string))),
+  )
 
   first_or_corrupt(rows, name)
 }
