@@ -954,3 +954,27 @@ pub fn pending_inboxes_decoder() -> decode.Decoder(PendingInboxes) {
   use inbox <- decode.field(0, decode.bit_array)
   decode.success(PendingInboxes(inbox:))
 }
+
+pub type DrainingInboxes {
+  DrainingInboxes(inbox: BitArray)
+}
+
+pub fn draining_inboxes() {
+  let sql =
+    "
+SELECT inbox FROM relationships AS r
+WHERE r.phase = 'closed'
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = r.inbox_queue AND p.acked = 0)
+UNION ALL
+SELECT inbox FROM offers AS o
+WHERE o.phase IN ('consumed', 'expired')
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = o.inbox_queue AND p.acked = 0)"
+  #(sql, [], draining_inboxes_decoder())
+}
+
+pub fn draining_inboxes_decoder() -> decode.Decoder(DrainingInboxes) {
+  use inbox <- decode.field(0, decode.bit_array)
+  decode.success(DrainingInboxes(inbox:))
+}

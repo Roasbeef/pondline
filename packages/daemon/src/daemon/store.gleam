@@ -1192,6 +1192,21 @@ pub fn live_inboxes(store: Store) -> Result(List(Inbox), Error) {
   decode_inboxes(list.map(rows, fn(row) { row.inbox }))
 }
 
+/// The inboxes no longer fetched (a closed relationship, a consumed or
+/// expired offer) that still hold committed envelopes not acknowledged to
+/// the mailbox. Each gets a fetcher that acknowledges them and stops.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.draining_inboxes(store)
+/// // -> Ok([])
+/// ```
+pub fn draining_inboxes(store: Store) -> Result(List(Inbox), Error) {
+  use rows <- result.try(query(store, sql.draining_inboxes()))
+  decode_inboxes(list.map(rows, fn(row) { row.inbox }))
+}
+
 /// The inboxes whose queue the mailbox has not been asked to create yet:
 /// offers still `Provisioning` and relationships still `Joining`.
 ///

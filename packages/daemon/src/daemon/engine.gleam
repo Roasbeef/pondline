@@ -238,6 +238,7 @@ pub type JobKind {
   Retransmit
   Incidents
   IncidentCount
+  DrainingInboxes
 }
 
 /// What the fault hook makes of one job. Only a simulation sets a hook; a
@@ -1215,6 +1216,20 @@ pub fn live_inboxes(name: Handle(Message)) -> Result(List(Inbox), Failure) {
   run(name, LiveInboxes, fn(state) { fault(store.live_inboxes(state.store)) })
 }
 
+/// The retired inboxes that still owe the mailbox an acknowledgement.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.draining_inboxes(name)
+/// // -> Ok([])
+/// ```
+pub fn draining_inboxes(name: Handle(Message)) -> Result(List(Inbox), Failure) {
+  run(name, DrainingInboxes, fn(state) {
+    fault(store.draining_inboxes(state.store))
+  })
+}
+
 /// The inboxes whose queue the mailbox must still be asked to create.
 ///
 /// ## Examples
@@ -1523,5 +1538,6 @@ pub fn kind_label(kind: JobKind) -> String {
     Retransmit -> "retransmit"
     Incidents -> "incidents"
     IncidentCount -> "incident_count"
+    DrainingInboxes -> "draining_inboxes"
   }
 }

@@ -7,7 +7,10 @@
 //// (an offer opened, a joiner's session started) gains its fetcher without
 //// anyone sending it a queue-specific message, and a fetcher that crashed is
 //// replaced by the next tick. A fetcher ends by itself when its queue stops
-//// being live, so this actor never has to stop one.
+//// being live, so this actor never has to stop one. A retired queue whose
+//// committed envelopes are not all acknowledged (a restart between the
+//// commit and the acknowledgement) also gets a fetcher, which acknowledges
+//// them and ends.
 ////
 //// Fetchers are linked to this actor and not supervised individually. A
 //// crashing fetcher takes the manager down, the node's supervisor restarts
@@ -141,12 +144,22 @@ fn handle(state: State, message: Message) -> actor.Next(State, Message) {
   }
 }
 
-/// Starts a fetcher for every live queue that has none running.
+/// Starts a fetcher for every live queue that has none running, and for
+/// every retired queue that still owes the mailbox acknowledgements; the
+/// second kind acknowledges and stops at the end of its first round.
 fn reconcile(state: State) -> State {
-  case engine.live_inboxes(state.config.engine) {
+  // The live queues first: each that has no fetcher gets one.
+  let state = case engine.live_inboxes(state.config.engine) {
     Ok(inboxes) -> list.fold(inboxes, state, ensure_fetcher)
 
     // An engine that does not answer is asked again on the next tick.
+    Error(_) -> state
+  }
+
+  // A retired queue with committed, unacknowledged envelopes is one a
+  // fetcher retired from, or a restart left, before acknowledging them.
+  case engine.draining_inboxes(state.config.engine) {
+    Ok(inboxes) -> list.fold(inboxes, state, ensure_fetcher)
     Error(_) -> state
   }
 }

@@ -56,3 +56,21 @@ WHERE phase IN ('awaiting', 'pending', 'active');
 SELECT inbox FROM offers WHERE phase = 'provisioning'
 UNION ALL
 SELECT inbox FROM relationships WHERE phase = 'joining';
+
+-- The inboxes nothing fetches any more whose committed envelopes are not all
+-- acknowledged yet: a relationship that closed, or an offer that was
+-- consumed or expired, between a commit and the acknowledgement that should
+-- have followed it, a daemon restart included. The fetch manager gives each a
+-- fetcher that acknowledges them and stops, so nothing committed is left on
+-- the mailbox until retention.
+
+-- name: DrainingInboxes :many
+SELECT inbox FROM relationships AS r
+WHERE r.phase = 'closed'
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = r.inbox_queue AND p.acked = 0)
+UNION ALL
+SELECT inbox FROM offers AS o
+WHERE o.phase IN ('consumed', 'expired')
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = o.inbox_queue AND p.acked = 0);
