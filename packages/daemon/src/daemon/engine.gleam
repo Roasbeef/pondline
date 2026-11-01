@@ -15,6 +15,24 @@
 //// this process and no transaction spans a message. Callers use the typed
 //// functions below and never see the job.
 ////
+//// ## Why a `weft/actor`, and why the store opens in the initialiser
+////
+//// The engine is a `weft/actor` that traps exits, and `on_shutdown` closes
+//// the store (`close_store`), so a supervisor's orderly stop checkpoints and releases the
+//// database file instead of leaving it to garbage collection. The shutdown
+//// callback is best effort (it cannot run on a brutal kill), which is
+//// enough here: nothing is lost by a missed close, because every commit is
+//// already durable under `synchronous=FULL`.
+////
+//// The first work, opening and migrating the store and writing the agent
+//// identifier, stays in the initialiser and is not a `continuing` message.
+//// `continuing` exists so that `start` can return before slow first work
+//// and still have it ordered ahead of the first request. The engine wants
+//// the opposite: a database that cannot be opened must fail the start, and
+//// the supervisor with it, so that a daemon that cannot reach its state
+//// never accepts a command (`node.start` relies on this). Failing in a
+//// continue message would instead start an engine that has nothing to serve.
+////
 //// ## What the engine never does
 ////
 //// It never touches the network. It does not send, fetch, acknowledge or
@@ -68,9 +86,9 @@ import daemon/store.{type Store}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
+import weft/actor
 
 /// How long a caller waits for the engine before the call is reported
 /// `Unavailable`. A job runs after every earlier one, and a commit can wait
@@ -183,6 +201,8 @@ pub fn start(
   })
   |> actor.on_message(handle)
   |> actor.named(name)
+  |> actor.trapping_exits(True)
+  |> actor.on_shutdown(close_store)
   |> actor.start
 }
 
@@ -241,6 +261,13 @@ fn ensure_agent_id(state: State) -> Result(Nil, store.Error) {
         Error(Nil) -> Error(store.Corrupt("randomness source misbehaved"))
       }
   }
+}
+
+/// Closes the store when the engine stops in an orderly way. A close that
+/// fails changes nothing: the commits it would flush are already durable.
+fn close_store(state: State, _reason: process.ExitReason) -> Nil {
+  let _ = store.close(state.store)
+  Nil
 }
 
 /// Runs one job to completion before the next is read.

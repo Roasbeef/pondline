@@ -8,11 +8,21 @@
 //// asking every worker. The observations are hints for the operator and
 //// drive nothing: no worker decides anything from them, so a stale or lost
 //// report costs a wrong line in a status display and nothing else.
+////
+//// ## Why a `weft/actor` and nothing more
+////
+//// The cell is a `weft/actor` holding one record, so it answers the OTP
+//// system messages with the rest of the tree. It is a single state with two
+//// writers and a reader: nothing waits, nothing times out and nothing is
+//// postponed, so a `weft/state_machine` would have one state and no
+//// transitions, and there are no subscribers, so there is no
+//// `weft/event_manager`. It does no first work before serving, so
+//// `continuing` has nothing to order.
 
 import daemon/mail
 import gleam/erlang/process.{type Name, type Subject}
-import gleam/otp/actor
 import gleam/otp/supervision
+import weft/actor
 
 /// Where the Tor client stands.
 pub type TorStatus {

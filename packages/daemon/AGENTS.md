@@ -71,29 +71,65 @@ this before changing any of them.
   transaction and returns `Committed`, which only this module can build and
   which is the only source of effects. Tables: `relationships`, `offers`,
   `outbox`, `processed`, `deliveries`, `sent_messages`, `audit`, `meta`.
-- `daemon/engine`: the single writer. One actor holds the connection and runs
-  each operation as a job: load state, run the pure transition with the real
-  `Suite` and injected clock, commit, then call `notify`. It never touches the
-  network. `process` applies the id-and-digest rule before opening a frame.
-- `daemon/scheduler`: sends committed `queued` outbox rows, one linked task
-  per row, resending the same padded bytes; `classify` and `backoff_seconds`
-  are the pure policy.
-- `daemon/fetcher` (one process per live queue) and `daemon/fetch_manager`
-  (starts the fetchers, retires expired offers): each round acknowledges
-  exactly the store's committed-and-unacknowledged envelopes, then long-polls.
-- `daemon/provisioner`: `CreateQueue` for inboxes already committed, then
-  `engine.provisioned`; scans on start, on nudge and on a timer.
-- `daemon/carrier`: the Tor sidecar and its bootstrap, and the onion `Dialer`.
+- `daemon/engine`: the single writer. One `weft/actor` holds the connection and
+  runs each operation as a job: load state, run the pure transition with the
+  real `Suite` and injected clock, commit, then call `notify`. It never touches
+  the network. `process` applies the id-and-digest rule before opening a
+  frame. The store opens in the initialiser, not a `continuing` message, so a
+  database that cannot open fails the start; it traps exits and `on_shutdown`
+  closes the store.
+- `daemon/scheduler`: a `weft/actor` that sends committed `queued` outbox
+  rows, resending the same padded bytes. Each dispatch is one `weft` run
+  (`send_batch`), `limit` `max_in_flight`, `deadline` `send_deadline_ms`,
+  relayed to the actor so it never blocks; every run has its own subject and
+  the selector is rebuilt from the table of running batches, so an outcome
+  that carries only an index finds its row. All seven `Outcome` variants are
+  written out: crashed, abandoned and failed sends are retried with backoff,
+  `NeverStarted` leaves the row queued. The rescan is `actor.periodic`
+  (`tick_ms`) plus a first tick via `continuing`; the engine has no soonest
+  `next_attempt_at` query, so a computed named timeout is not possible yet.
+  `classify` and `backoff_seconds` are the pure policy.
+- `daemon/fetcher` (one process per live queue): a `weft/state_machine`,
+  states `Acking`, `Polling`, `BackingOff`. Each network step is a one-task
+  relayed run with a deadline (`ack_deadline_ms`, `poll_deadline_ms`) pushing
+  to its own subject (`Acked`, `Polled`); a failure enters `BackingOff` with a
+  state timeout of `backoff_ms(failures)` that sends `Begin`, and the failure
+  count lives in the data. A round starts by checking liveness and ends the
+  machine if the queue is retired. Each round acknowledges exactly the
+  store's committed-and-unacknowledged envelopes, then long-polls.
+  `daemon/fetch_manager` is a `weft/actor` (`continuing` first reconcile,
+  `periodic` tick) that starts a linked fetcher per live queue and retires
+  expired offers.
+- `daemon/provisioner`: a one-state `weft/state_machine` (`Watching`) because
+  the next scan's delay is computed (`delay_ms(failures)`), which needs the
+  named `scan` timeout, re-armed in the one `Tick` arm; a `Nudge` scans
+  without touching it. `CreateQueue` for inboxes already committed, then
+  `engine.provisioned`; the first scan runs via `continuing`.
+- `daemon/carrier`: a `weft/state_machine` (`Unused`, `Bootstrapping`,
+  `Bootstrapped`, `Unavailable`) that owns the Tor handle, runs the bootstrap
+  as a relayed one-task run bounded by `bootstrap_deadline_ms`, reports each
+  decision to the status cell, and drops end markers after it settles. The
+  onion `Dialer` asks it for the handle on every dial.
 - `daemon/node`: the `rest_for_one` tree (`lock`, `status`, `events`,
   `carrier`, `engine`, `scheduler`, `provisioner`, `fetch_manager`), the
   directory preparation and `route_notice`, the only engine-to-worker wiring.
-  `start_offline` omits the three network workers. `stop` kills the tree.
+  `start_offline` omits the three network workers. `stop` kills the tree and
+  waits for the lock with `weft/poll`.
 - `daemon/api`: the contract the local API codes against (`invite`, `accept`,
   `contacts`, `approve`, `decline`, `close`, `raise_budget`, `send`, `receive`,
-  `acknowledge`, `status`, `audit`, `subscribe`, `health`).
-- `daemon/config`, `daemon/lock`, `daemon/status`, `daemon/events`,
-  `daemon/mail` (soft `tell` and `ask` to named actors), `daemon/log` and
-  `daemon/internal/ffi_runtime_clock`.
+  `acknowledge`, `status`, `audit`, `subscribe`, `health`). `invite` waits for
+  its queue with `weft/poll` (a durable row landing, probed every
+  `invite_poll_ms` for at most `invite_wait_ms`).
+- `daemon/lock`: the exclusive SQLite lock held by a trapping `weft/actor`
+  whose `on_shutdown` closes the connection. `daemon/status` (the Tor and
+  mailbox cell) and `daemon/events` (the subscriber list) are plain
+  `weft/actor`s: the subscribers are all alike and hold no state, so the
+  list stays a list and is not a `weft/event_manager`.
+- `daemon/mail` (soft `tell` and `ask` to named actors) stays hand-written
+  because weft has no monitored, non-panicking call against a pre-existing
+  pid, and moving to `weft/registry` addresses would change every worker's
+  handle. Known weft gap.
+- `daemon/config`, `daemon/log` and `daemon/internal/ffi_runtime_clock`.
 
 Traffic: the engine tells the shell through `notify` after each commit
 (`Transmit` to the scheduler, `CreateQueue` to the provisioner, a topology
@@ -109,6 +145,12 @@ Invariants:
   holding the database's write lock from outside
   (`test/daemon/recovery_test.gleam`), and by mutation: sending from the plan,
   or acknowledging from the fetched batch, fails them.
+- Timeouts and retries are mutation-tested by `test/daemon/workers_test.gleam`:
+  removing the scheduler run's `deadline` or `limit`, the scheduler's
+  `periodic`, the fetcher's backoff state timeout or run deadline, the
+  provisioner's named timeout, or the carrier's run deadline each fails a
+  named test there. The fetch manager's `periodic` is not covered (it is the
+  backstop for a lost nudge and offer expiry).
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
 - A restart resumes committed state: an unsent outbox row is sent on start,
@@ -146,9 +188,13 @@ the operator, and the `reedwire` command that speaks to it.
   `invalid`, `refused`, `unavailable`, `too_large`. Bounds: `max_line_bytes`
   (256 KiB), `max_receive`, `max_wait_ms`.
 - `daemon/local_api`: the server over `<state_dir>/api.sock` (mode 0600).
-  One process per connection; one wake hub actor holds the single runtime
-  subscription and wakes waiting `receive` calls. It serves a `Backend`
-  record (`daemon/local_api_types`), never the runtime directly.
+  One process per connection; one wake hub (`weft/actor`) holds the single
+  runtime subscription and wakes waiting `receive` calls. A waiting `receive`
+  is `weft/poll` on a clock whose rest is a wait on the hub's wake. The
+  acceptor (blocked in `accept`) and the connection processes (an idle read
+  timeout on the socket) stay plain `spawn_unlinked`: neither is a task with a
+  deadline over its total time. It serves a `Backend` record
+  (`daemon/local_api_types`), never the runtime directly.
 - `daemon/local_api_backend`: the only module that maps the runtime's
   `daemon/api` onto `Backend` (`from_daemon`), and `start_node`, which turns
   the CLI's options into a runtime `Config` (`127.0.0.1:PORT` is a loopback

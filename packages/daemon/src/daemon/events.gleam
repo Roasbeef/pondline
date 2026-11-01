@@ -13,12 +13,26 @@
 //// The registry is generic in the event type so that `daemon/api`, which
 //// defines the contract's `Event`, can use it without this module (or the
 //// engine below it) importing the API.
+////
+//// ## Why a `weft/actor` holding a list
+////
+//// The registry is a `weft/actor` so that it answers the OTP system
+//// messages like every other process in the tree. It is deliberately not a
+//// `weft/event_manager`. That module is for handlers that each hold their
+//// own state and must fail independently: one handler's crash dropped
+//// while its siblings carry on. Here every subscriber is the same thing, a
+//// `Subject` that the registry only ever sends to, there is no
+//// per-subscriber state to seal, and a subscriber cannot fail inside the
+//// registry because the registry never runs its code. A homogeneous
+//// subscriber list with no per-subscriber state stays a list
+//// (`docs/weft.md`, "When not to"). The registry also does no first work
+//// before serving, so there is nothing for `continuing` to order.
 
 import daemon/mail
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
-import gleam/otp/actor
 import gleam/otp/supervision
+import weft/actor
 
 /// The registry's mailbox protocol.
 pub opaque type Message(event) {

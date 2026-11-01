@@ -23,7 +23,8 @@
 //// `invite` is the one call that waits. An invitation cannot be handed out
 //// until the mailbox has created its queue, since a joiner could append to a
 //// queue that does not exist, so `invite` commits the offer and then polls
-//// the committed offer until it opens, for at most `invite_wait_ms`.
+//// the committed offer with `weft/poll` until it opens, for at most
+//// `invite_wait_ms`.
 ////
 //// ## Why the types are repeated
 ////
@@ -55,6 +56,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import weft/poll
 
 /// How long `invite` waits for the mailbox to create the offer's queue.
 pub const invite_wait_ms = 30_000
@@ -267,33 +269,41 @@ pub fn invite(
     |> result.map_error(from_failure),
   )
 
-  await_file(daemon, invitation, invite_wait_ms)
+  await_file(daemon, invitation)
 }
 
 /// Polls the committed offer until its queue exists or the wait runs out.
+///
+/// The wait is a poll and not an event because the thing awaited is a durable
+/// row landing, written by the provisioner after a network call, and the
+/// caller is a foreground request that has nothing else to do. The engine
+/// does not announce the transition to a waiter, and a subscription would
+/// need a registry slot per invitation to save a probe every
+/// `invite_poll_ms`. `weft/poll` is the loop with its three corners decided:
+/// the first read is immediate, a last read is made at the deadline, and a
+/// read that fails for good (the offer expired, the engine is restarting)
+/// ends the wait with that failure instead of burning the budget.
 fn await_file(
   daemon: Daemon,
   invitation: Id(InvitationKind),
-  remaining_ms: Int,
 ) -> Result(BitArray, ApiError) {
-  use file <- result.try(
-    engine.invitation_file(daemon.engine, invitation)
-    |> result.map_error(from_failure),
-  )
+  let waited =
+    poll.until(within: invite_wait_ms, every: invite_poll_ms, attempt: fn() {
+      case engine.invitation_file(daemon.engine, invitation) {
+        Ok(Some(bytes)) -> poll.Done(bytes)
 
-  // Until the queue exists the offer is not exportable.
-  case file {
-    Some(bytes) -> Ok(bytes)
+        // Until the queue exists the offer is not exportable.
+        Ok(None) -> poll.Retry
 
-    None ->
-      case remaining_ms > 0 {
-        True -> {
-          process.sleep(invite_poll_ms)
-          await_file(daemon, invitation, remaining_ms - invite_poll_ms)
-        }
-
-        False -> Error(Unavailable)
+        Error(failure) -> poll.Fail(from_failure(failure))
       }
+    })
+
+  // A wait that runs out is the engine being too slow, which the caller retries.
+  case waited {
+    poll.Answered(bytes) -> Ok(bytes)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(Unavailable)
   }
 }
 

@@ -26,8 +26,31 @@
 ////    learns "forbidden" and nothing about the arguments.
 //// 5. A receive with a wait goes through `receive_deliveries`, which
 ////    registers with the hub before its first read, so a delivery announced
-////    between the read and the wait is not lost, and then waits in `poll`
-////    for the hub's wake or the deadline.
+////    between the read and the wait is not lost, and then waits in
+////    `poll_for_wake` for the hub's wake or the deadline.
+////
+//// ## What is a weft primitive here, and what is not
+////
+//// The wake hub is a `weft/actor`: a list of waiters flushed on a state
+//// change, which is the shape the hand-written fan-outs were. It has one
+//// state and no timers, so it is not a `weft/state_machine`, and its waiters
+//// are all alike, so it is not a `weft/event_manager`. A `receive` that
+//// waits is a `weft/poll` whose rest is a wait on the hub's wake instead of
+//// a sleep, so the immediate first read, the read at the deadline and the
+//// early exit on a failed read are the loop's rules and not copies of them
+//// here.
+////
+//// Two processes stay plain `process.spawn_unlinked`, on purpose. The
+//// acceptor blocks in `accept` on a socket, a call no message can
+//// interrupt: an actor would stop answering system messages for as long as
+//// it sat there, so wrapping it adds nothing, and `stop` ends it the only
+//// way that works, by closing the listener. A connection process is long
+//// lived and its deadline is an idle read timeout armed on the socket by
+//// `recv_line` and reset by each request. A bounded `weft` run is a
+//// deadline on one task's total time, and a deadline over the connection
+//// would cut a client that is still using it. Per `docs/weft.md` ("When
+//// not to"), a deadline that is really an idle timeout on a blocking
+//// read is kept where the blocking happens.
 ////
 //// Malformed input is answered with a category and never crashes the
 //// server, never becomes an atom and never reaches the backend.
@@ -52,8 +75,9 @@ import gleam/int
 import gleam/json.{type Json}
 import gleam/list
 import gleam/option.{type Option, None, Some}
-import gleam/otp/actor
 import gleam/result
+import weft/actor
+import weft/poll
 
 /// How long a connection may sit silent between requests, in milliseconds.
 const idle_timeout_ms = 60_000
@@ -190,6 +214,11 @@ pub fn stop(server: Server) -> Nil {
 /// Starts the actor that fans the runtime's events out to waiting
 /// receives. The runtime keeps one subscription for the whole server, so a
 /// receive never has to unsubscribe.
+///
+/// The subscription is made in the initialiser and not in a `continuing`
+/// message: the event subject has to exist, and the runtime has to know it,
+/// before `start` returns, or an event announced between the two would be
+/// lost to a receive that had already registered.
 fn start_hub(backend: Backend) -> actor.StartResult(Subject(HubMessage)) {
   actor.new_with_initialiser(1000, fn(self) {
     // The event subject must be created in the hub process, because only
@@ -717,8 +746,7 @@ fn receive_deliveries(
       let waiter = process.new_subject()
       process.send(context.hub, Register(waiter))
 
-      let deadline = ffi_local_system.monotonic_ms() + wait_ms
-      let outcome = poll(read, waiter, deadline)
+      let outcome = poll_for_wake(read, waiter, wait_ms)
 
       process.send(context.hub, Unregister(waiter))
       result.map(outcome, bounded)
@@ -726,32 +754,47 @@ fn receive_deliveries(
   }
 }
 
-/// Reads, and while nothing is ready waits for a wake or the deadline. The
-/// last read after the deadline is deliberate: it closes the window between
-/// the final wake and the timeout.
-fn poll(
+/// Reads, and while nothing is ready waits for a wake or the deadline.
+///
+/// This is `poll.until_on` with a clock whose rest is a receive on the
+/// waiter instead of a sleep. A wake ends the rest early, the loop reads
+/// again, and a read that finds nothing rests again for what remains of the
+/// budget. `every` equals the whole wait, so the rest is clipped by the
+/// deadline and not by the interval: an idle wait costs one receive, not a
+/// probe per tick. The last read at the deadline is the loop's rule, and it
+/// closes the window between the final wake and the timeout.
+fn poll_for_wake(
   read: fn() -> Result(List(Delivery), Failure),
   waiter: Subject(Nil),
-  deadline: Int,
+  wait_ms: Int,
 ) -> Result(List(Delivery), Failure) {
-  // Nothing ready means waiting, and anything else, an error included, is returned as read.
-  case read() {
-    Ok([]) -> {
-      let remaining = deadline - ffi_local_system.monotonic_ms()
+  let wake_clock =
+    poll.Clock(now: ffi_local_system.monotonic_ms, sleep: fn(rest_ms) {
+      // A wake and a timeout both end the rest; the next read tells them apart.
+      let _ = process.receive(waiter, rest_ms)
+      Nil
+    })
 
-      // Time left on the deadline means waiting for a wake, and none left means an empty answer.
-      case remaining > 0 {
-        False -> Ok([])
+  let waited =
+    poll.until_on(
+      clock: wake_clock,
+      within: wait_ms,
+      every: poll.Fixed(wait_ms),
+      attempt: fn() {
+        case read() {
+          // Nothing ready means waiting, and anything else, an error included, is returned as read.
+          Ok([]) -> poll.Retry
+          Ok(ready) -> poll.Done(ready)
+          Error(failure) -> poll.Fail(failure)
+        }
+      },
+    )
 
-        True ->
-          case process.receive(waiter, remaining) {
-            Ok(Nil) -> poll(read, waiter, deadline)
-            Error(Nil) -> read()
-          }
-      }
-    }
-
-    other -> other
+  // A deadline that passes with nothing ready is an empty answer, not a failure.
+  case waited {
+    poll.Answered(ready) -> Ok(ready)
+    poll.Failed(failure) -> Error(failure)
+    poll.Expired -> Ok([])
   }
 }
 

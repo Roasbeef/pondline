@@ -14,23 +14,31 @@
 //// It is a separate file so the main database stays in ordinary WAL mode,
 //// readable by a backup tool.
 ////
-//// The holder is an actor that traps exits. When its supervisor stops it, it
-//// releases the lock before dying, so a restart on the same directory
-//// straight after a stop finds the lock free instead of waiting for garbage
-//// collection to close the connection.
+//// The holder is a `weft/actor`: holding the transaction open is a process's
+//// whole job, and its lifetime is the lock's. It traps exits, and
+//// `on_shutdown` runs `release`, which closes the connection. When its supervisor stops it, the
+//// lock is released before the process dies, so a restart on the same
+//// directory straight after a stop finds the lock free instead of waiting
+//// for garbage collection to close the connection. `on_shutdown` cannot run
+//// on a brutal kill, and nothing here defends against one: the operating
+//// system drops the file lock when the VM's process dies, which is the case
+//// that matters, and `node.stop` waits on `is_free` for the in-VM case.
 ////
 //// This does not protect against copying the directory to another machine
 //// and running both copies; independent clones are unsupported (spec §8.4).
 
 import gleam/erlang/process
-import gleam/otp/actor
 import gleam/otp/supervision
 import gleam/result
 import sqlight
+import weft/actor
 
-/// The actor's only message: the supervisor asked it to stop.
+/// The actor's only message: a request to release the lock and stop. The
+/// supervisor's stop arrives as a trapped exit, not as this message, so
+/// nothing in the tree sends it; it exists because an actor has a message
+/// type, and it ends the holder through the same `on_shutdown` path.
 pub opaque type Message {
-  Released
+  Release
 }
 
 /// Why the lock was not taken.
@@ -60,16 +68,10 @@ pub fn supervised(
 /// Takes the lock and holds it in a new actor.
 fn start(path: String) -> actor.StartResult(process.Subject(Message)) {
   actor.new_with_initialiser(5000, fn(subject) {
-    process.trap_exits(True)
-
     // A lock taken starts the holder; a lock held elsewhere fails the start with the reason.
     case acquire(path) {
       Ok(connection) ->
         actor.initialised(connection)
-        |> actor.selecting(
-          process.new_selector()
-          |> process.select_trapped_exits(fn(_exit) { Released }),
-        )
         |> actor.returning(subject)
         |> Ok
 
@@ -77,7 +79,9 @@ fn start(path: String) -> actor.StartResult(process.Subject(Message)) {
       Error(Unopenable) -> Error("the lock file could not be opened")
     }
   })
-  |> actor.on_message(release)
+  |> actor.on_message(handle)
+  |> actor.trapping_exits(True)
+  |> actor.on_shutdown(release)
   |> actor.start
 }
 
@@ -126,17 +130,20 @@ pub fn is_free(path: String) -> Bool {
   }
 }
 
-/// Releases the lock and stops when the supervisor says so.
-fn release(
-  connection: sqlight.Connection,
+/// Stops when asked, which releases the lock through `release`.
+fn handle(
+  _connection: sqlight.Connection,
   message: Message,
 ) -> actor.Next(sqlight.Connection, Message) {
-  // The only message is the supervisor's stop, which releases the lock.
+  // The only message is a request to let go.
   case message {
-    Released -> {
-      // Closing the connection drops the transaction and the file lock.
-      let _ = sqlight.close(connection)
-      actor.stop()
-    }
+    Release -> actor.stop()
   }
+}
+
+/// Closes the connection, which drops the transaction and the file lock.
+/// Runs on every orderly stop: a message, or the supervisor's trapped exit.
+fn release(connection: sqlight.Connection, _reason: process.ExitReason) -> Nil {
+  let _ = sqlight.close(connection)
+  Nil
 }
