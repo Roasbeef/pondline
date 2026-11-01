@@ -676,7 +676,9 @@ pub fn resend_receipt(
   envelope: EnvelopeRef,
   known: Fingerprint,
 ) -> Result(Plan(Relationship), Refusal) {
-  use link <- result.try(receiving_link(relationship))
+  // Only an `Active` relationship can have stored a message: storing is
+  // what makes an `AwaitingAccept` joiner `Active`.
+  use link <- result.try(active_link(relationship))
   use Nil <- result.try(check_answerable(known, now))
   use #(link, receipt, _) <- result.try(seal_message(
     suite,
@@ -699,17 +701,6 @@ pub fn resend_receipt(
       [plan.applied(envelope), receipt, remembered],
     ),
   )
-}
-
-/// The session of a relationship that may have stored a message: only an
-/// `Active` one, since storing is what an `AwaitingAccept` joiner becomes
-/// `Active` by.
-fn receiving_link(relationship: Relationship) -> Result(Link, Refusal) {
-  case relationship.phase {
-    Active(link) -> Ok(link)
-    AwaitingAccept(_) | PendingApproval(_) -> Error(WrongPhase)
-    Joining(..) | Closed(_) -> Error(NoSession)
-  }
 }
 
 /// Whether a remembered ciphertext may still be answered with a receipt.

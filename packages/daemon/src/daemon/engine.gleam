@@ -1191,37 +1191,25 @@ const retransmit_batch = 16
 
 /// Sends again every stored row whose receipt window has passed, up to
 /// `retransmit_batch`, and ends the schedule of each row the core says will
-/// never be sent again. Returns how many copies were committed. Nothing is
-/// sent here: each copy is an outbox row the scheduler sends like any other.
+/// never be sent again. Nothing is sent here: each copy is an outbox row the
+/// scheduler sends like any other.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// engine.retransmit(name)
-/// // -> Ok(1)
+/// // -> Ok(Nil)
 /// ```
-pub fn retransmit(name: Handle(Message)) -> Result(Int, Failure) {
+pub fn retransmit(name: Handle(Message)) -> Result(Nil, Failure) {
   run(name, Retransmit, fn(state) {
     let now = state.clock()
 
     use due <- result.try(
       fault(store.due_retransmits(state.store, now, retransmit_batch)),
     )
-    use sent <- result.try(
-      list.try_map(due, fn(entry) { retransmit_one(state, now, entry) }),
-    )
 
-    Ok(list.count(sent, fn(copied) { copied == Copied }))
+    list.try_each(due, fn(entry) { retransmit_one(state, now, entry) })
   })
-}
-
-/// What `retransmit_one` did with a due row.
-type Settled {
-  /// A copy was committed.
-  Copied
-
-  /// The schedule ended, or the row was left due for the next tick.
-  NotCopied
 }
 
 /// Decides one due row against its relationship as it is now, and commits
@@ -1230,7 +1218,7 @@ fn retransmit_one(
   state: State,
   now: Instant,
   entry: store.DueRetransmit,
-) -> Result(Settled, Failure) {
+) -> Result(Nil, Failure) {
   use found <- result.try(
     fault(store.relationship_by_contact(state.store, entry.contact)),
   )
@@ -1248,10 +1236,10 @@ fn retransmit_one(
   case decided {
     Ok(made) -> {
       use _ <- result.try(commit_change(state, store.Retransmitted(made), None))
-      Ok(Copied)
+      Ok(Nil)
     }
 
-    Error(retransmit.NoRandomness) -> Ok(NotCopied)
+    Error(retransmit.NoRandomness) -> Ok(Nil)
 
     Error(retransmit.NotRetransmitted)
     | Error(retransmit.NotActive)
@@ -1262,7 +1250,7 @@ fn retransmit_one(
         store.RetransmitStopped(entry.row.envelope),
         None,
       ))
-      Ok(NotCopied)
+      Ok(Nil)
     }
   }
 }
