@@ -1,0 +1,521 @@
+//// The command line: find sources, lint them, print the findings and the
+//// census.
+////
+//// This is the only module in the package that does I/O. It also applies
+//// the staging decision: **every rule warns except the ones
+//// `finding.error_by_default` names** — R0, R2, R4, R6, R10, R13, R14, R15,
+//// R16, R19 and R20, each with its census and its argument in that function.
+//// `scripts/lint.sh` reads the trailing `# <errors> <warnings>` line to
+//// decide its exit code, exactly as `scripts/doc_check.sh` does. Promoting
+//// one of the rest is `--error=R5` and nothing else; the census is what
+//// argues for or against doing so, and for R3, R8, R17 and R18 it argues
+//// permanently against.
+////
+//// It also applies the one exemption the rules themselves know nothing
+//// about: a source a generator wrote is dropped before either pass, because
+//// the literate rules bind whoever writes the source and that is the
+//// generator, not the reader who finds the file. `lint.is_generated` has
+//// the argument.
+////
+//// Manifests are linted too, and are found rather than given: `make lint`
+//// points at `packages/*/src`, so R6's `gleam.toml` half would never be
+//// reached if it waited to be named. Every source tree the run touched
+//// contributes its package's manifest, which is what keeps `scripts/lint.sh
+//// packages/core/src` checking the whole of core's rule rather than half of
+//// it.
+
+import argv
+import gleam/dict.{type Dict}
+import gleam/int
+import gleam/io
+import gleam/list
+import gleam/option
+import gleam/pair
+import gleam/result
+import gleam/string
+import lint
+import lint/finding.{type Finding, type Rule}
+import lint/policy.{type Eager, type Policy, type Wall}
+import lint/test_imports
+import simplifile
+
+/// Parsed command line.
+type Options {
+  Options(
+    paths: List(String),
+    policy: Policy,
+    errors: List(Rule),
+    include_tests: Bool,
+    limit: Int,
+    quiet: Bool,
+    help: Bool,
+  )
+}
+
+const usage: String =
+  "reedwire lint — the house rules gleam check does not know
+
+usage: gleam run -m lint/cli -- [options] <path>...
+
+  --depth=N       R2 fires above this `case` nesting depth (default 3)
+  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10, R13-R16, R19, R20 are)
+  --tests         also lint test/ sources with every rule (R4 and R7 are off
+                  for them); R19 and R20 read test/ in every run
+  --limit=N       list at most N findings per rule (default 25; 0 = all)
+  --quiet         print the census only
+  --help          this
+
+R0, R2, R4, R6, R10, R13-R16, R19 and R20 gate by default and their censuses must stay
+zero; every other rule warns unless named by --error. The last line of output
+is `# <errors> <warnings>`, which is what the wrapper script reads.
+"
+
+pub fn main() -> Nil {
+  let options = parse(argv.load().arguments, defaults())
+
+  // Print usage help or execute the lint run.
+  case options.help || options.paths == [] {
+    True -> io.println(usage)
+    False -> run(options)
+  }
+}
+
+/// Returns the default CLI options configuration.
+fn defaults() -> Options {
+  Options(
+    paths: [],
+    policy: policy.default(),
+    errors: finding.error_by_default(),
+    include_tests: False,
+    limit: 25,
+    quiet: False,
+    help: False,
+  )
+}
+
+fn parse(arguments: List(String), options: Options) -> Options {
+  case arguments {
+    [] -> Options(..options, paths: list.reverse(options.paths))
+    [argument, ..rest] -> parse(rest, apply(argument, options))
+  }
+}
+
+/// Applies a single command line argument to update CLI options.
+fn apply(argument: String, options: Options) -> Options {
+  case string.split_once(argument, "=") {
+    Ok(#("--depth", value)) ->
+      Options(
+        ..options,
+        policy: policy.Policy(
+          ..options.policy,
+          nesting_threshold: number(value, options.policy.nesting_threshold),
+        ),
+      )
+    Ok(#("--error", value)) ->
+      Options(..options, errors: list.append(options.errors, promoted(value)))
+    Ok(#("--limit", value)) ->
+      Options(..options, limit: number(value, options.limit))
+    Ok(#(_, _)) -> options
+    Error(Nil) ->
+      case argument {
+        "--tests" -> Options(..options, include_tests: True)
+        "--quiet" -> Options(..options, quiet: True)
+        "--help" | "-h" -> Options(..options, help: True)
+        "--multi-subject" ->
+          Options(
+            ..options,
+            policy: policy.Policy(
+              ..options.policy,
+              catch_all_multi_subject: True,
+            ),
+          )
+        path -> Options(..options, paths: [path, ..options.paths])
+      }
+  }
+}
+
+fn number(value: String, fallback: Int) -> Int {
+  case int.parse(value) {
+    Ok(parsed) -> parsed
+    Error(Nil) -> fallback
+  }
+}
+
+fn promoted(value: String) -> List(Rule) {
+  value
+  |> string.split(",")
+  |> list.filter_map(finding.parse)
+}
+
+// --- running ----------------------------------------------------------------
+
+/// Executes the full linting pipeline across all resolved source files.
+fn run(options: Options) -> Nil {
+  let files =
+    options.paths
+    |> list.flat_map(sources)
+    |> list.unique
+    |> list.sort(string.compare)
+
+  // Read once, lint twice. R1's structural half needs a table of every
+  // `use`-compatible combinator the run can see before it can judge any one
+  // call site: a combinator defined in `tools/tool` is called from sixteen
+  // other modules, and a per-file table saw none of them (issue loom#73, D).
+  //
+  // A generated source is dropped between the reading and either pass: it
+  // is nobody's to fix, so a finding in one is noise that never clears.
+  let read =
+    files
+    |> list.filter_map(contents)
+    |> list.filter(fn(source) { !lint.is_generated(source.1) })
+
+  // The sources a test directory contributes are linted by the test-scoped
+  // rules only (R19, R20) unless `--tests` asks for every rule: the other
+  // rules keep the scope they were swept at, `src/`.
+  let #(tests, sources) = list.partition(read, fn(source) { is_test(source.0) })
+
+  // Include `test/` sources in the main pass only when `--tests` was passed.
+  let ruled = case options.include_tests {
+    True -> read
+    False -> sources
+  }
+
+  let combinators =
+    list.flat_map(ruled, fn(source) {
+      lint.exported_combinators(display(source.0), source.1)
+    })
+  let findings =
+    ruled
+    |> list.flat_map(fn(source) { lint_source(source, options, combinators) })
+    |> list.append(
+      list.flat_map(tests, fn(source) { lint_test(source, options) }),
+    )
+    |> list.append(import_wall_findings(tests))
+    |> list.append(list.flat_map(
+      manifests_of(list.map(ruled, pair.first)),
+      lint_manifest,
+    ))
+
+  // Suppress per-finding lines under `--quiet` and print only the census and
+  // gating summary.
+  case options.quiet {
+    True -> Nil
+    False -> print_findings(findings, options.limit)
+  }
+
+  print_census(findings, files)
+  print_summary(findings, options.errors)
+}
+
+/// The test-scoped rules over one test source (R19). Under `--tests` the
+/// full rule set already reported an unparseable file as R0, so the test pass
+/// repeats only what the full set does not say.
+fn lint_test(source: #(String, String), options: Options) -> List(Finding) {
+  let found = lint.check_tests(display(source.0), source.1)
+
+  // Filter unparseable findings if already covered in full run.
+  case options.include_tests {
+    True -> list.filter(found, fn(f) { f.rule != finding.Unparseable })
+    False -> found
+  }
+}
+
+/// R20 for every walled package that has tests in the run. The walk needs the
+/// package's `src/` as well as its tests, and a run pointed at `test/` alone
+/// still has to read it, so the sources are fetched here rather than assumed
+/// to be among the files the run was given.
+fn import_wall_findings(tests: List(#(String, String))) -> List(Finding) {
+  list.flat_map(policy.import_walls(), fn(wall) {
+    let own =
+      list.filter(tests, fn(source) {
+        lint.package_of(display(source.0)) == option.Some(wall.package)
+      })
+
+    // Check whether tests exist for the walled package.
+    case own {
+      [] -> []
+      [first, ..] ->
+        case wall_root(wall, first.0) {
+          Error(Nil) -> []
+          Ok(root) ->
+            test_imports.findings(
+              wall,
+              list.map(own, fn(source) { #(display(source.0), source.1) }),
+              own_modules(root),
+            )
+        }
+    }
+  })
+}
+
+/// The package directory of a walled package, read off one of its test paths.
+fn wall_root(wall: Wall, test_path: String) -> Result(String, Nil) {
+  let marker = "/packages/" <> wall.package <> "/test/"
+  string.split_once(test_path, marker)
+  |> result.map(fn(split) { split.0 <> "/packages/" <> wall.package })
+}
+
+/// Every module under a package's `src/`, keyed by its module path.
+fn own_modules(root: String) -> Dict(String, #(String, String)) {
+  let prefix = root <> "/src/"
+  sources(root <> "/src")
+  |> list.filter_map(fn(path) {
+    use #(_, rest) <- result.try(string.split_once(path, prefix))
+    use read <- result.try(contents(path))
+    Ok(#(string.drop_end(rest, 6), #(display(path), read.1)))
+  })
+  |> dict.from_list
+}
+
+/// A source and its text, or nothing when it cannot be read. A file that
+/// vanished between discovery and reading is not a finding.
+fn contents(path: String) -> Result(#(String, String), Nil) {
+  case simplifile.read(path) {
+    Error(_) -> Error(Nil)
+    Ok(source) -> Ok(#(path, source))
+  }
+}
+
+/// Lints a single source file using the configured policy and combinators.
+fn lint_source(
+  source: #(String, String),
+  options: Options,
+  combinators: List(Eager),
+) -> List(Finding) {
+  let #(path, code) = source
+
+  // Adjust policy if linting a test file directly.
+  let file_policy = case is_test(path) {
+    True -> policy.for_tests_like(options.policy)
+    False -> options.policy
+  }
+
+  lint.check_with(display(path), code, file_policy, combinators)
+}
+
+fn lint_manifest(path: String) -> List(Finding) {
+  case simplifile.read(path) {
+    Error(_) -> []
+    Ok(source) -> lint.check_manifest(display(path), source)
+  }
+}
+
+/// The manifest of every package a run's sources belong to, deduplicated.
+///
+/// Derived from the sources rather than discovered, because the paths this
+/// tool is pointed at are source trees; see the module doc.
+fn manifests_of(files: List(String)) -> List(String) {
+  files
+  |> list.filter_map(package_root)
+  |> list.unique
+  |> list.map(fn(root) { root <> "/gleam.toml" })
+}
+
+/// The package root above a source path. `src/` or `test/`, whichever this
+/// path went through — a run given `--tests` and nothing else still has a
+/// manifest to check.
+fn package_root(path: String) -> Result(String, Nil) {
+  string.split_once(path, "/src/")
+  |> result.lazy_or(fn() { string.split_once(path, "/test/") })
+  |> result.map(pair.first)
+}
+
+/// Every `.gleam` file under a path, which may itself be a file.
+fn sources(path: String) -> List(String) {
+  case simplifile.get_files(path) {
+    Ok(files) -> list.filter(files, is_gleam)
+    Error(_) ->
+      case is_gleam(path) {
+        True -> [path]
+        False -> []
+      }
+  }
+}
+
+fn is_gleam(path: String) -> Bool {
+  string.ends_with(path, ".gleam") && !string.contains(path, "/build/")
+}
+
+fn is_test(path: String) -> Bool {
+  string.contains(path, "/test/")
+}
+
+/// Report a path the way the repository refers to it.
+fn display(path: String) -> String {
+  case string.split_once(path, "packages/") {
+    Ok(#(_, rest)) -> "packages/" <> rest
+    Error(Nil) -> path
+  }
+}
+
+/// The package a path belongs to, for the census rows. The same judgement
+/// R6 makes about a path, so a manifest finding lands on its package's row
+/// rather than in a column of its own.
+fn package_of(path: String) -> String {
+  option.unwrap(lint.package_of(path), "(other)")
+}
+
+// --- printing ---------------------------------------------------------------
+
+/// Prints all findings grouped by rule up to the display limit.
+fn print_findings(findings: List(Finding), limit: Int) -> Nil {
+  list.each(finding.rules(), fn(rule) {
+    let matching = list.filter(findings, fn(found) { found.rule == rule })
+
+    // Print matching rule findings if any exist.
+    case matching {
+      [] -> Nil
+      _ -> {
+        io.println("")
+        io.println(
+          finding.id(rule)
+          <> " "
+          <> finding.name(rule)
+          <> " — "
+          <> count_text(matching)
+          <> " finding(s)",
+        )
+
+        // Bound output to the display limit if positive.
+        let shown = case limit > 0 {
+          True -> list.take(matching, limit)
+          False -> matching
+        }
+
+        list.each(shown, fn(found) { io.println("  " <> finding.render(found)) })
+        elision(matching, shown)
+      }
+    }
+  })
+}
+
+/// Prints an elision notice when findings exceed the display limit.
+fn elision(matching: List(Finding), shown: List(Finding)) -> Nil {
+  let hidden = list.length(matching) - list.length(shown)
+
+  // Print count of omitted findings if limit was reached.
+  case hidden > 0 {
+    False -> Nil
+    True ->
+      io.println(
+        "  … " <> int.to_string(hidden) <> " more (--limit=0 lists every one)",
+      )
+  }
+}
+
+fn count_text(findings: List(Finding)) -> String {
+  int.to_string(list.length(findings))
+}
+
+/// Prints the census table showing findings per rule per package.
+fn print_census(findings: List(Finding), files: List(String)) -> Nil {
+  let by_package = tally(findings)
+  let packages =
+    files
+    |> list.map(package_of)
+    |> list.unique
+    |> list.sort(string.compare)
+  io.println("")
+  io.println("census — findings per rule, per package")
+  io.println("")
+  io.println(header())
+  list.each(packages, fn(package) {
+    io.println(row(package, fn(rule) { count(by_package, package, rule) }))
+  })
+  io.println(
+    row("TOTAL", fn(rule) {
+      list.length(list.filter(findings, fn(found) { found.rule == rule }))
+    }),
+  )
+}
+
+fn header() -> String {
+  list.fold(finding.rules(), pad("package", 14), fn(line, rule) {
+    line <> pad_left(finding.id(rule), 6)
+  })
+  <> pad_left("total", 8)
+}
+
+/// Formats a single census table row for a package or total line.
+fn row(label: String, counter: fn(Rule) -> Int) -> String {
+  let counts = list.map(finding.rules(), counter)
+  let cells =
+    list.fold(counts, pad(label, 14), fn(line, value) {
+      line <> pad_left(int.to_string(value), 6)
+    })
+  cells <> pad_left(int.to_string(int.sum(counts)), 8)
+}
+
+/// Aggregates findings counts by package and rule.
+fn tally(findings: List(Finding)) -> Dict(#(String, Rule), Int) {
+  list.fold(findings, dict.new(), fn(counts, found) {
+    let key = #(package_of(found.path), found.rule)
+
+    // Look up current tally for the package and rule.
+    let seen = case dict.get(counts, key) {
+      Ok(value) -> value
+      Error(Nil) -> 0
+    }
+
+    dict.insert(counts, key, seen + 1)
+  })
+}
+
+/// Looks up finding count for a specific package and rule combination.
+fn count(
+  counts: Dict(#(String, Rule), Int),
+  package: String,
+  rule: Rule,
+) -> Int {
+  case dict.get(counts, #(package, rule)) {
+    Ok(value) -> value
+    Error(Nil) -> 0
+  }
+}
+
+/// Prints overall pass/fail summary and error/warning counts.
+fn print_summary(findings: List(Finding), errors: List(Rule)) -> Nil {
+  let #(gated, warned) = finding.gate(findings, errors)
+  io.println("")
+
+  // Print error promotion level summary.
+  case errors {
+    [] ->
+      io.println("every rule is at warning level; nothing here fails the build")
+    promoted ->
+      io.println(
+        "error level: "
+        <> string.join(list.map(promoted, finding.id), ", ")
+        <> " — every other rule warns",
+      )
+  }
+
+  io.println(
+    "lint: "
+    <> int.to_string(gated)
+    <> " error(s), "
+    <> int.to_string(warned)
+    <> " warning(s)",
+  )
+  io.println("# " <> int.to_string(gated) <> " " <> int.to_string(warned))
+}
+
+/// A census cell, padded to its column — and a label already at or past
+/// the column keeps one space, so the row still reads as a row.
+///
+/// `pad_end` returns the text unchanged when it is already wide enough,
+/// which is the same question `string.length(text) >= width` asks and
+/// answers without walking a label to its end (R5, this tool's own rule).
+fn pad(text: String, width: Int) -> String {
+  let padded = string.pad_end(text, width, " ")
+
+  // Ensure trailing space if text already meets width.
+  case padded == text {
+    True -> text <> " "
+    False -> padded
+  }
+}
+
+fn pad_left(text: String, width: Int) -> String {
+  string.pad_start(text, width, " ")
+}

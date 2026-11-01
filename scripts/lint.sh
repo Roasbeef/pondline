@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# lint.sh — Reedwire's own lint over the Gleam sources.
+#
+# Usage: scripts/lint.sh [options] [path...]   (default: every packages/*/src)
+#
+# The rules are R0 unparseable sources, R1 eager fallbacks, R2 `case` nesting
+# depth, R3 catch-all patterns, R4 `panic`/`let assert` in src, R5 O(n)
+# answers to bounded questions, R6 the portable subset `core` is held to, R7 a `let assert` that names no invariant, R8 a
+# long signature with one caller, R9 a naked `Bool` in a parameter or field,
+# R10 a comment with no blank line above it, R11 a body written as one
+# undivided block, R12 a closure capturing a whole value for its fields, and
+# the orientation rules of loom#593: R13 a large module's `## Flow` spine,
+# R14 a transition table checked against its type, R15 state-machine types
+# before the first function, R16 an unqualified import of a Reedwire function,
+# and the censuses R17 (call-flow order) and R18 (short helpers the module doc
+# never names); `packages/lint/CLAUDE.md` says what each is for. Two rules
+# read `test/` rather than `src/`: R19 a SKIP diagnostic printed to stdout,
+# which EUnit discards on a green run, and R20 a test whose import graph
+# crosses a package's wall (`policy.import_walls`, empty today).
+#
+# R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 are at ERROR level and
+# this script exits non-zero on any of them; every other rule warns and costs
+# nothing. A rule earns the error tier by a census that is zero, decidable
+# and argued — the staging scripts/doc_check.sh went through (loom's
+# D2) — and the argument for each of the
+# eleven is in `finding.error_by_default`. R3, R8, R17 and R18 can never be
+# promoted: they over-report by construction.
+# Promoting one of the rest is a decision its census has to argue for, and
+# costs one flag:
+#
+#   scripts/lint.sh --error=R5
+#
+# The staging itself lives in `finding.error_by_default`, not here, so a
+# promotion needs no change to this script or to the Makefile.
+#
+# The linter's last line is `# <errors> <warnings>`, which is what we read.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+root=$(pwd)
+
+paths=()
+options=()
+for argument in "$@"; do
+	case $argument in
+	-*) options+=("$argument") ;;
+	*) paths+=("$root/${argument#"$root/"}") ;;
+	esac
+done
+
+if [ ${#paths[@]} -eq 0 ]; then
+	for directory in packages/*/src; do
+		[ -d "$directory" ] && paths+=("$root/$directory")
+	done
+fi
+
+# R19 and R20 read test sources, so every `src` directory in the run brings
+# its package's `test` directory along (`make lint` and `make lint-<pkg>` name
+# only `src`). The other rules are scoped to `src` by `lint/cli`, which lints
+# a test file with the test-scoped rules alone unless `--tests` is given. A
+# test directory the caller already named is not added twice.
+for path in "${paths[@]}"; do
+	case $path in
+	*/src)
+		sibling="${path%/src}/test"
+		if [ -d "$sibling" ]; then
+			case " ${paths[*]} " in
+			*" $sibling "*) ;;
+			*) paths+=("$sibling") ;;
+			esac
+		fi
+		;;
+	esac
+done
+
+output=$(cd packages/lint && gleam run -m lint/cli -- \
+	${options[@]+"${options[@]}"} "${paths[@]}")
+printf '%s\n' "$output"
+
+tail=${output##*$'\n'}
+case $tail in
+"# "*)
+	errors=${tail#\# }
+	errors=${errors%% *}
+	;;
+*) errors=0 ;;
+esac
+case $errors in "" | *[!0-9]*) errors=0 ;; esac
+
+if [ "$errors" -gt 0 ]; then
+	echo "lint FAILED: $errors error(s)"
+	exit 1
+fi

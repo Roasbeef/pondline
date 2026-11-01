@@ -1,0 +1,573 @@
+//// What the linter reports, and how a report reads.
+////
+//// A `Finding` is one rule firing at one place. Nothing here decides
+//// anything; the vocabulary lives apart from the analysis so the rules, the
+//// census, and the tests all name a violation the same way.
+
+import gleam/int
+import gleam/list
+import gleam/string
+import lint/policy
+
+/// The house rules this linter knows. Each is a separate promotion decision:
+/// a rule that over-reports stays a warning forever and says so, exactly as
+/// `scripts/doc_check.sh` keeps its undecidable citation findings at warning
+/// level (docs/design-notes/four-decisions.md, D2).
+pub type Rule {
+  /// R0. The file did not parse. Not a house rule — a report that the
+  /// linter could say nothing about this file, so a parse failure is never
+  /// silence.
+  Unparseable
+
+  /// R1. An eager combinator whose eagerly-evaluated argument is not a
+  /// trivially cheap value. Gleam evaluates call arguments unconditionally,
+  /// so that argument is built on every call whether the fallback is taken
+  /// or not. Two ways a call qualifies: it names one of six hand-curated
+  /// stdlib combinators (`bool.guard`, `result.replace_error`,
+  /// `result.unwrap`, `option.unwrap`, `result.or`, `option.or`, plus the
+  /// occasional locally-defined one the structural check below cannot
+  /// reach), or it calls a locally-defined function whose *signature* makes
+  /// it `use`-compatible the same way — last parameter `fn(…)`, every other
+  /// parameter not — which is what finds the `or_fault` lineage by shape
+  /// rather than by name.
+  EagerFallback
+
+  /// R2. A function whose `case` expressions nest deeper than the policy
+  /// threshold. Measured on the AST, so a wide literal that the formatter
+  /// wrapped one argument per line does not count as depth.
+  NestingDepth
+
+  /// R3. A `_ ->` arm in a `case` whose other arms match constructors — a
+  /// place the compiler could have checked exhaustiveness had the arm not
+  /// swallowed everything.
+  CatchAll
+
+  /// R4. `panic` or `let assert` outside tests. Reedwire policy forbids both in
+  /// `src/` (CLAUDE.md, gleam-style Part IV).
+  PanicInSource
+
+  /// R5. A count — `list.length(xs)`, `string.length(text)` — compared
+  /// against a bound: an O(n) answer to a question settled by the first
+  /// `k+1` elements or graphemes. The bound need not be a literal.
+  BoundedLength
+
+  /// R6. `@external`, a BEAM-only import, or a BEAM-only dependency in one
+  /// of the packages held to the portable subset. What that subset is
+  /// and what rests on it is argued in `lint/portable`.
+  PortablePurity
+
+  /// R7. A `let assert` in `src/` with no `as "message"`. R4 asks whether
+  /// the construct is admitted here at all; this asks whether the one that
+  /// is admitted says what invariant it rests on, which is the other half
+  /// of the same house rule (gleam-style Part IV, rule 3) and the half
+  /// nothing checked.
+  AssertWithoutMessage
+
+  /// R8. A private function with more than the policy's parameters and
+  /// exactly one caller. Not a hazard — a census. It measures what a
+  /// depth metric rewards: a block lifted out of its caller with its
+  /// locals re-declared as a signature, which reads shallower and is not
+  /// simpler.
+  LoneCallerArity
+
+  /// R9. A `Bool` in a function parameter or a record field. `True` at a
+  /// call site names nothing, and a field typed `Bool` makes the reader
+  /// carry the polarity of its name in their head; a two-variant type
+  /// says which state it is at both ends (gleam-style Part III, "Type
+  /// design"). Return position is deliberately not this rule's business:
+  /// `is_empty(xs) -> Bool` is the predicate the whole language is built
+  /// to consume.
+  NakedBool
+
+  /// R10. A `//` comment between two siblings — statements of a block, or
+  /// arms of a `case` — with code on the line directly above it. A comment
+  /// welded to the line above reads as that line's trailing note; the
+  /// blank line is what makes it the heading of the stanza below.
+  CommentStanza
+
+  /// R11. A function whose longest unbroken run of statements — no blank
+  /// line, no comment, anywhere between them — exceeds the policy's
+  /// threshold. The unit is statements rather than lines, so a wide
+  /// literal the formatter broke one argument per line is not density,
+  /// for the reason R2 measures depth on the AST.
+  DenseStanza
+
+  /// R12. A closure uses an outer binding only as the container of field
+  /// accesses. Projecting those fields before the closure prevents the
+  /// closure environment from retaining the complete outer value. The AST
+  /// has no type widths or lifetime information, so this is a warning about
+  /// a measurable capture shape rather than a claim about memory cost.
+  BroadClosureCapture
+
+  /// R13. A module over the policy's line threshold whose module doc has no
+  /// `//// ## Flow` spine, or whose spine names a function the module does
+  /// not define. The spine is the local orientation a reader dropped in by
+  /// "go to definition" needs (issue loom#593, 1); checking every name it lists
+  /// is what keeps it from going stale silently.
+  FlowSpine
+
+  /// R14. A transition table marked `<!-- transitions: module.Type -->` in a
+  /// module doc whose rows do not match the constructors of the named type
+  /// exactly (issue loom#593, 6). The cells stay prose; the row set is checked,
+  /// so adding a state without updating the table fails the gate.
+  TransitionTable
+
+  /// R15. A state-machine module whose state, message or effect types are
+  /// defined after its first function (issue loom#593, 5). A reader should see
+  /// the state space before the code that moves through it.
+  StateFirst
+
+  /// R16. An unqualified import of a function from one of Reedwire's own
+  /// modules. The qualifier says which domain a call belongs to — the
+  /// closest thing Gleam has to a method receiver (issue loom#593, 3).
+  QualifiedDomainCall
+
+  /// R17. A census: modules where many private helpers are defined before
+  /// their first caller, so the file does not read in call order (issue
+  /// loom#593, 2). Helpers shared by several callers have no single right
+  /// place, so this warns forever.
+  FlowOrder
+
+  /// R18. A census: a short private function with one caller whose name
+  /// the module doc never mentions — a likely helper that hides a step
+  /// rather than naming a domain operation (issue loom#593, 4). Whether a name
+  /// is a domain operation is judgement, so this warns forever.
+  UnnamedHelper
+
+  /// R19. A prerequisite skip printed to stdout from a test source. EUnit
+  /// discards a passing test's stdout, so the `SKIP` line never reaches the
+  /// log `skip_census.sh` reads; `io.println_error` is the emitter that does.
+  /// Scoped to `test/` sources, as R20 is.
+  StdoutSkip
+
+  /// R20. A test of a walled package (`web_client`) whose import graph reaches
+  /// `lustre` or the package's `internal/` modules. The browser runtime throws
+  /// at load on a Node without `CustomEvent`, so the tests may import only the
+  /// decision modules that never touch it. The walk is transitive.
+  TestImportWall
+
+  /// R21. A `case` statement in a multi-statement body (or a single-statement
+  /// `case` with block arms) that lacks a `//` comment above it or is welded
+  /// to an adjacent statement without a blank line between them.
+  CaseStanza
+
+  /// R22. A public function, or a private function longer than the policy
+  /// threshold, with no `///` doc comment above it.
+  FunctionDoc
+}
+
+/// Every rule, in report order.
+pub fn rules() -> List(Rule) {
+  [
+    Unparseable,
+    EagerFallback,
+    NestingDepth,
+    CatchAll,
+    PanicInSource,
+    BoundedLength,
+    PortablePurity,
+    AssertWithoutMessage,
+    LoneCallerArity,
+    NakedBool,
+    CommentStanza,
+    DenseStanza,
+    BroadClosureCapture,
+    FlowSpine,
+    TransitionTable,
+    StateFirst,
+    QualifiedDomainCall,
+    FlowOrder,
+    UnnamedHelper,
+    StdoutSkip,
+    TestImportWall,
+    CaseStanza,
+    FunctionDoc,
+  ]
+}
+
+/// The rules that ship at error level rather than at warning level.
+///
+/// A rule earns the error tier by a census that is stable, decidable and
+/// argued — not by being written; that is `scripts/doc_check.sh`'s staging
+/// and the reason the rest warn (docs/design-notes/four-decisions.md, D2).
+/// R6 is the one rule whose census was zero on the day it was written and
+/// whose entire purpose is to keep it zero, which is precisely the
+/// condition under which promotion cannot fail correct code. Shipping it as
+/// a warning would file it among two hundred and sixty others and let the
+/// door it guards close unnoticed — which is the failure it exists to
+/// prevent, not a milder version of it.
+///
+/// The other three arrived at that same condition by measurement rather
+/// than by construction, so each carries its own census and its own reason
+/// for staying at zero.
+///
+/// **R0** is zero because `glance` 7 parses every file in the tree, and it
+/// is decidable in the strictest sense available here: the parser either
+/// returned a module or it did not. What promotion protects is the rest of
+/// this list. Every rule but R6's token half is *silent* about a file that
+/// will not parse, so an unparseable file is a linter turned off for that
+/// file — and at warning level nobody decided to turn it off, which is the
+/// difference between an exception and an accident.
+///
+/// **R2** is zero at threshold 3 across all sixteen packages: no function
+/// nests `case` more than three deep, which is the de-nesting sweep's one
+/// verifiable result rather than a rule nothing has tested — thirty-seven
+/// functions sit at exactly 3, so the threshold is a boundary the tree
+/// leans on and not a ceiling far overhead. It is decidable without types,
+/// on the AST, so a wide literal the formatter wrapped is not depth.
+/// Promotion protects a property that is only ever lost one `case` at a
+/// time, each of which reads as reasonable on the day it lands.
+///
+/// **R4** is zero once `policy.harness_packages` exempts `conformance`,
+/// whose `src/` is a test harness that has to compile as a library; the
+/// ninety findings it held were a third of the whole census and none of
+/// them was signal. `panic` and `let assert` are syntax, so the rule is
+/// decidable, and `lint`'s token backstop means a construct the parser
+/// dropped is reported rather than assumed inert — a policy rule that goes
+/// quiet on a parse gap is a hole in the policy. This is also the one rule
+/// `CLAUDE.md` and gleam-style Part IV state in as many words, and until
+/// now the distance between a stated rule and an enforced one was exactly
+/// this promotion.
+///
+/// **R7 and R8 are not here and one of them never will be.** R7's census is
+/// ninety, every one of them in the harness `R4` exempts, which is Part IV
+/// rule 3 at nothing per cent — a rule cannot gate on a census it has never
+/// once been at zero for, and fixing ninety messages is a separate change
+/// from the flag that counts them. R8 over-reports by construction, the way
+/// R3 does: "more than seven parameters and one caller" is a shape worth
+/// looking at, never a verdict, and a linter that fails a build over a
+/// shape is a linter somebody turns off.
+///
+/// **R10 gates; R9 and R11 warn.** The three arrived together and they did
+/// not arrive at the same place, which is worth saying because two of them
+/// are decidable enough that a reader will ask why not.
+///
+/// **R10** met the bar the way R6 did rather than the way R2 did: by being
+/// driven to zero in the change that wrote it. Its census was 1137 across
+/// the eighteen packages and it is **zero** now, in `src/` and in `test/`
+/// alike. It is decidable without types — a line is blank or it is not —
+/// and the fix is one blank line, never a change to what the code does.
+///
+/// What makes the promotion safe rather than brave is that the sweep was
+/// *verified against the formatter*, which is the only authority that could
+/// contradict this rule. `gleam format --check` passes on all eighteen
+/// packages after 1137 insertions, so no finding ever asked for a blank
+/// line the formatter would take away — the failure mode that would have
+/// made the rule unsatisfiable. The two exemptions exist for exactly that
+/// reason: a comment opening a block, and a comment between two fields of a
+/// constructor, are both places `gleam format` deletes a blank line, and a
+/// rule must never demand what the formatter removes.
+///
+/// And the property is worth a gate. It is lost the way R2's is, one
+/// comment at a time, each reasonable on the day it lands, and it is
+/// invisible in review because a welded comment reads fine in a diff hunk
+/// that begins above it. That is what promotion protects.
+///
+/// **R9** is 223 and every finding is decidable: an annotation says `Bool`
+/// or it does not. What it is not is *fixable* in one change. Two hundred
+/// declarations is a sweep in its own right, and some of them are not this
+/// repository's to make — `terminate: Bool` and `from_hook: Bool` are
+/// fields of frozen Part-1 contracts, so replacing them costs a
+/// `protocol-change/NNN.md` rather than an edit. Four more are irreducible
+/// and always will be: `core/json`'s `Bool(value: Bool)`, `core/msgpack`'s
+/// `BoolValue`, `cap/wire`'s `bool` encoder and `core/codec`'s
+/// `encode_default_false` are code *about* booleans, where the type is the
+/// subject rather than a flag nobody named. A rule with four permanent
+/// exceptions can still gate — R4 gates with a whole package exempted —
+/// but only once the exceptions are the census rather than 2% of it.
+///
+/// **R11** is 17, and it is the one of the three whose *threshold* is a
+/// judgement rather than a fact. Eight statements is where this tree's own
+/// bodies stop having paragraphs, measured, but "eight" is not decidable
+/// the way "blank or not" is, and a rule whose census moves when someone
+/// argues about a number should not be able to fail a build. It is R8's
+/// kind of measurement with R2's kind of arithmetic; treat the number as a
+/// reading rather than a verdict.
+///
+/// **R12 warns forever.** It reports 85 closures in the September 14 census
+/// after restricting the scan to closures returned, assigned, or stored in
+/// constructors. The AST can prove that each closure captures an
+/// outer binding only for field access, but it carries neither inferred record
+/// types nor lifetime information. Ordinary callback arguments are omitted
+/// because whether a callee retains one is an interprocedural question. A
+/// report can therefore name a useful projection, but it cannot prove the
+/// retained value is broad or long-lived enough to cost material memory.
+///
+/// **R13, R14, R15 and R16 gate; R17 and R18 warn forever.** They arrived
+/// together for issue loom#593, local orientation in a large module, and they
+/// split along the line the staging always draws: four are decidable and
+/// were driven to zero in the change that wrote them, and two are
+/// judgements wearing a number.
+///
+/// **R13** was 96 on the day it was written — every hand-written module of a
+/// thousand lines or more — and it is **zero** now, because each of those
+/// modules gained a `//// ## Flow` spine in the same change. Whether a module
+/// doc holds the heading is decidable, and so is whether a backticked name
+/// in it is a function the module defines; that second half is the reason
+/// to gate. A spine is prose that names code, and prose that names code goes
+/// stale the day a function is renamed. At warning level a renamed function
+/// leaves a spine that lies to the next reader; at error level the rename
+/// fails the build until the spine is told.
+///
+/// **R14** was zero by construction, because no table existed before it, and
+/// it is the rule whose whole purpose is the gate: a transition table whose
+/// rows must equal a type's constructors is worth having only if adding a
+/// state without a row fails. Nine tables exist now and each matches its
+/// type. The cells stay prose, which is the half nothing can check.
+///
+/// **R15** was 47 across 24 modules and is zero; every fix was a pure move of
+/// a type definition above the first function, verified by the compiler.
+/// Which types are the state space is decided from the step function's
+/// signature rather than guessed from names, so the rule needs no types to
+/// be exact. The step-function table (`update`, `step`, `transition`,
+/// `handle_message`, `handle`) is a judgement, but a narrow one: each name
+/// was kept only after its findings in this tree were real state machines.
+///
+/// **R16** was two, both constants, and is zero. An import either names a
+/// lowercase value from a Reedwire module or it does not. The rule protects what
+/// a qualifier tells a reader — which domain a call belongs to — and that is
+/// lost one convenient unqualified import at a time, which is the shape of
+/// property this list exists to hold.
+///
+/// **R17 and R18 never gate.** R17 asks whether a module reads in call order,
+/// and a helper shared by several callers has no single right place; its
+/// census is zero at the default threshold, so it stands as a regression
+/// guard on a tree that already reads entry point first. R18 asks whether a
+/// short one-caller helper names a domain operation, and that is judgement
+/// by definition; its 859 findings are a reading list for a reviewer, not a
+/// backlog, and a module doc padded with helper names to silence it would
+/// destroy what it measures.
+///
+/// **R19 and R20 gate, and they are the two rules that read `test/`.** Both
+/// replaced a script guard that already failed the build (a regular
+/// expression in `scripts/test_skip_reporting.py`, an import walk in
+/// `scripts/web_client_test.sh`), so each census was zero on the day the rule
+/// was written, and both are decidable on the AST: a call names `gleam/io`'s
+/// writer and its first argument begins `SKIP`, or an import names a
+/// forbidden module. They guard properties nothing else sees. A SKIP on
+/// stdout is invisible exactly when the suite is green, which is when the
+/// census must see it; a Lustre import in a rule module typechecks and passes
+/// on a newer Node, and fails only in the signoff container.
+///
+/// **R21 and R22 now gate globally.** Both rules are decidable from syntax,
+/// source layout and comment tokens, and they protect the same literacy
+/// invariant everywhere: a complex case states its rationale, and a function
+/// carries its contract. The gate keeps the census at zero rather than letting
+/// new packages accumulate unreviewed findings. `policy.literate_packages()`
+/// remains the public sweep record, not the gate boundary; `client` is included
+/// there while its sweep is in flight, so this policy does not claim a measured
+/// zero census for that package.
+pub fn error_by_default() -> List(Rule) {
+  [
+    Unparseable,
+    EagerFallback,
+    NestingDepth,
+    PanicInSource,
+    PortablePurity,
+    AssertWithoutMessage,
+    CommentStanza,
+    DenseStanza,
+    FlowSpine,
+    TransitionTable,
+    StateFirst,
+    QualifiedDomainCall,
+    StdoutSkip,
+    TestImportWall,
+    CaseStanza,
+    FunctionDoc,
+  ]
+}
+
+/// How a run's findings divide into the ones that fail a build and the ones
+/// that only report: `#(errors, warnings)`, which is the `# <errors>
+/// <warnings>` line `lint/cli` prints last and `scripts/lint.sh` reads to
+/// choose its exit code.
+///
+/// Public because a promotion is only real if it moves this number. A test
+/// that asserts a rule *fires* has not tested the gate — the rule fired
+/// before the promotion too, into a report nothing reads — and the
+/// difference between an error and a warning is the whole of what
+/// `error_by_default` decides.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let counts = finding.gate(findings, finding.error_by_default())
+/// assert counts == #(0, 12)
+/// ```
+///
+pub fn gate(findings: List(Finding), errors: List(Rule)) -> #(Int, Int) {
+  let #(gated, warned) =
+    list.partition(findings, fn(found) { is_gated(found, errors) })
+  #(list.length(gated), list.length(warned))
+}
+
+/// Whether `found` fails the build: either its rule is in `errors`, or it is
+/// an R21/R22 finding in a package listed by `policy.literate_packages()`.
+fn is_gated(found: Finding, errors: List(Rule)) -> Bool {
+  list.contains(errors, found.rule) || is_ratcheted_literate(found)
+}
+
+/// Checks whether `found` is an R21 (`CaseStanza`) or R22 (`FunctionDoc`)
+/// finding in a package covered by `policy.literate_packages()`. The rules also
+/// gate globally through `error_by_default`; this table remains the public
+/// record of packages whose census was swept and helps tests pin the ratchet.
+fn is_ratcheted_literate(found: Finding) -> Bool {
+  case found.rule {
+    CaseStanza | FunctionDoc ->
+      case package_name(found.path) {
+        Ok(pkg) -> list.contains(policy.literate_packages(), pkg)
+        Error(Nil) -> False
+      }
+    Unparseable
+    | EagerFallback
+    | NestingDepth
+    | CatchAll
+    | PanicInSource
+    | BoundedLength
+    | PortablePurity
+    | AssertWithoutMessage
+    | LoneCallerArity
+    | NakedBool
+    | CommentStanza
+    | DenseStanza
+    | BroadClosureCapture
+    | FlowSpine
+    | TransitionTable
+    | StateFirst
+    | QualifiedDomainCall
+    | FlowOrder
+    | UnnamedHelper
+    | StdoutSkip
+    | TestImportWall -> False
+  }
+}
+
+/// Extracts the package name from a `packages/<pkg>/...` path.
+fn package_name(path: String) -> Result(String, Nil) {
+  // Strip any leading prefix before `packages/` and take the first segment.
+  case string.split_once(path, "packages/") {
+    Error(Nil) -> Error(Nil)
+    Ok(#(_, rest)) ->
+      case string.split(rest, "/") {
+        [name, _, ..] -> Ok(name)
+        _ -> Error(Nil)
+      }
+  }
+}
+
+/// The short identifier a report and a `--error` flag both use.
+pub fn id(rule: Rule) -> String {
+  case rule {
+    Unparseable -> "R0"
+    EagerFallback -> "R1"
+    NestingDepth -> "R2"
+    CatchAll -> "R3"
+    PanicInSource -> "R4"
+    BoundedLength -> "R5"
+    PortablePurity -> "R6"
+    AssertWithoutMessage -> "R7"
+    LoneCallerArity -> "R8"
+    NakedBool -> "R9"
+    CommentStanza -> "R10"
+    DenseStanza -> "R11"
+    BroadClosureCapture -> "R12"
+    FlowSpine -> "R13"
+    TransitionTable -> "R14"
+    StateFirst -> "R15"
+    QualifiedDomainCall -> "R16"
+    FlowOrder -> "R17"
+    UnnamedHelper -> "R18"
+    StdoutSkip -> "R19"
+    TestImportWall -> "R20"
+    CaseStanza -> "R21"
+    FunctionDoc -> "R22"
+  }
+}
+
+/// The rule's name as the census prints it.
+pub fn name(rule: Rule) -> String {
+  case rule {
+    Unparseable -> "unparseable"
+    EagerFallback -> "eager-fallback"
+    NestingDepth -> "nesting-depth"
+    CatchAll -> "catch-all"
+    PanicInSource -> "panic-in-src"
+    BoundedLength -> "bounded-length"
+    PortablePurity -> "portable-purity"
+    AssertWithoutMessage -> "assert-without-message"
+    LoneCallerArity -> "lone-caller-arity"
+    NakedBool -> "naked-bool"
+    CommentStanza -> "comment-stanza"
+    DenseStanza -> "dense-stanza"
+    BroadClosureCapture -> "broad-closure-capture"
+    FlowSpine -> "flow-spine"
+    TransitionTable -> "transition-table"
+    StateFirst -> "state-first"
+    QualifiedDomainCall -> "qualified-domain-call"
+    FlowOrder -> "flow-order"
+    UnnamedHelper -> "unnamed-helper"
+    StdoutSkip -> "stdout-skip"
+    TestImportWall -> "test-import-wall"
+    CaseStanza -> "case-stanza"
+    FunctionDoc -> "function-doc"
+  }
+}
+
+/// Parse a rule identifier (`R1`, `r1`, or the rule's name). Total.
+pub fn parse(text: String) -> Result(Rule, Nil) {
+  let wanted = string.lowercase(string.trim(text))
+
+  // Match either the short rule id (`r1`) or the kebab-case rule name.
+  case find_rule(rules(), wanted) {
+    [rule, ..] -> Ok(rule)
+    [] -> Error(Nil)
+  }
+}
+
+/// Returns the first rule in `candidates` whose short id or name matches
+/// `wanted`.
+fn find_rule(candidates: List(Rule), wanted: String) -> List(Rule) {
+  case candidates {
+    [] -> []
+    [rule, ..rest] ->
+      case string.lowercase(id(rule)) == wanted || name(rule) == wanted {
+        True -> [rule]
+        False -> find_rule(rest, wanted)
+      }
+  }
+}
+
+/// One rule firing at one place.
+pub type Finding {
+  Finding(
+    rule: Rule,
+    path: String,
+    line: Int,
+    /// The enclosing function's name, or `""` at module level.
+    function: String,
+    /// What fired and what to do about it, in one line.
+    detail: String,
+  )
+}
+
+/// One finding as a line of report: `path:line: R1 eager-fallback  detail`.
+pub fn render(finding: Finding) -> String {
+  finding.path
+  <> ":"
+  <> int.to_string(finding.line)
+  <> ": "
+  <> id(finding.rule)
+  <> " "
+  <> name(finding.rule)
+  <> "  "
+  <> in_function(finding.function)
+  <> finding.detail
+}
+
+fn in_function(function: String) -> String {
+  case function {
+    "" -> ""
+    named -> "`" <> named <> "`: "
+  }
+}
