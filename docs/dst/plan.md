@@ -3,7 +3,7 @@
 The plan of record for the deterministic simulation test of the real
 shell: two client daemons and a mailbox, run in one VM against a simulated
 network, clock, timers and store faults driven by a seed. The evidence for
-it is `docs/dst/audit-2026-11-01.md`; the method is the `/dst` skill
+it is `docs/review/2026-11-01-dst-audit.md`; the method is the `/dst` skill
 (neutrino header-sync DST, lightninglabs/neutrino PR 415).
 
 ## Rulings
