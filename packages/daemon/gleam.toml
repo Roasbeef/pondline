@@ -17,6 +17,9 @@ primitives = { path = "../primitives" }
 tor = { path = "../tor" }
 
 [dev_dependencies]
+# The SQL code generator (ADR-007), run only by `make gen-sql`; the
+# generated module imports daemon/internal/sql_param instead of parrot/dev.
+parrot = ">= 2.3.0 and < 3.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
 qcheck = ">= 1.0.5 and < 2.0.0"
 glisten = ">= 9.0.0 and < 10.0.0"

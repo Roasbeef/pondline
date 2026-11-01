@@ -15,7 +15,17 @@ process.
 
 - `mailbox/store`: `Store`, the schema, the pragmas (WAL, `synchronous=FULL`,
   `fullfsync=ON`, `foreign_keys=ON`, a busy timeout), `PRAGMA user_version`
-  migrations, `transaction`, and every SQL statement in the package.
+  migrations, `transaction`, and every SQL statement in the package. The SQL
+  text is generated (ADR-007): the migration is `sql/001_initial.sql`, which
+  `dev/embed_schema.gleam` embeds in `mailbox/schema` (`version`,
+  `migrations`), and the statements are named queries in
+  `src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`), which parrot
+  generates into `mailbox/sql`. The store's `query`, `write` and `bind`
+  bridge binds the generated parameters as sqlight values; only the pragmas,
+  the transaction statements and the migration runner are hand-written.
+  After editing any `.sql` file run `make gen-sql` (needs `sqlite3`, and the
+  network once for sqlc) and commit the regenerated modules; `.sql` files
+  are ASCII only.
 - `mailbox/service`: `handle(store, now, request) -> Response`, `sweep`,
   and `create_grant(store, allowance, random)`, which returns the
   provisioning capability once and stores only its hash.
@@ -58,7 +68,9 @@ as a path dependency while its run timer source is unreleased), `mist` 6.0.3 (wi
 `gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. and `tor` (only to host the
 onion service; the sidecar forwards every stream on any virtual port to the
 loopback port, so 80 is just the conventional value the daemon dials).
-Nothing depends on it as a library.
+Dev: `parrot` generates `mailbox/sql` under `make gen-sql`, which imports
+the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
+(ADR-007, addendum). Nothing depends on it as a library.
 
 ## Traffic
 
@@ -97,6 +109,13 @@ Nothing depends on it as a library.
   append for a known identifier is answered from the stored envelope or the
   tombstone before anything is inserted, so a retry never resurrects it.
 - `Ack` deletes exactly the named envelopes; it is never a cursor.
+- `mailbox/schema` and `mailbox/sql` are generated and never edited by hand,
+  and a migration file that has shipped never changes: a schema change is a
+  new `sql/NNN_*.sql`. `test/mailbox/sql_drift_test.gleam` checks offline
+  that the embedded migrations equal the files and that `mailbox/sql` holds
+  every query file's statement as sqlc emits it, with no `Dynamic`
+  parameter. It also pins the SHA-256 of
+  every shipped migration, so an edited one fails even after a regenerate.
 - A long poll registers with the notifier before its last look at the
   database, so an append between the look and the wait is not missed.
 - No secret reaches an error, a log or a message. Refusals carry no request

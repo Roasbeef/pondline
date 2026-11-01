@@ -2,10 +2,11 @@
 //// that read and write it (spec §8.1).
 ////
 //// This module owns the schema, the pragmas that make a commit durable, and
-//// every SQL string in the package. Nothing above it writes SQL, and nothing
-//// below it knows what a request is. That split is what lets `mailbox/service`
-//// state the protocol's rules as plain functions of a `Store`, and lets the
-//// storage coordinator be the only process that ever holds one.
+//// every statement the package runs. Nothing above it writes SQL, and
+//// nothing below it knows what a request is. That split is what lets
+//// `mailbox/service` state the protocol's rules as plain functions of a
+//// `Store`, and lets the storage coordinator be the only process that ever
+//// holds one.
 ////
 //// Three decisions shape the file:
 ////
@@ -24,6 +25,20 @@
 ////
 //// Functions that change state assume the caller opened a transaction; they
 //// are individually correct only inside one.
+////
+//// ## Where the SQL text lives
+////
+//// None of the static SQL is written in this file (ADR-007). The schema is
+//// the migration files under `packages/mailbox/sql/`, one per version, which
+//// `make gen-sql` embeds in the generated `mailbox/schema`. Every statement
+//// is a named query under `src/mailbox/sql/`, which parrot turns into the
+//// generated `mailbox/sql`: one function per statement, returning its text,
+//// its parameters typed by the columns they bind, and a decoder for its rows.
+//// `query` and `write` are the bridge that binds those parameters as sqlight
+//// values. What stays hand-written here is what is not a static statement:
+//// the pragmas, `BEGIN IMMEDIATE`, `COMMIT` and `ROLLBACK`, and the runner
+//// that applies each migration. After editing a `.sql` file, run `make
+//// gen-sql`; `test/mailbox/sql_drift_test.gleam` fails until it is run.
 ////
 //// ## The fault hook
 ////
@@ -52,10 +67,15 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import mailbox/internal/sql_param.{type Param}
+import mailbox/schema
+import mailbox/sql
 import sqlight
 
-/// The schema version this build writes and understands.
-pub const schema_version = 1
+/// The schema version this build writes and understands: the number of
+/// migration files under `packages/mailbox/sql/`, as `mailbox/schema` embeds
+/// them.
+pub const schema_version = schema.version
 
 /// How long SQLite waits on a locked database before giving up. Only an
 /// outside process (a backup tool, a stray `sqlite3` shell) can contend with
@@ -148,52 +168,6 @@ pub type Tombstone {
 pub type SweepReport {
   SweepReport(envelopes: Int, tombstones: Int)
 }
-
-/// The statements that bring an empty database to each version. Entry `n`
-/// moves version `n` to `n + 1`, so the list is append-only: an edit to a
-/// shipped entry would leave deployed files on a schema nothing describes.
-const migrations = [
-  "
-CREATE TABLE grants (
-  capability_hash BLOB NOT NULL PRIMARY KEY,
-  allowance INTEGER NOT NULL,
-  queues_used INTEGER NOT NULL DEFAULT 0
-) STRICT;
-
-CREATE TABLE queues (
-  queue_id BLOB NOT NULL PRIMARY KEY,
-  read_hash BLOB NOT NULL,
-  append_hash BLOB NOT NULL,
-  admin_hash BLOB NOT NULL,
-  created_at INTEGER NOT NULL,
-  bytes_used INTEGER NOT NULL,
-  capacity INTEGER NOT NULL
-) STRICT;
-
-CREATE TABLE envelopes (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  queue_id BLOB NOT NULL REFERENCES queues(queue_id) ON DELETE CASCADE,
-  envelope_id BLOB NOT NULL,
-  digest BLOB NOT NULL,
-  deadline INTEGER NOT NULL,
-  size INTEGER NOT NULL,
-  ciphertext BLOB NOT NULL,
-  UNIQUE (queue_id, envelope_id)
-) STRICT;
-
-CREATE INDEX envelopes_by_deadline ON envelopes (deadline);
-
-CREATE TABLE tombstones (
-  queue_id BLOB NOT NULL REFERENCES queues(queue_id) ON DELETE CASCADE,
-  envelope_id BLOB NOT NULL,
-  digest BLOB NOT NULL,
-  deadline INTEGER NOT NULL,
-  PRIMARY KEY (queue_id, envelope_id)
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX tombstones_by_deadline ON tombstones (deadline);
-",
-]
 
 // -------------------------------------------------------------- lifecycle
 
@@ -299,7 +273,7 @@ fn migrate(store: Store) -> Result(Nil, Error) {
   // the migrations it has not seen.
   case found > schema_version {
     True -> Error(FutureSchema(found:, supported: schema_version))
-    False -> apply_migrations(store, list.drop(migrations, found), found)
+    False -> apply_migrations(store, list.drop(schema.migrations, found), found)
   }
 }
 
@@ -421,10 +395,7 @@ pub fn put_grant(
   hash: BitArray,
   allowance: Int,
 ) -> Result(Nil, Error) {
-  write(store, "INSERT INTO grants (capability_hash, allowance) VALUES (?, ?)", [
-    sqlight.blob(hash),
-    sqlight.int(allowance),
-  ])
+  write(store, sql.insert_grant(capability_hash: hash, allowance:))
 }
 
 /// The grant stored under `hash`, if any, with its stored hash so the caller
@@ -440,21 +411,17 @@ pub fn grant_by_hash(
   store: Store,
   hash: BitArray,
 ) -> Result(Option(#(BitArray, Grant)), Error) {
-  let row = {
-    use stored <- decode.field(0, decode.bit_array)
-    use allowance <- decode.field(1, decode.int)
-    use used <- decode.field(2, decode.int)
-    decode.success(#(stored, Grant(allowance:, queues_used: used)))
-  }
+  use rows <- result.try(query(store, sql.grant_by_hash(capability_hash: hash)))
 
-  query(
-    store,
-    "SELECT capability_hash, allowance, queues_used FROM grants
-     WHERE capability_hash = ?",
-    [sqlight.blob(hash)],
-    row,
-  )
-  |> result.map(first)
+  rows
+  |> list.map(fn(row) {
+    #(
+      row.capability_hash,
+      Grant(allowance: row.allowance, queues_used: row.queues_used),
+    )
+  })
+  |> first
+  |> Ok
 }
 
 /// Counts one more queue against a grant.
@@ -466,12 +433,7 @@ pub fn grant_by_hash(
 /// // -> Ok(Nil)
 /// ```
 pub fn use_grant(store: Store, hash: BitArray) -> Result(Nil, Error) {
-  write(
-    store,
-    "UPDATE grants SET queues_used = queues_used + 1
-     WHERE capability_hash = ?",
-    [sqlight.blob(hash)],
-  )
+  write(store, sql.use_grant(capability_hash: hash))
 }
 
 // ----------------------------------------------------------------- queues
@@ -488,34 +450,25 @@ pub fn queue_by_id(
   store: Store,
   queue: Id(Queue),
 ) -> Result(Option(QueueRecord), Error) {
-  let row = {
-    use read_hash <- decode.field(0, decode.bit_array)
-    use append_hash <- decode.field(1, decode.bit_array)
-    use admin_hash <- decode.field(2, decode.bit_array)
-    use created_at <- decode.field(3, decode.int)
-    use bytes_used <- decode.field(4, decode.int)
-    use capacity <- decode.field(5, decode.int)
-
-    decode.success(QueueRecord(
-      queue:,
-      read_hash:,
-      append_hash:,
-      admin_hash:,
-      created_at: Instant(created_at),
-      bytes_used:,
-      capacity:,
-    ))
-  }
-
-  query(
+  use rows <- result.try(query(
     store,
-    "SELECT read_hash, append_hash, admin_hash, created_at, bytes_used,
-            capacity
-     FROM queues WHERE queue_id = ?",
-    [sqlight.blob(id.to_bytes(queue))],
-    row,
-  )
-  |> result.map(first)
+    sql.queue_by_id(queue_id: id.to_bytes(queue)),
+  ))
+
+  rows
+  |> list.map(fn(row) {
+    QueueRecord(
+      queue:,
+      read_hash: row.read_hash,
+      append_hash: row.append_hash,
+      admin_hash: row.admin_hash,
+      created_at: Instant(row.created_at),
+      bytes_used: row.bytes_used,
+      capacity: row.capacity,
+    )
+  })
+  |> first
+  |> Ok
 }
 
 /// Inserts a new queue with nothing stored in it.
@@ -529,18 +482,15 @@ pub fn queue_by_id(
 pub fn put_queue(store: Store, record: QueueRecord) -> Result(Nil, Error) {
   write(
     store,
-    "INSERT INTO queues (queue_id, read_hash, append_hash, admin_hash,
-                         created_at, bytes_used, capacity)
-     VALUES (?, ?, ?, ?, ?, ?, ?)",
-    [
-      sqlight.blob(id.to_bytes(record.queue)),
-      sqlight.blob(record.read_hash),
-      sqlight.blob(record.append_hash),
-      sqlight.blob(record.admin_hash),
-      sqlight.int(record.created_at.unix_seconds),
-      sqlight.int(record.bytes_used),
-      sqlight.int(record.capacity),
-    ],
+    sql.insert_queue(
+      queue_id: id.to_bytes(record.queue),
+      read_hash: record.read_hash,
+      append_hash: record.append_hash,
+      admin_hash: record.admin_hash,
+      created_at: record.created_at.unix_seconds,
+      bytes_used: record.bytes_used,
+      capacity: record.capacity,
+    ),
   )
 }
 
@@ -554,9 +504,7 @@ pub fn put_queue(store: Store, record: QueueRecord) -> Result(Nil, Error) {
 /// // -> Ok(Nil)
 /// ```
 pub fn delete_queue(store: Store, queue: Id(Queue)) -> Result(Nil, Error) {
-  write(store, "DELETE FROM queues WHERE queue_id = ?", [
-    sqlight.blob(id.to_bytes(queue)),
-  ])
+  write(store, sql.delete_queue(queue_id: id.to_bytes(queue)))
 }
 
 // -------------------------------------------------------------- envelopes
@@ -574,21 +522,24 @@ pub fn envelope_record(
   queue: Id(Queue),
   envelope: Id(Envelope),
 ) -> Result(Option(EnvelopeRecord), Error) {
-  let row = {
-    use digest <- decode.field(0, decode.bit_array)
-    use deadline <- decode.field(1, decode.int)
-    use size <- decode.field(2, decode.int)
-    decode.success(EnvelopeRecord(digest:, deadline: Instant(deadline), size:))
-  }
-
-  query(
+  use rows <- result.try(query(
     store,
-    "SELECT digest, deadline, size FROM envelopes
-     WHERE queue_id = ? AND envelope_id = ?",
-    key(queue, envelope),
-    row,
-  )
-  |> result.map(first)
+    sql.envelope_record(
+      queue_id: id.to_bytes(queue),
+      envelope_id: id.to_bytes(envelope),
+    ),
+  ))
+
+  rows
+  |> list.map(fn(row) {
+    EnvelopeRecord(
+      digest: row.digest,
+      deadline: Instant(row.deadline),
+      size: row.size,
+    )
+  })
+  |> first
+  |> Ok
 }
 
 /// The tombstone left by an acknowledged envelope, if any.
@@ -604,20 +555,20 @@ pub fn tombstone(
   queue: Id(Queue),
   envelope: Id(Envelope),
 ) -> Result(Option(Tombstone), Error) {
-  let row = {
-    use digest <- decode.field(0, decode.bit_array)
-    use deadline <- decode.field(1, decode.int)
-    decode.success(Tombstone(digest:, deadline: Instant(deadline)))
-  }
-
-  query(
+  use rows <- result.try(query(
     store,
-    "SELECT digest, deadline FROM tombstones
-     WHERE queue_id = ? AND envelope_id = ?",
-    key(queue, envelope),
-    row,
-  )
-  |> result.map(first)
+    sql.tombstone(
+      queue_id: id.to_bytes(queue),
+      envelope_id: id.to_bytes(envelope),
+    ),
+  ))
+
+  rows
+  |> list.map(fn(row) {
+    Tombstone(digest: row.digest, deadline: Instant(row.deadline))
+  })
+  |> first
+  |> Ok
 }
 
 /// Reserves the ciphertext's bytes of the queue's quota and inserts the
@@ -645,15 +596,14 @@ pub fn put_envelope(
 
   write(
     store,
-    "INSERT INTO envelopes (queue_id, envelope_id, digest, deadline, size,
-                            ciphertext)
-     VALUES (?, ?, ?, ?, ?, ?)",
-    list.append(key(queue, envelope), [
-      sqlight.blob(digest),
-      sqlight.int(deadline.unix_seconds),
-      sqlight.int(size),
-      sqlight.blob(ciphertext),
-    ]),
+    sql.insert_envelope(
+      queue_id: id.to_bytes(queue),
+      envelope_id: id.to_bytes(envelope),
+      digest:,
+      deadline: deadline.unix_seconds,
+      size:,
+      ciphertext:,
+    ),
   )
 }
 
@@ -672,37 +622,24 @@ pub fn live_envelopes(
   now: Instant,
   limit: Int,
 ) -> Result(List(StoredEnvelope), Error) {
-  let row = {
-    use envelope_bytes <- decode.field(0, decode.bit_array)
-    use deadline <- decode.field(1, decode.int)
-    use ciphertext <- decode.field(2, decode.bit_array)
-    decode.success(#(envelope_bytes, deadline, ciphertext))
-  }
-
   use rows <- result.try(query(
     store,
-    "SELECT envelope_id, deadline, ciphertext FROM envelopes
-     WHERE queue_id = ? AND deadline >= ?
-     ORDER BY seq ASC LIMIT ?",
-    [
-      sqlight.blob(id.to_bytes(queue)),
-      sqlight.int(now.unix_seconds),
-      sqlight.int(limit),
-    ],
-    row,
+    sql.live_envelopes(
+      queue_id: id.to_bytes(queue),
+      now: now.unix_seconds,
+      max: limit,
+    ),
   ))
 
   list.try_map(rows, fn(row) {
-    let #(envelope_bytes, deadline, ciphertext) = row
-
     // Stored bytes are decoded as totally as wire bytes: a row that no
     // longer parses is reported as damage, never served.
-    case id.from_bytes(envelope_bytes), envelope.from_wire(ciphertext) {
+    case id.from_bytes(row.envelope_id), envelope.from_wire(row.ciphertext) {
       Ok(envelope), Ok(padded) ->
         Ok(StoredEnvelope(
           queue:,
           envelope:,
-          retention_deadline: Instant(deadline),
+          retention_deadline: Instant(row.deadline),
           ciphertext: padded,
         ))
 
@@ -735,20 +672,22 @@ pub fn remove_envelope(
     None -> Ok(0)
 
     Some(record) -> {
+      let queue_id = id.to_bytes(queue)
+      let envelope_id = id.to_bytes(envelope)
+
       use _ <- result.try(write(
         store,
-        "DELETE FROM envelopes WHERE queue_id = ? AND envelope_id = ?",
-        key(queue, envelope),
+        sql.delete_envelope(queue_id:, envelope_id:),
       ))
 
       use _ <- result.try(write(
         store,
-        "INSERT OR REPLACE INTO tombstones
-           (queue_id, envelope_id, digest, deadline) VALUES (?, ?, ?, ?)",
-        list.append(key(queue, envelope), [
-          sqlight.blob(record.digest),
-          sqlight.int(record.deadline.unix_seconds),
-        ]),
+        sql.put_tombstone(
+          queue_id:,
+          envelope_id:,
+          digest: record.digest,
+          deadline: record.deadline.unix_seconds,
+        ),
       ))
 
       use _ <- result.try(adjust_bytes(store, queue, -record.size))
@@ -772,56 +711,29 @@ pub fn remove_envelope(
 /// // -> Ok(SweepReport(envelopes: 0, tombstones: 0))
 /// ```
 pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
-  let cutoff = [sqlight.int(now.unix_seconds)]
-
-  let per_queue = {
-    use queue <- decode.field(0, decode.bit_array)
-    use bytes <- decode.field(1, decode.int)
-    use count <- decode.field(2, decode.int)
-    decode.success(#(queue, bytes, count))
-  }
+  let cutoff = now.unix_seconds
 
   transaction(store, fn() {
-    use expired <- result.try(query(
-      store,
-      "SELECT queue_id, SUM(size), COUNT(*) FROM envelopes
-       WHERE deadline < ? GROUP BY queue_id",
-      cutoff,
-      per_queue,
-    ))
+    use expired <- result.try(query(store, sql.expired_per_queue(now: cutoff)))
 
+    // Each queue gives back the bytes its expired envelopes held, before the
+    // envelopes go.
     use _ <- result.try(
       list.try_each(expired, fn(entry) {
         write(
           store,
-          "UPDATE queues SET bytes_used = bytes_used - ? WHERE queue_id = ?",
-          [sqlight.int(entry.1), sqlight.blob(entry.0)],
+          sql.adjust_bytes(delta: -entry.bytes, queue_id: entry.queue_id),
         )
       }),
     )
 
-    use _ <- result.try(write(
-      store,
-      "DELETE FROM envelopes WHERE deadline < ?",
-      cutoff,
-    ))
-
-    use stale <- result.try(query(
-      store,
-      "SELECT COUNT(*) FROM tombstones WHERE deadline < ?",
-      cutoff,
-      decode.field(0, decode.int, decode.success),
-    ))
-
-    use _ <- result.try(write(
-      store,
-      "DELETE FROM tombstones WHERE deadline < ?",
-      cutoff,
-    ))
+    use _ <- result.try(write(store, sql.delete_expired_envelopes(now: cutoff)))
+    use stale <- result.try(query(store, sql.stale_tombstones(now: cutoff)))
+    use _ <- result.try(write(store, sql.delete_stale_tombstones(now: cutoff)))
 
     Ok(SweepReport(
-      envelopes: list.fold(expired, 0, fn(sum, entry) { sum + entry.2 }),
-      tombstones: list.fold(stale, 0, int.add),
+      envelopes: list.fold(expired, 0, fn(sum, entry) { sum + entry.envelopes }),
+      tombstones: list.fold(stale, 0, fn(sum, row) { sum + row.stale }),
     ))
   })
 }
@@ -834,18 +746,7 @@ fn adjust_bytes(
   queue: Id(Queue),
   delta: Int,
 ) -> Result(Nil, Error) {
-  write(
-    store,
-    "UPDATE queues SET bytes_used = bytes_used + ? WHERE queue_id = ?",
-    [sqlight.int(delta), sqlight.blob(id.to_bytes(queue))],
-  )
-}
-
-fn key(queue: Id(Queue), envelope: Id(Envelope)) -> List(sqlight.Value) {
-  [
-    sqlight.blob(id.to_bytes(queue)),
-    sqlight.blob(id.to_bytes(envelope)),
-  ]
+  write(store, sql.adjust_bytes(delta:, queue_id: id.to_bytes(queue)))
 }
 
 fn first(rows: List(a)) -> Option(a) {
@@ -855,53 +756,78 @@ fn first(rows: List(a)) -> Option(a) {
   }
 }
 
-fn run(store: Store, sql: String) -> Result(Nil, Error) {
-  sqlight.exec(sql, on: store.connection) |> result.map_error(Sql)
+/// Runs hand-written SQL with no parameters and no rows: a pragma, a
+/// transaction boundary, or a whole migration, which may hold several
+/// statements.
+fn run(store: Store, statements: String) -> Result(Nil, Error) {
+  sqlight.exec(statements, on: store.connection) |> result.map_error(Sql)
 }
 
-/// Runs a statement for its effect and discards any rows.
-fn write(
-  store: Store,
-  sql: String,
-  arguments: List(sqlight.Value),
-) -> Result(Nil, Error) {
-  query(store, sql, arguments, decode.success(Nil))
-  |> result.replace(Nil)
-}
+// ---------------------------------------------------------- the bridge
+//
+// A generated function in `mailbox/sql` returns its statement's text, its
+// parameters as parrot's `dev.Param`, and, for a statement that returns rows,
+// the decoder for them. `query` and `write` bind those parameters as sqlight
+// values and run the statement, so values travel as bound parameters, never
+// spliced into the SQL, and no request field can alter a statement.
 
-/// Runs a parameterized statement and decodes every row with `decoder`.
-/// Values travel as bound parameters, never spliced into the SQL, so no
-/// request field can alter a statement.
+/// Runs a generated statement and decodes every row it returns with the
+/// decoder generated beside it.
 fn query(
   store: Store,
-  sql: String,
-  arguments: List(sqlight.Value),
-  decoder: decode.Decoder(a),
+  statement: #(String, List(Param), decode.Decoder(a)),
 ) -> Result(List(a), Error) {
-  sqlight.query(sql, on: store.connection, with: arguments, expecting: decoder)
+  let #(text, parameters, decoder) = statement
+  let arguments = list.map(parameters, bind)
+
+  sqlight.query(text, on: store.connection, with: arguments, expecting: decoder)
   |> result.map_error(Sql)
 }
 
-/// Reads one integer pragma, such as `user_version`.
+/// Runs a generated statement for its effect.
+fn write(
+  store: Store,
+  statement: #(String, List(Param)),
+) -> Result(Nil, Error) {
+  let #(text, parameters) = statement
+
+  query(store, #(text, parameters, decode.success(Nil)))
+  |> result.replace(Nil)
+}
+
+/// One generated parameter as the sqlight value it binds as.
+///
+/// Every table is `STRICT` over `INTEGER`, `TEXT` and `BLOB`, so sqlc types
+/// each parameter as an integer, a string or a bit array, optional where
+/// the column is nullable, and `mailbox/internal/sql_param` has exactly
+/// those variants. A statement that needed any other kind would not compile,
+/// so every parameter binds and this cannot fail.
+fn bind(parameter: Param) -> sqlight.Value {
+  case parameter {
+    sql_param.ParamInt(value) -> sqlight.int(value)
+    sql_param.ParamString(value) -> sqlight.text(value)
+    sql_param.ParamBitArray(value) -> sqlight.blob(value)
+    sql_param.ParamNullable(Some(inner)) -> bind(inner)
+    sql_param.ParamNullable(None) -> sqlight.null()
+  }
+}
+
+/// Reads one integer pragma, such as `user_version`. A pragma's name is
+/// composed here, so it is the one read that does not come from
+/// `mailbox/sql`.
 fn pragma_int(store: Store, name: String) -> Result(Int, Error) {
-  use rows <- result.try(query(
-    store,
-    "PRAGMA " <> name,
-    [],
-    decode.field(0, decode.int, decode.success),
-  ))
+  use rows <- result.try(
+    query(store, #("PRAGMA " <> name, [], decode.at([0], decode.int))),
+  )
 
   first_or_corrupt(rows, name)
 }
 
 /// Reads one text pragma, such as `journal_mode`.
 fn pragma_text(store: Store, name: String) -> Result(String, Error) {
-  use rows <- result.try(query(
-    store,
-    "PRAGMA " <> name,
-    [],
-    decode.field(0, decode.string, decode.success),
-  ))
+  use rows <- result.try(
+    query(store, #("PRAGMA " <> name, [], decode.at([0], decode.string))),
+  )
 
   first_or_corrupt(rows, name)
 }

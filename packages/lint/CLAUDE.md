@@ -67,9 +67,9 @@ wrote ourselves. Nothing here is a security control.
   rows by.
 - `lint.is_generated(code) -> Bool` — whether a generator wrote this
   source. The one exemption the rules themselves know nothing about:
-  every rule advises an edit, and an edit to `storage/sql`,
-  `storage/sql_schema`, `storage/session_schema`, `events/sql` or
-  `tools/prelude` is one the next `make gen-sql` discards, so a finding
+  every rule advises an edit, and an edit to `daemon/sql`,
+  `daemon/schema`, `mailbox/sql` or `mailbox/schema` is one the next
+  `make gen-sql` discards (ADR-007), so a finding
   there is noise that never clears. The marker is the `DO NOT EDIT.`
   header, read only in the first 400 characters — a module that talks
   *about* the marker further down, as this package's own sources do, is

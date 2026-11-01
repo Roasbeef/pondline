@@ -83,6 +83,12 @@ lint-%: ## Lint one package's src, e.g. make lint-core
 doc-check: ## Gate the per-package CLAUDE.md/AGENTS.md graph and docs/ citations
 	@scripts/doc_check.sh
 
+# ---------------------------------------------------------------- generating
+
+.PHONY: gen-sql
+gen-sql: ## Regenerate the SQL modules after editing any .sql file (needs sqlite3, and the network once; ADR-007)
+	@scripts/gen-sql.sh
+
 # ---------------------------------------------------------------- housekeeping
 
 .PHONY: clean
