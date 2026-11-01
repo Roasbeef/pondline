@@ -933,6 +933,7 @@ fn incident_json(found: Incident) -> Json {
   // The kind is a word on the wire.
   let kind = case found.kind {
     local_api_types.RepeatedMessageId -> "repeated_message"
+    local_api_types.QuarantinedEnvelope -> "quarantined"
   }
 
   json.object([

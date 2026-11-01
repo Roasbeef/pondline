@@ -271,6 +271,7 @@ fn incident(found: api.Incident) -> local_api_types.Incident {
   local_api_types.Incident(
     kind: case found.kind {
       api.RepeatedMessageId -> local_api_types.RepeatedMessageId
+      api.QuarantinedEnvelope -> local_api_types.QuarantinedEnvelope
     },
     contact: found.contact,
     message: found.message,

@@ -69,6 +69,10 @@ const shipped = [
     "003_incidents.sql",
     "DCFB7E1B4DC3CE3E804545125BC5BCDC931E8B515A3BC4D0FDD265EC9AFADC77",
   ),
+  #(
+    "004_attempts.sql",
+    "788636B0CB6C977D8CD0127CC2A8E79B7BC2DE86CE31D829A0BDA3C78A9FD30D",
+  ),
 ]
 
 pub fn shipped_migrations_never_change_test() {

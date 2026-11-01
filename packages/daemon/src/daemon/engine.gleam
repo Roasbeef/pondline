@@ -54,6 +54,14 @@
 //// processed-and-dropped, so the mailbox can still be acknowledged once the
 //// drop is durable.
 ////
+//// An envelope that is not a repeat is counted before it is processed
+//// (`store.count_attempt`, its own transaction). One that has failed
+//// `limits.max_process_attempts` times is quarantined instead (ADR-010):
+//// recorded as dropped, so the fetcher acknowledges it, and written as an
+//// incident for the operator, so one envelope that cannot be processed
+//// cannot block its queue. The count survives a crash of the engine, which
+//// is what makes a crash loop end too.
+////
 //// A `Ratchet` frame is first looked up by its fingerprint
 //// (`relationship.fingerprint`, `store.fingerprint`). A ciphertext the
 //// relationship already stored a message from is a sender's retransmit or a
@@ -114,6 +122,7 @@ import core/id.{
   type Message as MessageKind, type Queue,
 }
 import core/invitation
+import core/limits
 import core/offer.{type Approval}
 import core/plan.{type EnvelopeRef, type Plan, EnvelopeRef}
 import core/relationship.{type Relationship}
@@ -894,11 +903,56 @@ fn handle_envelope(
     Some(stored) ->
       case state.suite.constant_time_equal(stored, digest) {
         True -> Ok(Repeat)
-        False -> new_envelope(state, ref, padded)
+        False -> attempt(state, ref, padded)
       }
 
-    None -> new_envelope(state, ref, padded)
+    None -> attempt(state, ref, padded)
   }
+}
+
+/// Counts this attempt durably, then processes the envelope, or quarantines
+/// it once it has failed `limits.max_process_attempts` times (ADR-010).
+///
+/// The count commits before the core sees the envelope, so an attempt that
+/// crashes the engine or fails its commit has counted, and a crash loop
+/// ends in quarantine like any other failure. An attempt whose commit
+/// landed is never counted again: its `Processed` row clears the count,
+/// and a redelivery of it is a `Repeat` above, which is how an ask that
+/// applied and then failed escapes being blamed on the envelope.
+fn attempt(
+  state: State,
+  ref: EnvelopeRef,
+  padded: Padded,
+) -> Result(Handled, Failure) {
+  use count <- result.try(
+    fault(store.count_attempt(state.store, ref.queue, ref.envelope)),
+  )
+
+  // Within the bound the envelope is processed; past it, set aside.
+  case count > limits.max_process_attempts {
+    False -> new_envelope(state, ref, padded)
+    True -> quarantine(state, ref, count - 1)
+  }
+}
+
+/// Drops and records an envelope that failed `failures` times, so the
+/// fetcher acknowledges it and the queue behind it moves. Nothing of the
+/// relationship changes: an honest message set aside this way is still
+/// unreceipted at its sender, whose retransmit is processed fresh.
+fn quarantine(
+  state: State,
+  ref: EnvelopeRef,
+  failures: Int,
+) -> Result(Handled, Failure) {
+  use owner <- result.try(
+    fault(store.relationship_by_queue(state.store, ref.queue)),
+  )
+
+  let contact = option.map(owner, fn(record) { record.relationship.contact })
+  let change = store.Quarantined(ref:, contact:, attempts: failures)
+  use _ <- result.try(commit_change(state, change, None))
+
+  Ok(Fresh)
 }
 
 /// Opens the frame and routes it by its tag.

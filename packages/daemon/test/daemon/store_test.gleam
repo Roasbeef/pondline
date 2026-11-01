@@ -88,6 +88,7 @@ pub fn a_populated_first_schema_migrates_test() {
        ALTER TABLE outbox DROP COLUMN retransmit_at;
        DROP TABLE fingerprints;
        DROP TABLE incidents;
+       DROP TABLE attempts;
        PRAGMA user_version=1;",
       connection,
     )

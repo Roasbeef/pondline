@@ -173,6 +173,11 @@ pub type IncidentKind {
   /// An authenticated peer reused a message identifier; the message was
   /// ignored.
   RepeatedMessageId
+
+  /// An envelope failed to process `limits.max_process_attempts` times and
+  /// was dropped and acknowledged; its sender's retransmit may still
+  /// deliver it.
+  QuarantinedEnvelope
 }
 
 /// One envelope the daemon set aside without delivering it, as the operator
@@ -694,6 +699,7 @@ fn incident(record: store.IncidentRecord) -> Incident {
   Incident(
     kind: case record.kind {
       store.RepeatedMessageId -> RepeatedMessageId
+      store.QuarantinedEnvelope -> QuarantinedEnvelope
     },
     contact: record.contact,
     message: record.message,

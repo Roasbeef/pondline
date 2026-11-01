@@ -251,6 +251,12 @@ pub type Commit {
 
   /// A stored row that will not be sent again; its schedule ends.
   RetransmitStopped(envelope: Id(Envelope))
+
+  /// An envelope that failed to process `attempts` times, set aside
+  /// (ADR-010): its `Processed` row is written as dropped, so the fetcher
+  /// acknowledges it, and an incident tells the operator. Nothing else
+  /// changes, so its sender's retransmit can still be processed fresh.
+  Quarantined(ref: EnvelopeRef, contact: Option(Id(Contact)), attempts: Int)
 }
 
 /// Proof that a `Commit` is durable, and the effects the engine may now
@@ -340,6 +346,10 @@ pub type IncidentKind {
   /// it had already used on the relationship. The session advanced past
   /// it; nothing was delivered.
   RepeatedMessageId
+
+  /// An envelope failed to process `limits.max_process_attempts` times and
+  /// was dropped and acknowledged so the queue behind it could move.
+  QuarantinedEnvelope
 }
 
 /// One incident as the operator reads it: identifiers, a count and a time,
@@ -670,6 +680,24 @@ fn apply(
       use _ <- result.try(end_schedule(store, envelope))
       Ok(Committed(effects: []))
     }
+
+    Quarantined(ref:, contact:, attempts:) -> {
+      use _ <- result.try(put_record(store, now, None, plan.dropped(ref)))
+      use _ <- result.try(write(
+        store,
+        sql.insert_incident(
+          kind: incident_kind_name(QuarantinedEnvelope),
+          queue: id.to_bytes(ref.queue),
+          envelope: id.to_bytes(ref.envelope),
+          contact: option.map(contact, id.to_bytes),
+          message_id: None,
+          attempts: Some(attempts),
+          at: now.unix_seconds,
+        ),
+      ))
+
+      Ok(Committed(effects: []))
+    }
   }
 }
 
@@ -828,16 +856,25 @@ fn put_record(
 ) -> Result(Nil, Error) {
   // The record's own variant says which table it lands in.
   case record, owner {
-    plan.Processed(queue:, envelope:, digest:, outcome:), _ ->
-      write(
+    // An envelope that is settled has no more attempts to count, so its
+    // count goes in the same transaction and the table holds only
+    // envelopes still in doubt.
+    plan.Processed(queue:, envelope:, digest:, outcome:), _ -> {
+      let queue = id.to_bytes(queue)
+      let envelope = id.to_bytes(envelope)
+
+      use _ <- result.try(write(
         store,
         sql.put_processed(
-          queue: id.to_bytes(queue),
-          envelope: id.to_bytes(envelope),
+          queue:,
+          envelope:,
           digest:,
           outcome: outcome_name(outcome),
         ),
-      )
+      ))
+
+      write(store, sql.clear_attempts(queue:, envelope:))
+    }
 
     plan.Outbound(envelope:, route:, padded:, retention_deadline:, kind:),
       Some(contact)
@@ -1450,6 +1487,40 @@ pub fn fingerprint(
   }
 }
 
+/// Counts one more attempt to process an envelope, durably and in a
+/// transaction of its own, and returns the count including this one
+/// (ADR-010). It commits before the envelope is handed to the core, so an
+/// attempt that crashes the engine, or whose commit fails, has already
+/// counted; the `Processed` row that settles the envelope clears it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.count_attempt(store, queue, envelope)
+/// // -> Ok(1)
+/// ```
+pub fn count_attempt(
+  store: Store,
+  queue: Id(Queue),
+  envelope: Id(Envelope),
+) -> Result(Int, Error) {
+  transaction(store, fn() {
+    use rows <- result.try(query(
+      store,
+      sql.count_attempt(
+        queue: id.to_bytes(queue),
+        envelope: id.to_bytes(envelope),
+      ),
+    ))
+
+    // An upsert with `RETURNING` always returns its row.
+    case rows {
+      [row, ..] -> Ok(row.count)
+      [] -> Error(Corrupt("the attempt count returned no row"))
+    }
+  })
+}
+
 /// Whether a relationship already stored a message under `message`, held,
 /// ready, consumed or recorded expired: the `IdHistory` the core's
 /// `relationship.receive` is told (ADR-010). `UNIQUE (contact, message_id)`
@@ -1853,6 +1924,7 @@ fn incident_record(row: sql.Incidents) -> Result(IncidentRecord, Error) {
 fn incident_kind_name(kind: IncidentKind) -> String {
   case kind {
     RepeatedMessageId -> "repeated_message"
+    QuarantinedEnvelope -> "quarantined"
   }
 }
 
@@ -1862,6 +1934,7 @@ fn parse_incident_kind(name: String) -> Result(IncidentKind, Error) {
   // Any other text is a damaged row.
   case name {
     "repeated_message" -> Ok(RepeatedMessageId)
+    "quarantined" -> Ok(QuarantinedEnvelope)
     _ -> Error(corrupt("incidents"))
   }
 }

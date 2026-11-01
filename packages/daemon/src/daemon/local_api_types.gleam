@@ -98,6 +98,10 @@ pub type AuditEntry {
 pub type IncidentKind {
   /// An authenticated peer reused a message identifier; it was ignored.
   RepeatedMessageId
+
+  /// An envelope that failed to process too often was dropped and
+  /// acknowledged.
+  QuarantinedEnvelope
 }
 
 /// One inbound envelope the daemon set aside without delivering it. It

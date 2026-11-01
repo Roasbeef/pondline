@@ -309,6 +309,33 @@ pub fn delivery_of_decoder() -> decode.Decoder(DeliveryOf) {
   decode.success(DeliveryOf(seq:))
 }
 
+pub type CountAttempt {
+  CountAttempt(count: Int)
+}
+
+pub fn count_attempt(queue queue: BitArray, envelope envelope: BitArray) {
+  let sql =
+    "
+INSERT INTO attempts (queue, envelope, count) VALUES (?, ?, 1)
+ON CONFLICT (queue, envelope) DO UPDATE SET count = count + 1
+RETURNING count"
+  #(
+    sql,
+    [dev.ParamBitArray(queue), dev.ParamBitArray(envelope)],
+    count_attempt_decoder(),
+  )
+}
+
+pub fn count_attempt_decoder() -> decode.Decoder(CountAttempt) {
+  use count <- decode.field(0, decode.int)
+  decode.success(CountAttempt(count:))
+}
+
+pub fn clear_attempts(queue queue: BitArray, envelope envelope: BitArray) {
+  let sql = "DELETE FROM attempts WHERE queue = ? AND envelope = ?"
+  #(sql, [dev.ParamBitArray(queue), dev.ParamBitArray(envelope)])
+}
+
 pub fn insert_incident(
   kind kind: String,
   queue queue: BitArray,

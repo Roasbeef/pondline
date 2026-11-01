@@ -3,7 +3,7 @@
 //// truth; run `make gen-sql` after changing one.
 
 /// The schema version the migrations reach.
-pub const version = 3
+pub const version = 4
 
 /// The migrations in order: entry `n` (from zero) is `sql/` file number
 /// `n + 1` and moves a database from version `n` to version `n + 1`.
@@ -121,5 +121,12 @@ CREATE INDEX fingerprints_by_expiry ON fingerprints (expires_at);
   attempts INTEGER,
   at INTEGER NOT NULL
 ) STRICT;
+",
+  "CREATE TABLE attempts (
+  queue BLOB NOT NULL,
+  envelope BLOB NOT NULL,
+  count INTEGER NOT NULL,
+  PRIMARY KEY (queue, envelope)
+) STRICT, WITHOUT ROWID;
 ",
 ]
