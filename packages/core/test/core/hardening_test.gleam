@@ -151,8 +151,9 @@ pub fn an_expired_message_stores_no_plaintext_test() {
       digest: <<>>,
     )
 
-  let assert Ok(received) =
-    relationship.receive(suite, receiver, Instant(2000), ref, bytes)
+  let assert Ok(opened) =
+    relationship.open(suite, receiver, Instant(2000), ref, bytes)
+  let assert Ok(received) = relationship.receive(opened, relationship.FreshId)
   let stored =
     list.filter(received.records, fn(record) {
       case record {
