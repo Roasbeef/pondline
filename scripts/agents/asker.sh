@@ -69,13 +69,15 @@ done
 
 # Send every task first. A send returns once the daemon has durably queued
 # the message, long before it is delivered, so this loop does not wait on
-# the network.
+# the network. Each task's input is its idempotency key (ADR-011), so a
+# rerun of this loop after a send whose answer was lost queues nothing new.
 i=1
 while [ "$i" -le "$count" ]; do
   input="$prefix-$i"
   jq -nc --arg input "$input" '{task:"sha256",input:$input}' >"$payload"
   id=$("$rw" send --contact "$contact" --content-type application/json \
-    --file "$payload") || { echo "send failed for $input" >&2; exit 1; }
+    --file "$payload" --idempotency-key "$input") ||
+    { echo "send failed for $input" >&2; exit 1; }
   echo "$input $id" >>"$sent"
   pace "$id"
   echo "asked $input"
