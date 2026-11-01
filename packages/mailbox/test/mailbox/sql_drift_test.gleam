@@ -48,6 +48,116 @@ pub fn embedded_migrations_match_the_sql_files_test() {
   assert list.all(texts, is_ascii)
 }
 
+/// Every named query in `src/mailbox/sql/` has its function in `mailbox/sql`,
+/// and that function's SQL text is the query as sqlc emits it. A query file
+/// edited, added to or renamed in without a `make gen-sql` fails here.
+pub fn generated_queries_match_the_query_files_test() {
+  let directory = "src/mailbox/sql"
+  let assert Ok(generated) = simplifile.read("src/mailbox/sql.gleam")
+  let assert Ok(names) = simplifile.read_directory(directory)
+
+  let files =
+    names
+    |> list.filter(string.ends_with(_, ".sql"))
+    |> list.sort(string.compare)
+
+  assert files != []
+
+  // A parameter sqlc could not type is generated as `Dynamic`, which the
+  // store's bridge cannot bind.
+  assert !string.contains(generated, "Dynamic")
+
+  list.each(files, fn(file) {
+    let assert Ok(text) = simplifile.read(directory <> "/" <> file)
+    assert is_ascii(text)
+
+    list.each(named_queries(text), fn(query) {
+      let #(name, body) = query
+      assert string.contains(generated, "pub fn " <> snake_case(name) <> "(")
+      assert holds_literal(generated, emitted(body))
+    })
+  })
+}
+
+/// The named queries of one file, as each name and the statement after its
+/// `-- name:` line up to the `;` that ends it. The text before the first
+/// name is the file's header comment, and a comment after a statement's `;`
+/// belongs to no statement, as sqlc reads it.
+fn named_queries(text: String) -> List(#(String, String)) {
+  let assert [_header, ..chunks] = string.split(text, "-- name: ")
+
+  list.map(chunks, fn(chunk) {
+    let assert Ok(#(heading, rest)) = string.split_once(chunk, "\n")
+    let assert [name, ..] = string.split(heading, " ")
+    let assert Ok(#(statement, _)) = string.split_once(rest, ";")
+    #(name, statement)
+  })
+}
+
+/// A statement as sqlc emits it: each `sqlc.arg(name)` and `sqlc.narg(name)`
+/// becomes `?N`, numbered by where its name first appears.
+fn emitted(statement: String) -> String {
+  rewrite(statement, [], "")
+}
+
+/// Rewrites the named parameters left in `text`, given the names already
+/// numbered, appending the result to `done`.
+fn rewrite(text: String, numbered: List(String), done: String) -> String {
+  // Each pass takes the text up to the next macro; none left ends the walk.
+  case string.split_once(text, "sqlc.") {
+    Error(Nil) -> done <> text
+
+    Ok(#(before, after)) -> {
+      let assert Ok(#(_macro, rest)) = string.split_once(after, "(")
+      let assert Ok(#(name, rest)) = string.split_once(rest, ")")
+
+      let numbered = case list.contains(numbered, name) {
+        True -> numbered
+        False -> list.append(numbered, [name])
+      }
+
+      let position =
+        list.take_while(numbered, fn(known) { known != name })
+        |> list.length
+
+      rewrite(
+        rest,
+        numbered,
+        done <> before <> "?" <> int.to_string(position + 1),
+      )
+    }
+  }
+}
+
+/// Whether the generated source holds `statement` as one whole string
+/// literal. Parrot keeps a newline at the front of a statement that a comment
+/// preceded, so either opening is accepted.
+fn holds_literal(generated: String, statement: String) -> Bool {
+  let escaped =
+    statement
+    |> string.replace("\\", "\\\\")
+    |> string.replace("\"", "\\\"")
+
+  string.contains(generated, "\"" <> escaped <> "\"")
+  || string.contains(generated, "\"\n" <> escaped <> "\"")
+}
+
+/// The function parrot names a query: `DeleteStaleTombstones` is
+/// `delete_stale_tombstones`.
+fn snake_case(name: String) -> String {
+  name
+  |> string.to_graphemes
+  |> list.index_map(fn(grapheme, index) {
+    let lower = string.lowercase(grapheme)
+
+    case lower == grapheme, index {
+      True, _ | False, 0 -> lower
+      False, _ -> "_" <> lower
+    }
+  })
+  |> string.concat
+}
+
 /// Whether every codepoint of a string is below 128. Parrot counts bytes as
 /// characters, so a multi-byte character corrupts what it generates.
 fn is_ascii(text: String) -> Bool {
