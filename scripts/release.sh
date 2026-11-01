@@ -35,10 +35,8 @@ MIN_OPENSSL_MINOR=5
 # copied in addition to these. Kernel and stdlib are what the boot script
 # loads; crypto is the NIF library the primitives package binds; mist and
 # glisten start the ssl application (even for plain HTTP), which needs
-# public_key and asn1. inets is there only because the generated SQL module's
-# parrot dependency lists gleam_httpc, which lists inets, and starting the
-# mailbox starts every application it names (ADR-007); nothing calls it.
-OTP_APPS=(kernel stdlib crypto ssl public_key asn1 inets)
+# public_key and asn1.
+OTP_APPS=(kernel stdlib crypto ssl public_key asn1)
 
 # One directory per platform, so a Linux build never overwrites a macOS one.
 OS=$(uname -s | tr '[:upper:]' '[:lower:]')

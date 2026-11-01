@@ -112,6 +112,7 @@ import core/route.{type Inbox, type Route}
 import core/secret
 import core/snapshot
 import core/time.{type Instant, Instant}
+import daemon/internal/sql_param.{type Param}
 import daemon/schema
 import daemon/sql
 import gleam/dynamic/decode
@@ -119,7 +120,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import parrot/dev
 import sqlight
 
 /// The schema version this build writes and understands: the number of
@@ -1830,10 +1830,10 @@ fn run(store: Store, statements: String) -> Result(Nil, Error) {
 /// decoder generated beside it.
 fn query(
   store: Store,
-  statement: #(String, List(dev.Param), decode.Decoder(a)),
+  statement: #(String, List(Param), decode.Decoder(a)),
 ) -> Result(List(a), Error) {
   let #(text, parameters, decoder) = statement
-  use arguments <- result.try(list.try_map(parameters, bind))
+  let arguments = list.map(parameters, bind)
 
   sqlight.query(text, on: store.connection, with: arguments, expecting: decoder)
   |> result.map_error(Sql)
@@ -1842,7 +1842,7 @@ fn query(
 /// Runs a generated statement for its effect.
 fn write(
   store: Store,
-  statement: #(String, List(dev.Param)),
+  statement: #(String, List(Param)),
 ) -> Result(Nil, Error) {
   let #(text, parameters) = statement
 
@@ -1854,31 +1854,16 @@ fn write(
 ///
 /// Every table is `STRICT` over `INTEGER`, `TEXT` and `BLOB`, so sqlc types
 /// each parameter as an integer, a string or a bit array, optional where
-/// the column is nullable. Parrot's type also has variants sqlight cannot
-/// bind (a timestamp, a date, a list, a dynamic value), which no statement
-/// here produces and `sql_drift_test` refuses; one would fail as a type
-/// mismatch, naming no value, rather than crash the engine.
-fn bind(parameter: dev.Param) -> Result(sqlight.Value, Error) {
+/// the column is nullable, and `daemon/internal/sql_param` has exactly
+/// those variants. A statement that needed any other kind would not compile,
+/// so every parameter binds and this cannot fail.
+fn bind(parameter: Param) -> sqlight.Value {
   case parameter {
-    dev.ParamInt(value) -> Ok(sqlight.int(value))
-    dev.ParamString(value) -> Ok(sqlight.text(value))
-    dev.ParamBitArray(value) -> Ok(sqlight.blob(value))
-    dev.ParamFloat(value) -> Ok(sqlight.float(value))
-    dev.ParamBool(value) -> Ok(sqlight.bool(value))
-    dev.ParamNullable(Some(inner)) -> bind(inner)
-    dev.ParamNullable(None) -> Ok(sqlight.null())
-
-    dev.ParamTimestamp(_)
-    | dev.ParamDate(_)
-    | dev.ParamList(_)
-    | dev.ParamDynamic(_) ->
-      Error(
-        Sql(sqlight.SqlightError(
-          sqlight.Mismatch,
-          "a generated parameter has no SQLite binding",
-          -1,
-        )),
-      )
+    sql_param.ParamInt(value) -> sqlight.int(value)
+    sql_param.ParamString(value) -> sqlight.text(value)
+    sql_param.ParamBitArray(value) -> sqlight.blob(value)
+    sql_param.ParamNullable(Some(inner)) -> bind(inner)
+    sql_param.ParamNullable(None) -> sqlight.null()
   }
 }
 

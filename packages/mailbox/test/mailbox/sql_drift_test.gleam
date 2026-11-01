@@ -87,13 +87,10 @@ pub fn generated_queries_match_the_query_files_test() {
 
   assert files != []
 
-  // A parameter sqlc could not type is generated as `Dynamic`, and a
-  // timestamp, date or list parameter is one sqlight cannot take; the
-  // store's bridge binds none of them.
-  assert !string.contains(generated, "Dynamic")
-  assert !string.contains(generated, "ParamTimestamp")
-  assert !string.contains(generated, "ParamDate")
-  assert !string.contains(generated, "ParamList")
+  // The generated module imports the trimmed copy of parrot's runtime, not
+  // parrot (a dev dependency), so a parameter of any type the copy lacks is
+  // a compile error rather than something to search for here.
+  assert string.contains(generated, "import mailbox/internal/sql_param as dev")
 
   list.each(files, fn(file) {
     let assert Ok(text) = simplifile.read(directory <> "/" <> file)

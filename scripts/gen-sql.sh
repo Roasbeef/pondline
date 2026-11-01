@@ -90,6 +90,14 @@ gen_package() {
 		exit 1
 	fi
 
+	# Parrot is a dev dependency, so the generated module cannot import its
+	# runtime; it imports the package's trimmed copy under the same alias
+	# (ADR-007, addendum).
+	sed -i.orig "s#^import parrot/dev\$#import $pkg/internal/sql_param as dev#" \
+		"$dir/src/$pkg/sql.gleam"
+	rm -f "$dir/src/$pkg/sql.gleam.orig"
+	gleam format "$dir/src/$pkg/sql.gleam"
+
 	if grep -q "unknown column type" "$log"; then
 		grep "unknown column type" "$log" >&2
 		echo "gen-sql: parrot could not type a column in $pkg; alias or cast it" >&2

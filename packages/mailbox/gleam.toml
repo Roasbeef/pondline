@@ -7,8 +7,6 @@ gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 sqlight = ">= 1.2.0 and < 2.0.0"
-# The generated SQL module imports parrot/dev (ADR-007).
-parrot = ">= 2.3.0 and < 3.0.0"
 mist = ">= 6.0.0 and < 7.0.0"
 gleam_http = ">= 4.0.0 and < 5.0.0"
 argv = ">= 1.0.0 and < 2.0.0"
@@ -19,5 +17,8 @@ tor = { path = "../tor" }
 weft = { git = "https://github.com/Roasbeef/weft.git", ref = "d90b192573fea90ea86b319627c49705fe8897b3" }
 
 [dev_dependencies]
+# The SQL code generator (ADR-007), run only by `make gen-sql`; the
+# generated module imports mailbox/internal/sql_param instead of parrot/dev.
+parrot = ">= 2.3.0 and < 3.0.0"
 gleeunit = ">= 1.0.0 and < 2.0.0"
 qcheck = ">= 1.0.5 and < 2.0.0"

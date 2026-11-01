@@ -2,7 +2,7 @@
 ////
 
 import gleam/dynamic/decode
-import parrot/dev
+import mailbox/internal/sql_param as dev
 
 pub type EnvelopeRecord {
   EnvelopeRecord(digest: BitArray, deadline: Int, size: Int)
