@@ -46,6 +46,26 @@ pub const long_poll_seconds = 25
 /// are separate and not yet fixed.
 pub const queue_capacity_bytes = 67_108_864
 
+/// The most message keys a ratchet will derive and store to cover one gap in
+/// a chain (1000, Signal's figure). A header claiming a larger gap is
+/// refused outright, so a forged message number costs one comparison rather
+/// than an unbounded KDF loop. A mailbox that reorders or drops more than
+/// this many messages in a row has broken the conversation anyway.
+pub const max_skip_per_message = 1000
+
+/// The most skipped message keys one ratchet state retains across all of its
+/// chains (2000, twice the per-gap bound, so one full gap fits in each of two
+/// chains). The store is also what a serialized state grows by, so the bound
+/// caps the state's size. Storing past it evicts the oldest keys rather than
+/// refusing: a message whose key was evicted is undecryptable, as any lost
+/// message is, but a session never wedges because earlier messages were lost.
+pub const max_skipped_message_keys = 2000
+
+/// The largest message number a chain can carry: a header holds it in 32
+/// bits, so a sending chain that has used every number must stop rather than
+/// wrap and reuse a message key.
+pub const max_message_number = 4_294_967_295
+
 /// The padded size of a ciphertext of `size` bytes: the smallest bucket that
 /// holds it. A ciphertext larger than every bucket has no padded size and
 /// must be refused before it is stored, so the caller gets `Error(Nil)`
