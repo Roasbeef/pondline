@@ -31,7 +31,9 @@ primitive functions the shell builds from `packages/primitives`.
 - `core/time`: `Instant` in Unix seconds; `is_past` treats the deadline
   itself as still valid.
 - `core/limits`: the spec's §11.3 provisional limits and the ratchet's
-  skip bounds, as named constants, and `padded_size`.
+  skip bounds, as named constants, and `padded_size`. The shell's bounds
+  live here too: `max_process_attempts` (ADR-010), `max_send_key_bytes` and
+  `send_key_seconds` (ADR-011).
 - `core/tlv`: a BOLT #1 TLV codec (BigSize, `parse`/`Stream`, a `use`-style
   `Decoder` with `required`/`optional`/`run`, field codecs, `Builder`).
   Canonical by construction.
@@ -52,10 +54,14 @@ primitive functions the shell builds from `packages/primitives`.
   returning `#(State, output)`, and a total, bounded state codec.
 - `core/plan`: what a transition returns (`Plan`, `Record`, `Effect`),
   including `Fingerprint` and the `Remembered` record, the receiver's memory
-  of a ciphertext it stored a message from.
+  of a ciphertext it stored a message from, and `RepeatedMessage`, the
+  record of an ignored repeated identifier (ADR-010).
 - `core/relationship`: the relationship state machine; `fingerprint` and
   `resend_receipt` answer a ciphertext that arrives again with the same
-  logical receipt (ADR-006).
+  logical receipt (ADR-006). An inbound ratchet message is received in two
+  steps: `open` decrypts it into an opaque `Opened`, the shell looks
+  `opened_message` up and answers with an `IdHistory` (`FreshId`,
+  `UsedId`), and `receive(opened, history)` decides (ADR-010).
 - `core/retransmit`: end-to-end retransmission (ADR-006). `due_at` is the
   schedule (`limits.receipt_window_seconds`, doubling, at most
   `limits.max_retransmits` copies, never past the deadline);
@@ -117,6 +123,12 @@ None. `core` sends no messages and owns no processes.
   offer, and one up to 529 650 s (about 6.1 days) behind accepts some
   offer. The pure simulation does not model clock skew and still stores
   envelopes under the row's deadline.
+- An application message the relationship would store under an identifier
+  it already used (`UsedId`) is ignored: the session advances, the plan is
+  the `Processed` record and one `RepeatedMessage`, with no delivery, receipt
+  or budget; only application messages consult the history
+  (`test/core/dedup_test.gleam`, ADR-010). Mutation-checked: ignoring the
+  history fails it.
 - The fake `Suite` used by tests lives under `test/` only, so it cannot be
   compiled into a release (spec §13.3).
 - A retransmit is the same committed padded ciphertext under a new envelope
@@ -174,6 +186,7 @@ None. `core` sends no messages and owns no processes.
 - `docs/adr/006-end-to-end-retransmit.md` (retransmission and
   regenerated receipts).
 - `docs/adr/008-deadline-slack.md` (retention slack and shorter offers).
+- `docs/adr/010-dedup-and-quarantine.md` (repeated identifiers).
 - `docs/crypto-profile-v1.md` (the profile, byte for byte),
   `docs/adr/002-pq-crypto-over-otp.md` and
   `docs/adr/005-hybrid-authentication.md`.

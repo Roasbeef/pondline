@@ -289,6 +289,131 @@ VALUES (?, ?, ?, ?, ?, ?)"
   ])
 }
 
+pub type DeliveryOf {
+  DeliveryOf(seq: Int)
+}
+
+pub fn delivery_of(contact contact: BitArray, message_id message_id: BitArray) {
+  let sql =
+    "
+SELECT seq FROM deliveries WHERE contact = ? AND message_id = ?"
+  #(
+    sql,
+    [dev.ParamBitArray(contact), dev.ParamBitArray(message_id)],
+    delivery_of_decoder(),
+  )
+}
+
+pub fn delivery_of_decoder() -> decode.Decoder(DeliveryOf) {
+  use seq <- decode.field(0, decode.int)
+  decode.success(DeliveryOf(seq:))
+}
+
+pub type CountAttempt {
+  CountAttempt(count: Int)
+}
+
+pub fn count_attempt(queue queue: BitArray, envelope envelope: BitArray) {
+  let sql =
+    "
+INSERT INTO attempts (queue, envelope, count) VALUES (?, ?, 1)
+ON CONFLICT (queue, envelope) DO UPDATE SET count = count + 1
+RETURNING count"
+  #(
+    sql,
+    [dev.ParamBitArray(queue), dev.ParamBitArray(envelope)],
+    count_attempt_decoder(),
+  )
+}
+
+pub fn count_attempt_decoder() -> decode.Decoder(CountAttempt) {
+  use count <- decode.field(0, decode.int)
+  decode.success(CountAttempt(count:))
+}
+
+pub fn clear_attempts(queue queue: BitArray, envelope envelope: BitArray) {
+  let sql = "DELETE FROM attempts WHERE queue = ? AND envelope = ?"
+  #(sql, [dev.ParamBitArray(queue), dev.ParamBitArray(envelope)])
+}
+
+pub fn insert_incident(
+  kind kind: String,
+  queue queue: BitArray,
+  envelope envelope: BitArray,
+  contact contact: Option(BitArray),
+  message_id message_id: Option(BitArray),
+  attempts attempts: Option(Int),
+  at at: Int,
+) {
+  let sql =
+    "
+INSERT INTO incidents
+  (kind, queue, envelope, contact, message_id, attempts, at)
+VALUES (?, ?, ?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(kind),
+    dev.ParamBitArray(queue),
+    dev.ParamBitArray(envelope),
+    dev.ParamNullable(option.map(contact, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(option.map(message_id, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(option.map(attempts, fn(v) { dev.ParamInt(v) })),
+    dev.ParamInt(at),
+  ])
+}
+
+pub type Incidents {
+  Incidents(
+    kind: String,
+    queue: BitArray,
+    envelope: BitArray,
+    contact: Option(BitArray),
+    message_id: Option(BitArray),
+    attempts: Option(Int),
+    at: Int,
+  )
+}
+
+pub fn incidents(max max: Int) {
+  let sql =
+    "SELECT kind, queue, envelope, contact, message_id, attempts, at
+FROM incidents
+ORDER BY seq DESC LIMIT ?1"
+  #(sql, [dev.ParamInt(max)], incidents_decoder())
+}
+
+pub fn incidents_decoder() -> decode.Decoder(Incidents) {
+  use kind <- decode.field(0, decode.string)
+  use queue <- decode.field(1, decode.bit_array)
+  use envelope <- decode.field(2, decode.bit_array)
+  use contact <- decode.field(3, decode.optional(decode.bit_array))
+  use message_id <- decode.field(4, decode.optional(decode.bit_array))
+  use attempts <- decode.field(5, decode.optional(decode.int))
+  use at <- decode.field(6, decode.int)
+  decode.success(Incidents(
+    kind:,
+    queue:,
+    envelope:,
+    contact:,
+    message_id:,
+    attempts:,
+    at:,
+  ))
+}
+
+pub type IncidentCount {
+  IncidentCount(total: Int)
+}
+
+pub fn incident_count() {
+  let sql = "SELECT CAST(COUNT(*) AS INTEGER) AS total FROM incidents"
+  #(sql, [], incident_count_decoder())
+}
+
+pub fn incident_count_decoder() -> decode.Decoder(IncidentCount) {
+  use total <- decode.field(0, decode.int)
+  decode.success(IncidentCount(total:))
+}
+
 pub type MetaGet {
   MetaGet(value: BitArray)
 }
@@ -578,6 +703,53 @@ pub fn pending_count_decoder() -> decode.Decoder(PendingCount) {
   decode.success(PendingCount(pending:))
 }
 
+pub type SendByKey {
+  SendByKey(message_id: BitArray, digest: BitArray)
+}
+
+pub fn send_by_key(contact contact: BitArray, key key: String, now now: Int) {
+  let sql =
+    "
+SELECT message_id, digest FROM send_keys
+WHERE contact = ?1 AND key = ?2
+  AND expires_at >= ?3"
+  #(
+    sql,
+    [dev.ParamBitArray(contact), dev.ParamString(key), dev.ParamInt(now)],
+    send_by_key_decoder(),
+  )
+}
+
+pub fn send_by_key_decoder() -> decode.Decoder(SendByKey) {
+  use message_id <- decode.field(0, decode.bit_array)
+  use digest <- decode.field(1, decode.bit_array)
+  decode.success(SendByKey(message_id:, digest:))
+}
+
+pub fn prune_send_keys(now now: Int) {
+  let sql = "DELETE FROM send_keys WHERE expires_at < ?1"
+  #(sql, [dev.ParamInt(now)])
+}
+
+pub fn put_send_key(
+  contact contact: BitArray,
+  key key: String,
+  message_id message_id: BitArray,
+  digest digest: BitArray,
+  expires_at expires_at: Int,
+) {
+  let sql =
+    "INSERT INTO send_keys (contact, key, message_id, digest, expires_at)
+VALUES (?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(contact),
+    dev.ParamString(key),
+    dev.ParamBitArray(message_id),
+    dev.ParamBitArray(digest),
+    dev.ParamInt(expires_at),
+  ])
+}
+
 pub fn insert_relationship(
   contact contact: BitArray,
   phase phase: String,
@@ -585,12 +757,13 @@ pub fn insert_relationship(
   inbox_queue inbox_queue: BitArray,
   inbox inbox: BitArray,
   blob blob: BitArray,
+  invitation invitation: Option(BitArray),
 ) {
   let sql =
     "
 INSERT INTO relationships
-  (contact, version, phase, description, inbox_queue, inbox, blob)
-VALUES (?, 1, ?, ?, ?, ?, ?)"
+  (contact, version, phase, description, inbox_queue, inbox, blob, invitation)
+VALUES (?, 1, ?, ?, ?, ?, ?, ?)"
   #(sql, [
     dev.ParamBitArray(contact),
     dev.ParamString(phase),
@@ -598,7 +771,30 @@ VALUES (?, 1, ?, ?, ?, ?, ?)"
     dev.ParamBitArray(inbox_queue),
     dev.ParamBitArray(inbox),
     dev.ParamBitArray(blob),
+    dev.ParamNullable(option.map(invitation, fn(v) { dev.ParamBitArray(v) })),
   ])
+}
+
+pub type RelationshipByInvitation {
+  RelationshipByInvitation(contact: BitArray)
+}
+
+pub fn relationship_by_invitation(invitation invitation: Option(BitArray)) {
+  let sql =
+    "SELECT contact FROM relationships
+WHERE invitation = ? AND phase <> 'closed'"
+  #(
+    sql,
+    [dev.ParamNullable(option.map(invitation, fn(v) { dev.ParamBitArray(v) }))],
+    relationship_by_invitation_decoder(),
+  )
+}
+
+pub fn relationship_by_invitation_decoder() -> decode.Decoder(
+  RelationshipByInvitation,
+) {
+  use contact <- decode.field(0, decode.bit_array)
+  decode.success(RelationshipByInvitation(contact:))
 }
 
 pub type UpdateRelationship {
@@ -828,4 +1024,28 @@ SELECT inbox FROM relationships WHERE phase = 'joining'"
 pub fn pending_inboxes_decoder() -> decode.Decoder(PendingInboxes) {
   use inbox <- decode.field(0, decode.bit_array)
   decode.success(PendingInboxes(inbox:))
+}
+
+pub type DrainingInboxes {
+  DrainingInboxes(inbox: BitArray)
+}
+
+pub fn draining_inboxes() {
+  let sql =
+    "
+SELECT inbox FROM relationships AS r
+WHERE r.phase = 'closed'
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = r.inbox_queue AND p.acked = 0)
+UNION ALL
+SELECT inbox FROM offers AS o
+WHERE o.phase IN ('consumed', 'expired')
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = o.inbox_queue AND p.acked = 0)"
+  #(sql, [], draining_inboxes_decoder())
+}
+
+pub fn draining_inboxes_decoder() -> decode.Decoder(DrainingInboxes) {
+  use inbox <- decode.field(0, decode.bit_array)
+  decode.success(DrainingInboxes(inbox:))
 }

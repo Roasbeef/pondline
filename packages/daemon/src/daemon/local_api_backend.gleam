@@ -26,7 +26,7 @@ import daemon/status
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
 
@@ -49,11 +49,12 @@ pub fn unavailable() -> Backend {
     decline: fn(_) { Error(Unavailable) },
     close: fn(_) { Error(Unavailable) },
     raise_budget: fn(_, _) { Error(Unavailable) },
-    send: fn(_, _, _, _) { Error(Unavailable) },
+    send: fn(_, _, _, _, _) { Error(Unavailable) },
     receive: fn(_, _) { Error(Unavailable) },
     acknowledge: fn(_) { Error(Unavailable) },
     status: fn(_) { Error(Unavailable) },
     audit: fn(_, _) { Error(Unavailable) },
+    incidents: fn(_) { Error(Unavailable) },
     subscribe: fn(_) { Nil },
     health: fn() { Health([#("runtime", "not linked")]) },
   )
@@ -123,8 +124,20 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     raise_budget: fn(contact, by) {
       api.raise_budget(daemon, contact, by) |> map_error
     },
-    send: fn(contact, content_type, payload, in_reply_to) {
-      api.send(daemon, contact, content_type, payload, in_reply_to)
+    send: fn(contact, key, content_type, payload, in_reply_to) {
+      // A key makes the send safe to retry (ADR-011).
+      case key {
+        None -> api.send(daemon, contact, content_type, payload, in_reply_to)
+        Some(key) ->
+          api.send_with_key(
+            daemon,
+            contact,
+            key,
+            content_type,
+            payload,
+            in_reply_to,
+          )
+      }
       |> map_error
     },
     receive: fn(contact, max) {
@@ -141,6 +154,11 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     audit: fn(contact, limit) {
       api.audit(daemon, contact, limit)
       |> result.map(list.map(_, audit_entry))
+      |> map_error
+    },
+    incidents: fn(limit) {
+      api.incidents(daemon, limit)
+      |> result.map(list.map(_, incident))
       |> map_error
     },
     subscribe: fn(subscriber) { subscribe(daemon, subscriber) },
@@ -261,6 +279,20 @@ fn audit_entry(entry: api.AuditEntry) -> local_api_types.AuditEntry {
   )
 }
 
+/// An incident as the local API reports it.
+fn incident(found: api.Incident) -> local_api_types.Incident {
+  local_api_types.Incident(
+    kind: case found.kind {
+      api.RepeatedMessageId -> local_api_types.RepeatedMessageId
+      api.QuarantinedEnvelope -> local_api_types.QuarantinedEnvelope
+    },
+    contact: found.contact,
+    message: found.message,
+    attempts: found.attempts,
+    at: found.at,
+  )
+}
+
 /// Subscribes `subscriber` to the runtime's events through a forwarding
 /// process that translates each one. The forwarder is linked to the caller,
 /// so it lives exactly as long as the subscription's owner.
@@ -319,5 +351,6 @@ fn health(report: api.Health) -> local_api_types.Health {
       status.MailboxUnreachable -> "unreachable"
     }),
     #("outbox_pending", int.to_string(report.outbox_pending)),
+    #("incidents", int.to_string(report.incidents)),
   ])
 }

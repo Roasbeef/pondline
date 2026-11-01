@@ -87,6 +87,11 @@ pub fn a_populated_first_schema_migrates_test() {
        ALTER TABLE outbox DROP COLUMN retransmits;
        ALTER TABLE outbox DROP COLUMN retransmit_at;
        DROP TABLE fingerprints;
+       DROP TABLE incidents;
+       DROP TABLE attempts;
+       DROP INDEX relationships_by_invitation;
+       ALTER TABLE relationships DROP COLUMN invitation;
+       DROP TABLE send_keys;
        PRAGMA user_version=1;",
       connection,
     )
@@ -285,4 +290,119 @@ pub fn meta_and_pending_counts_round_trip_test() {
   assert store.meta_get(opened, "k") == Ok(Some(<<1, 2>>))
   assert store.pending_count(opened) == Ok(0)
   assert config.default_accept_budget > 0
+}
+
+/// The history the core is told is the deliveries' own: an identifier is
+/// used once a delivery under it commits, on that relationship only. A
+/// `RepeatedMessage` record becomes an incident the operator can list.
+pub fn message_history_and_incidents_test() {
+  let #(opened, _) = open()
+  let #(contact, session) = joined(opened)
+  let assert Ok(message) = id.from_bytes(<<9:128>>)
+  let assert Ok(other) = id.from_bytes(<<8:128>>)
+  let assert Ok(Some(before)) = store.relationship_by_contact(opened, contact)
+
+  assert store.message_history(opened, contact, message)
+    == Ok(relationship.FreshId)
+
+  let assert Ok(queue) = id.from_bytes(<<3:128>>)
+  let assert Ok(envelope) = id.from_bytes(<<4:128>>)
+  let records = [
+    delivery(contact, <<"first":utf8>>),
+    plan.RepeatedMessage(contact:, message:, queue:, envelope:),
+  ]
+  let assert Ok(_) =
+    store.commit(
+      opened,
+      at,
+      store.Revised(Plan(..session, records:), before.version),
+    )
+
+  assert store.message_history(opened, contact, message)
+    == Ok(relationship.UsedId)
+  assert store.message_history(opened, contact, other)
+    == Ok(relationship.FreshId)
+
+  let assert Ok([incident]) = store.incidents(opened, 10)
+  assert incident.kind == store.RepeatedMessageId
+  assert incident.contact == Some(contact)
+  assert incident.message == Some(message)
+  assert incident.envelope == envelope
+  assert incident.attempts == None
+  assert store.incident_count(opened) == Ok(1)
+}
+
+/// An attempt count goes up one per call, survives a reopen of the file,
+/// and is cleared by the `Processed` row that settles the envelope; a
+/// quarantine writes that row as dropped and an incident with the count.
+pub fn attempts_count_durably_and_settle_with_the_envelope_test() {
+  let #(opened, path) = open()
+  let assert Ok(queue) = id.from_bytes(<<5:128>>)
+  let assert Ok(envelope) = id.from_bytes(<<6:128>>)
+  let ref = plan.EnvelopeRef(queue:, envelope:, digest: <<1, 2>>)
+
+  assert store.count_attempt(opened, queue, envelope) == Ok(1)
+  assert store.count_attempt(opened, queue, envelope) == Ok(2)
+  let assert Ok(Nil) = store.close(opened)
+
+  let assert Ok(opened) = store.open(path, suite.suite())
+  assert store.count_attempt(opened, queue, envelope) == Ok(3)
+
+  let assert Ok(_) =
+    store.commit(
+      opened,
+      at,
+      store.Quarantined(ref:, contact: None, attempts: 3),
+    )
+  assert store.processed_digest(opened, queue, envelope) == Ok(Some(<<1, 2>>))
+  assert store.unacked(opened, queue) == Ok([envelope])
+  let assert Ok([incident]) = store.incidents(opened, 10)
+  assert incident.kind == store.QuarantinedEnvelope
+  assert incident.attempts == Some(3)
+  assert incident.contact == None
+
+  // Settled, the envelope's count starts again from nothing.
+  assert store.count_attempt(opened, queue, envelope) == Ok(1)
+}
+
+/// A joiner names its invitation until it closes: accepting the invitation
+/// again finds it while it lives, and starts afresh once it is closed, which
+/// is how an operator recovers a joiner whose `Hello` was set aside (ADR-011).
+pub fn a_closed_joiner_releases_its_invitation_test() {
+  let #(opened, _) = open()
+  let made = started(opened)
+  let opened_offer = offer.provisioned(made)
+  let assert Ok(_) =
+    store.commit(opened, at, store.OfferRevised(opened_offer, 1))
+  let assert offer.Open(stock) = opened_offer.phase
+  let invitation = stock.invitation
+  let join = fn() {
+    let assert Ok(joining) =
+      relationship.join(
+        suite.suite(),
+        invitation,
+        endpoint.TorOrLoopback,
+        terms(),
+        at,
+      )
+    joining
+  }
+
+  let first = join()
+  let assert Ok(_) = store.commit(opened, at, store.Started(first, "first"))
+  assert store.contact_by_invitation(opened, invitation.id)
+    == Ok(Some(first.state.contact))
+
+  // A second live joiner for the same invitation is refused by the index.
+  let second = join()
+  assert store.commit(opened, at, store.Started(second, "second"))
+    |> result_is_failure
+
+  // Closed, the first releases the invitation for a fresh joiner.
+  let assert Ok(closed) = relationship.close(suite.suite(), first.state, at)
+  let assert Ok(_) = store.commit(opened, at, store.Revised(closed, 1))
+  assert store.contact_by_invitation(opened, invitation.id) == Ok(None)
+  let assert Ok(_) = store.commit(opened, at, store.Started(second, "second"))
+  assert store.contact_by_invitation(opened, invitation.id)
+    == Ok(Some(second.state.contact))
 }

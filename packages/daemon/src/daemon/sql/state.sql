@@ -2,12 +2,19 @@
 -- shell finds work by, and the inboxes the fetchers and the provisioner read.
 -- daemon/store runs every write here inside the commit that owns it, and a
 -- state update names the version it read, so an update that returns no row
--- lost a race (ADR-007 has how this file becomes daemon/sql).
+-- lost a race (ADR-007 has how this file becomes daemon/sql). A joiner's
+-- relationship names the invitation it redeemed, so a retried accept of the
+-- same invitation finds it (ADR-011) until it closes; an inviter's names
+-- none.
 
 -- name: InsertRelationship :exec
 INSERT INTO relationships
-  (contact, version, phase, description, inbox_queue, inbox, blob)
-VALUES (?, 1, ?, ?, ?, ?, ?);
+  (contact, version, phase, description, inbox_queue, inbox, blob, invitation)
+VALUES (?, 1, ?, ?, ?, ?, ?, ?);
+
+-- name: RelationshipByInvitation :one
+SELECT contact FROM relationships
+WHERE invitation = ? AND phase <> 'closed';
 
 -- name: UpdateRelationship :many
 UPDATE relationships
@@ -56,3 +63,21 @@ WHERE phase IN ('awaiting', 'pending', 'active');
 SELECT inbox FROM offers WHERE phase = 'provisioning'
 UNION ALL
 SELECT inbox FROM relationships WHERE phase = 'joining';
+
+-- The inboxes nothing fetches any more whose committed envelopes are not all
+-- acknowledged yet: a relationship that closed, or an offer that was
+-- consumed or expired, between a commit and the acknowledgement that should
+-- have followed it, a daemon restart included. The fetch manager gives each a
+-- fetcher that acknowledges them and stops, so nothing committed is left on
+-- the mailbox until retention.
+
+-- name: DrainingInboxes :many
+SELECT inbox FROM relationships AS r
+WHERE r.phase = 'closed'
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = r.inbox_queue AND p.acked = 0)
+UNION ALL
+SELECT inbox FROM offers AS o
+WHERE o.phase IN ('consumed', 'expired')
+  AND EXISTS (SELECT 1 FROM processed AS p
+              WHERE p.queue = o.inbox_queue AND p.acked = 0);

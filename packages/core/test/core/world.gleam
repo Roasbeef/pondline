@@ -93,6 +93,7 @@ import gleam/dict.{type Dict}
 import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/result
 
 /// Whether a computed plan is committed or lost to a crash.
 pub type Fate {
@@ -1345,7 +1346,10 @@ fn handle(
                 fingerprint,
               )
             Error(Nil) ->
-              relationship.receive(world.suite, rel, instant(world), ref, bytes)
+              relationship.open(world.suite, rel, instant(world), ref, bytes)
+              |> result.try(fn(opened) {
+                relationship.receive(opened, id_history(world, number, opened))
+              })
           }
 
           case outcome {
@@ -1596,7 +1600,22 @@ fn apply_record(mine: Party, record: plan.Record, now: Int) -> Party {
         ),
       )
 
-    plan.Audit(..) -> mine
+    plan.RepeatedMessage(..) | plan.Audit(..) -> mine
+  }
+}
+
+/// Whether the party already stored a message under the opened message's
+/// identifier, as the shell reads it from its deliveries (ADR-010).
+fn id_history(
+  world: World,
+  number: Int,
+  opened: relationship.Opened,
+) -> relationship.IdHistory {
+  let message = id.to_bytes(relationship.opened_message(opened))
+
+  case list.any(party(world, number).delivered, fn(row) { row.0 == message }) {
+    True -> relationship.UsedId
+    False -> relationship.FreshId
   }
 }
 

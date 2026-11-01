@@ -109,6 +109,28 @@ pub const receipt_window_seconds = 3600
 /// ciphertext cannot make it answer without end.
 pub const max_retransmits = 5
 
+/// The most times one inbound envelope is handed to the core without its
+/// outcome committing (5). The next time the mailbox serves it, the daemon
+/// quarantines it: records it for the operator, drops it and acknowledges
+/// it, so one envelope that cannot be processed cannot block every later
+/// one on its queue. The fetcher backs off between rounds (0.5 s doubling),
+/// so five failures take about fifteen seconds. Dropping an honest message
+/// this way loses nothing for good: its sender heard no receipt, so it
+/// sends the same ciphertext again under a new envelope once the receipt
+/// window passes (`docs/adr/010-dedup-and-quarantine.md`).
+pub const max_process_attempts = 5
+
+/// The longest idempotency key a caller may give a send, in bytes (128):
+/// room for a UUID, a hash in hex, or a caller's own prefix and counter. A
+/// key is at least one byte (`docs/adr/011-idempotent-accept-and-send.md`).
+pub const max_send_key_bytes = 128
+
+/// How long a send's idempotency key is remembered (7 days, the message
+/// retention). A retry later than that cannot be about a message still in
+/// flight: the message has expired at the mailbox and at its reader, so the
+/// key is forgotten and a send under it is a new message.
+pub const send_key_seconds = message_retention_seconds
+
 /// The longest content type, in bytes (128).
 pub const max_content_type_bytes = 128
 

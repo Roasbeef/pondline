@@ -73,8 +73,8 @@ this before changing any of them.
   `sql/NNN_<name>.sql`, one per schema version, which
   `dev/embed_schema.gleam` embeds in `daemon/schema` (`version`,
   `migrations`); the statements are named queries in `src/daemon/sql/*.sql`
-  (`state`, `outbox`, `inbound`, `agent`, `meta`), which parrot generates
-  into `daemon/sql`. The store's `query`, `write` and `bind` bridge binds the
+  (`state`, `outbox`, `inbound`, `agent`, `meta`, `incident`, `send_key`),
+  which parrot generates into `daemon/sql`. The store's `query`, `write` and `bind` bridge binds the
   generated parameters as sqlight values; only the pragmas, the transaction
   statements and the migration runner are hand-written. After editing any
   `.sql` file run `make gen-sql` (needs `sqlite3`, and the network once for
@@ -92,15 +92,35 @@ this before changing any of them.
   `INSERT ... SELECT`, so a retransmit's bytes come only from the committed
   row; `RetransmitStopped` ends a schedule. `due_retransmits` and
   `fingerprint` are the readers; a `Remembered` record replaces a
-  fingerprint and prunes the expired ones.
+  fingerprint and prunes the expired ones. Schema 3 (ADR-010) adds
+  `incidents` (kind, queue, envelope, optional contact, message and
+  attempts, time; never a payload), written by a `RepeatedMessage` record
+  and by the `Quarantined` commit, and read by `incidents` and
+  `incident_count`; `message_history` answers the core's `IdHistory` from
+  `deliveries`. Schema 4 adds `attempts(queue, envelope, count)`:
+  `count_attempt` increments it in its own transaction and every
+  `Processed` row clears it. Schema 5 (ADR-011) adds
+  `relationships.invitation` (a joiner's, with a partial unique index;
+  `contact_by_invitation`) and `send_keys(contact, key, message_id,
+  digest, expires_at)`, written by the `KeyedSend` commit and pruned as each
+  key is stored (`send_by_key`). `draining_inboxes` lists retired inboxes
+  whose processed rows are not all acknowledged.
 - `daemon/engine`: the single writer. One `weft/actor` holds the connection and
   runs each operation as a job: load state, run the pure transition with the
   real `Suite` and injected clock, commit, then call `notify`. It never touches
   the network. `process` applies the id-and-digest rule before opening a
-  frame, and looks a `Ratchet` frame's fingerprint up before the session:
-  a known ciphertext goes to `relationship.resend_receipt`, never to
-  `receive`. `retransmit` (job `Retransmit`, label `retransmit`) commits a
-  copy of each stored row whose receipt window passed, or ends its schedule.
+  frame, then counts the attempt (`store.count_attempt`, its own
+  transaction) and quarantines an envelope past
+  `limits.max_process_attempts` (`store.Quarantined`: dropped, acknowledged,
+  an incident; ADR-010). It looks a `Ratchet` frame's fingerprint up before
+  the session: a known ciphertext goes to `relationship.resend_receipt`,
+  never to `receive`. Anything else is `relationship.open`ed, its
+  identifier's history read (`store.message_history`), and
+  `relationship.receive`d with it; a repeat is ignored and recorded.
+  `accept` returns the relationship an invitation already started, and
+  `send` takes an optional idempotency key (`KeyedSend`; ADR-011).
+  `retransmit` (job `Retransmit`, label `retransmit`) commits a copy of each
+  stored row whose receipt window passed, or ends its schedule.
   The store opens in the initialiser, not a `continuing` message, so a
   database that cannot open fails the start; it traps exits and `on_shutdown`
   closes the store.
@@ -131,12 +151,14 @@ this before changing any of them.
   relayed run with a deadline (`ack_deadline_ms`, `poll_deadline_ms`) pushing
   to its own subject (`Acked`, `Polled`); a failure enters `BackingOff` with a
   state timeout of `backoff_ms(failures)` that sends `Begin`, and the failure
-  count lives in the data. A round starts by checking liveness and ends the
-  machine if the queue is retired. Each round acknowledges exactly the
-  store's committed-and-unacknowledged envelopes, then long-polls.
-  `daemon/fetch_manager` is a `weft/actor` (`continuing` first reconcile,
-  `periodic` tick) that starts a linked fetcher per live queue and retires
-  expired offers.
+  count lives in the data. Each round acknowledges exactly the store's
+  committed-and-unacknowledged envelopes first, then checks liveness
+  (`after_ack`): a live queue long-polls, a retired one ends the machine
+  with nothing committed left unacknowledged. `daemon/fetch_manager` is a
+  `weft/actor` (`continuing` first reconcile, `periodic` tick) that starts a
+  linked fetcher per live queue, and per retired queue that still owes
+  acknowledgements (`engine.draining_inboxes`, the restart case), and
+  retires expired offers.
 - `daemon/provisioner`: a one-state `weft/state_machine` (`Watching`) because
   the next scan's delay is computed (`delay_ms(failures)`), which needs the
   named `scan` timeout, re-armed in the one `Tick` arm; a `Nudge` scans
@@ -156,8 +178,9 @@ this before changing any of them.
   `start_offline` omits the three network workers. `stop` kills the tree and
   waits for the lock with `weft/poll`.
 - `daemon/api`: the contract the local API codes against (`invite`, `accept`,
-  `contacts`, `approve`, `decline`, `close`, `raise_budget`, `send`, `receive`,
-  `acknowledge`, `status`, `audit`, `subscribe`, `health`). `invite` waits for
+  `contacts`, `approve`, `decline`, `close`, `raise_budget`, `send`,
+  `send_with_key`, `receive`, `acknowledge`, `status`, `audit`, `incidents`,
+  `subscribe`, `health`; health counts incidents). `invite` waits for
   its queue with `weft/poll` (a durable row landing, probed every
   `invite_poll_ms` for at most `invite_wait_ms`).
 - `daemon/lock`: the exclusive SQLite lock held by a trapping `weft/actor`
@@ -203,6 +226,27 @@ Invariants:
   code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
+- A repeated message identifier from an authenticated peer is ignored, not
+  delivered, and recorded as an incident, and the queue moves on
+  (`test/daemon/dedup_test.gleam`, two real daemons and a real mailbox, the
+  sender forging the repeat with its own session). Mutation-checked: telling
+  the core `FreshId` always fails it (ADR-010).
+- An envelope that fails to process `limits.max_process_attempts` times is
+  quarantined and its queue drains; healed, the sender's retransmit is
+  delivered once (`test/daemon/quarantine_test.gleam`, a trigger in the
+  receiver's database refusing every delivery). Mutation-checked: never
+  quarantining fails it; never clearing the count fails
+  `store_test.attempts_count_durably_and_settle_with_the_envelope_test`.
+- A batch whose last envelope closed the relationship is acknowledged
+  before the fetcher retires, and a retired queue a restart left owing is
+  drained (`test/daemon/closed_queue_test.gleam`). Mutation-checked:
+  checking liveness before acknowledging fails both tests, and leaving
+  draining inboxes out of the reconcile fails the restart one.
+- A retried accept is one relationship and a retried keyed send one message
+  (`test/daemon/idempotency_test.gleam`, an engine fault hook that makes
+  both apply and then answer `Unavailable`). Mutation-checked: dropping the
+  accept's invitation lookup, or treating a keyed send as unkeyed, fails it
+  (ADR-011).
 - `daemon/schema` and `daemon/sql` are generated and never edited by hand,
   and a migration file that has shipped never changes: a schema change is a
   new `sql/NNN_*.sql`. `test/daemon/sql_drift_test.gleam` checks offline that
@@ -336,8 +380,11 @@ Invariants:
   arguments, backend. A forbidden operation never has its arguments read and
   never reaches the backend.
 - The agent scope may do contacts, send, receive, acknowledge, status and
-  health only. Invite, accept, approve, decline, close, raise_budget and
-  audit are operator-only (`required_scope`).
+  health only. Invite, accept, approve, decline, close, raise_budget, audit
+  and incidents are operator-only (`required_scope`).
+- `send` takes an optional `idempotency_key` (CLI `--idempotency-key`),
+  sent only when given; `incidents` (CLI `reedwire incidents [--limit N]`)
+  lists identifiers, counts and times and never a payload.
 - A credential is a `Secret`, appears in no log or error text, and never in
   argv: the CLI reads it from `--credential-file`, `REEDWIRE_CREDENTIAL_FILE`
   or `<state-dir>/operator.cred`. A payload comes from `--file` or `--stdin`
@@ -360,5 +407,8 @@ Invariants:
 ## Deep Docs
 
 - `docs/spec.md` §6.1 (transport), §6.2, §13.1 (no silent downgrade).
+- `docs/adr/010-dedup-and-quarantine.md` (repeated identifiers, quarantine,
+  incidents) and `docs/adr/011-idempotent-accept-and-send.md` (idempotency
+  keys).
 - `packages/core/src/core/http1.gleam` (framing and bounds) and
   `core/mailbox/codec.gleam` (the body).

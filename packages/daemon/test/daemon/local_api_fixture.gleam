@@ -17,7 +17,7 @@ import daemon/local_api_types.{
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option.{None}
+import gleam/option.{None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -227,7 +227,14 @@ pub fn backend(fake: Fake) -> Backend {
       record("raise_budget " <> id.to_hex(c) <> " " <> string.inspect(by))
       Ok(Nil)
     },
-    send: fn(c, content_type, payload, reply) {
+    send: fn(c, key, content_type, payload, reply) {
+      // A key is named only when one was given, so unkeyed calls read as
+      // they always did.
+      let keyed = case key {
+        Some(key) -> " key=" <> key
+        None -> ""
+      }
+
       record(
         "send "
         <> id.to_hex(c)
@@ -236,7 +243,8 @@ pub fn backend(fake: Fake) -> Backend {
         <> " "
         <> bit_array.base16_encode(payload)
         <> " "
-        <> string.inspect(option.map(reply, id.to_hex)),
+        <> string.inspect(option.map(reply, id.to_hex))
+        <> keyed,
       )
       Ok(message())
     },
@@ -262,6 +270,18 @@ pub fn backend(fake: Fake) -> Backend {
           content_type: "text/plain",
           payload: secret.new(<<"hello audit":utf8>>),
           at: Instant(1_700_000_001),
+        ),
+      ])
+    },
+    incidents: fn(limit) {
+      record("incidents " <> string.inspect(limit))
+      Ok([
+        local_api_types.Incident(
+          kind: local_api_types.RepeatedMessageId,
+          contact: Some(contact()),
+          message: Some(message()),
+          attempts: None,
+          at: Instant(1_700_000_002),
         ),
       ])
     },

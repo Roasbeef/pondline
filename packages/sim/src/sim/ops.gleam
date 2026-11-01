@@ -11,9 +11,12 @@
 //// a call that outlives a restart retries against the new tree, as an
 //// adapter that reconnects would. `send`, `invite` and `accept` retry on
 //// `Unavailable` up to `attempts` times, half a virtual second apart, which
-//// is what a careful adapter does with an outcome it cannot know (H4): the
-//// count of answers that were `Unavailable` comes back in the outcome, so
-//// the oracle can tell an operator's duplicate from the daemon's.
+//// is what a careful adapter does with an outcome it cannot know (H4).
+//// Every send carries its payload tag as its idempotency key and an accept
+//// is keyed by its invitation (ADR-011), so a retry after an ambiguous
+//// failure is the same message or relationship, never a second one; the
+//// count of answers that were `Unavailable` still comes back in the
+//// outcome, for the trace.
 ////
 //// An input past a limit that the daemon accepts comes back as `Other`,
 //// which the oracle fails: a limit is a MUST of the spec.
@@ -261,7 +264,14 @@ fn send_tags(
               env,
               party,
               fn(daemon) {
-                api.send(daemon, to, "text/plain", payload(tag, size), None)
+                api.send_with_key(
+                  daemon,
+                  to,
+                  tag,
+                  "text/plain",
+                  payload(tag, size),
+                  None,
+                )
                 |> result.map(fn(message) {
                   // An agent asks how far its message got, as an adapter
                   // polling `status` would; the answer is not kept.
@@ -531,7 +541,9 @@ fn one_send(
         retrying(
           env,
           party,
-          fn(daemon) { api.send(daemon, to, content_type, body, None) },
+          fn(daemon) {
+            api.send_with_key(daemon, to, tag, content_type, body, None)
+          },
           attempts,
           0,
         )

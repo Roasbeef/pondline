@@ -41,6 +41,11 @@
 //// message from, and the shell answers a later envelope carrying the same
 //// ciphertext by regenerating the receipt instead of delivering again.
 ////
+//// A `RepeatedMessage` record is how the core says it ignored an
+//// authenticated application message whose identifier the relationship
+//// already used (`docs/adr/010-dedup-and-quarantine.md`). It changes no
+//// table the agent reads; the shell keeps it for the operator.
+////
 //// A transition that refuses returns an error and no plan, which is how
 //// "a refusal changes nothing" is typed: there is no state to commit. For
 //// an envelope the core refused to process, the shell writes the `Processed`
@@ -182,6 +187,22 @@ pub type Record {
     fingerprint: Fingerprint,
   )
 
+  /// An authenticated application message reused an identifier its
+  /// relationship already stored a message under (ADR-010). The session
+  /// advanced past it and nothing else happened: no second delivery, no
+  /// receipt and no budget. The shell writes it where the operator reads
+  /// incidents, because an honest peer never does this.
+  RepeatedMessage(
+    /// The relationship.
+    contact: Id(Contact),
+    /// The identifier used again.
+    message: Id(MessageKind),
+    /// The queue the envelope came from.
+    queue: Id(Queue),
+    /// The envelope that carried it.
+    envelope: Id(Envelope),
+  )
+
   /// An entry in the plaintext audit log the operator reads. Written for
   /// every application message in or out.
   Audit(
@@ -303,6 +324,7 @@ fn is_outbound(record: Record) -> Bool {
     | Released(..)
     | PeerReceived(..)
     | Remembered(..)
+    | RepeatedMessage(..)
     | Audit(..) -> False
   }
 }
@@ -318,6 +340,7 @@ fn is_visible(record: Record) -> Bool {
     | Processed(..)
     | PeerReceived(..)
     | Remembered(..)
+    | RepeatedMessage(..)
     | Audit(..) -> False
   }
 }
