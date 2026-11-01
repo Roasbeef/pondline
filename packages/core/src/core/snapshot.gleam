@@ -36,6 +36,7 @@ import core/crypto/suite.{type Suite}
 import core/field
 import core/id
 import core/invitation.{type Invitation}
+import core/limits
 import core/message
 import core/offer.{
   type Approval, type Offer, type OfferPhase, type Stock, AutoApprove, Consumed,
@@ -56,7 +57,7 @@ pub const format_version = 1
 
 /// The largest snapshot: a ratchet state holding a full skipped-key store,
 /// with room for the rest. New limit, flagged for §11.3.
-pub const max_snapshot_bytes = 1_048_576
+pub const max_snapshot_bytes = limits.max_snapshot_bytes
 
 /// The size of a SHA-256 digest, which both consumed-offer fingerprints are.
 const digest_bytes = 32

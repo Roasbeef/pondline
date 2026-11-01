@@ -35,7 +35,7 @@
 //// | state | joined | approve or decline | send | receive | close | raise_budget |
 //// | --- | --- | --- | --- | --- | --- | --- |
 //// | `Joining` | opens the session: queues the `Initial` frame, becomes `AwaitingAccept` | refused | refused | refused (no session) | `Closed(ClosedLocally)`, nothing to send | refused |
-//// | `AwaitingAccept` | refused | refused | refused | `Accept` makes it `Active`; `Reject` and `Close` close it; application messages and receipts are ignored | queues a `Close`, `Closed(ClosedLocally)` | refused |
+//// | `AwaitingAccept` | refused | refused | refused | `Accept` makes it `Active`; `Reject` and `Close` close it; an application message is an implicit `Accept` (ADR-004): it makes the relationship `Active` and is then handled as in `Active`; receipts are ignored | queues a `Close`, `Closed(ClosedLocally)` | refused |
 //// | `PendingApproval` | refused | approve queues `Accept` and becomes `Active`; decline queues `Reject` and becomes `Closed(Declined)` | refused | `Close` closes it; everything else is ignored | queues a `Close`, `Closed(ClosedLocally)` | refused |
 //// | `Active` | refused | refused | queues the message | application messages are delivered, held or recorded expired; receipts mark messages received; `Close` closes it; `Accept` and `Reject` are ignored | queues a `Close`, `Closed(ClosedLocally)` | releases held messages the new budget admits |
 //// | `Closed` | refused | refused | refused | refused (no session) | refused | refused |
@@ -78,8 +78,8 @@ import core/message.{
 }
 import core/plan.{
   type EnvelopeRef, type Plan, type Record, Audit, ControlOut, CreateQueue,
-  Delivered, Expired, Held, In, Out, Outbound, PeerReceived, Plan, Ready,
-  ReceiptOut, Released,
+  Delivered, Held, In, Out, Outbound, PeerReceived, Plan, Ready, ReceiptOut,
+  Released,
 }
 import core/route.{type Inbox, type Route}
 import core/secret
@@ -92,7 +92,7 @@ import gleam/result
 
 /// The most application messages held over budget at once. New limit,
 /// flagged for §11.3.
-pub const max_held_messages = 256
+pub const max_held_messages = limits.max_held_messages
 
 /// One pairing, from our side.
 pub type Relationship {
@@ -233,12 +233,22 @@ pub type Refusal {
   /// A lifetime or budget increase that is not positive.
   NotPositive
 
-  /// Over budget with `max_held_messages` already held.
+  /// Over budget with `max_held_messages` already held. The shell drops and
+  /// acknowledges the envelope, so a legitimate message past the limit is
+  /// lost, and the sender never receives a receipt for it. That is the
+  /// intended behavior: a receipt means durably stored, and this message was
+  /// not.
   HeldFull
+
+  /// A description exceeds `message.max_description_bytes`. Refused up
+  /// front, because the snapshot and invitation decoders enforce the same
+  /// bound and would otherwise refuse the row or file we wrote.
+  DescriptionTooLong
 }
 
 /// A budget granting `granted` messages, none used. A negative grant is
-/// zero.
+/// zero and one above `limits.max_budget_messages` is that maximum, so the
+/// stored value always round-trips through a snapshot.
 ///
 /// ## Examples
 ///
@@ -247,7 +257,11 @@ pub type Refusal {
 /// // -> Budget(3, 0, [])
 /// ```
 pub fn budget(granted: Int) -> Budget {
-  Budget(granted: int.max(granted, 0), used: 0, held: [])
+  Budget(
+    granted: int.clamp(granted, 0, limits.max_budget_messages),
+    used: 0,
+    held: [],
+  )
 }
 
 /// Starts a relationship from an invitation: refuses an expired invitation
@@ -269,6 +283,7 @@ pub fn join(
   now: Instant,
 ) -> Result(Plan(Relationship), Refusal) {
   use Nil <- result.try(check_unexpired(invitation.expires_at, now))
+  use Nil <- result.try(check_description(terms.description))
   use _admitted <- result.try(
     endpoint.admit(invitation.route.endpoint, policy)
     |> result.map_error(Carrier),
@@ -563,9 +578,50 @@ pub fn receive(
   envelope: EnvelopeRef,
   ratchet_bytes: BitArray,
 ) -> Result(Plan(Relationship), Refusal) {
-  use link <- result.try(session_link(relationship))
+  // The phase is matched once. Only the three phases that hold a session
+  // can receive, and each brings its own reading of the body.
+  case relationship.phase {
+    Active(link) ->
+      arrive(
+        Arrival(suite:, now:, relationship:, link:, records: [
+          plan.applied(envelope),
+        ]),
+        ratchet_bytes,
+        in_active,
+      )
+
+    AwaitingAccept(link) ->
+      arrive(
+        Arrival(suite:, now:, relationship:, link:, records: [
+          plan.applied(envelope),
+        ]),
+        ratchet_bytes,
+        in_awaiting,
+      )
+
+    PendingApproval(link) ->
+      arrive(
+        Arrival(suite:, now:, relationship:, link:, records: [
+          plan.applied(envelope),
+        ]),
+        ratchet_bytes,
+        in_pending,
+      )
+
+    Joining(..) | Closed(_) -> Error(NoSession)
+  }
+}
+
+/// Decrypts and decodes the message, then hands the arrival, with the
+/// advanced session in its link, to the phase's reading of the body. Both
+/// failures return before anything is built, so a refusal changes nothing.
+fn arrive(
+  arrival: Arrival,
+  ratchet_bytes: BitArray,
+  handler: fn(Arrival, Message) -> Result(Plan(Relationship), Refusal),
+) -> Result(Plan(Relationship), Refusal) {
   use #(session, plaintext) <- result.try(
-    ratchet.decrypt(suite, link.session, ratchet_bytes)
+    ratchet.decrypt(arrival.suite, arrival.link.session, ratchet_bytes)
     |> result.map_error(Undecryptable),
   )
   use incoming <- result.try(
@@ -573,18 +629,7 @@ pub fn receive(
     |> result.map_error(MalformedMessage),
   )
 
-  let arrival =
-    Arrival(suite:, now:, relationship:, link: Link(..link, session:), records: [
-      plan.applied(envelope),
-    ])
-
-  // The phase decides what a body means; the session has already advanced.
-  case relationship.phase {
-    Active(_) -> in_active(arrival, incoming)
-    AwaitingAccept(_) -> in_awaiting(arrival, incoming)
-    PendingApproval(_) -> in_pending(arrival, incoming)
-    Joining(..) | Closed(_) -> Error(NoSession)
-  }
+  handler(Arrival(..arrival, link: Link(..arrival.link, session:)), incoming)
 }
 
 /// What each body means to an active relationship.
@@ -610,6 +655,13 @@ fn in_active(
 }
 
 /// What each body means to a joiner waiting for the inviter's answer.
+///
+/// An authenticated application message is an implicit `Accept` (ADR-004):
+/// the inviter can only send from `Active`, so the message proves the
+/// approval, and the mailbox may deliver it before the `Accept` (spec §6.5).
+/// The relationship becomes `Active` and the message is handled as in
+/// `Active`. A receipt proves nothing, since a joiner sends no application
+/// message before it is `Active`, so it is ignored.
 fn in_awaiting(
   arrival: Arrival,
   incoming: Message,
@@ -621,7 +673,10 @@ fn in_awaiting(
 
     Close -> Ok(finish(arrival, ClosedByPeer))
 
-    Application(..) | Receipt(_) -> Ok(stay(arrival, AwaitingAccept, []))
+    Application(content_type:, payload:, in_reply_to:) ->
+      store_application(arrival, incoming, content_type, payload, in_reply_to)
+
+    Receipt(_) -> Ok(stay(arrival, AwaitingAccept, []))
   }
 }
 
@@ -640,9 +695,11 @@ fn in_pending(
   }
 }
 
-/// Stores an application message that arrived in `Active`. An expired one
-/// is recorded and never delivered, and earns no receipt, since a receipt
-/// tells the sender the message will be acted on. A live one is `Ready`
+/// Stores an application message from an authenticated, authorized session
+/// (an `Active` one, or an `AwaitingAccept` one that this message accepts).
+/// An expired one is not stored at all: no payload is written, only the
+/// `Processed` record, and it earns no receipt, since a receipt tells the
+/// sender the message will be acted on. A live one is `Ready`
 /// within the budget and `Held` beyond it, and either way is durably stored
 /// by this plan, so a receipt is queued in the same transaction.
 fn store_application(
@@ -653,15 +710,6 @@ fn store_application(
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Plan(Relationship), Refusal) {
   let contact = arrival.relationship.contact
-  let audit =
-    Audit(
-      direction: In,
-      contact:,
-      message: incoming.id,
-      content_type:,
-      payload:,
-      at: arrival.now,
-    )
   let message_id = incoming.id
   let now = arrival.now
   let stored = fn(status) {
@@ -679,7 +727,7 @@ fn store_application(
   // Expiry is judged after decryption, because only an authenticated
   // message may advance the session, and it never changes the ratchet.
   case time.is_past(arrival.now, incoming.expires_at) {
-    True -> Ok(stay(arrival, Active, [stored(Expired), audit]))
+    True -> Ok(stay(arrival, Active, []))
 
     False -> {
       use #(budget, status) <- result.try(admit(
@@ -696,6 +744,16 @@ fn store_application(
 
       let relationship = Relationship(..arrival.relationship, budget:)
       let arrival = Arrival(..arrival, relationship:, link:)
+
+      let audit =
+        Audit(
+          direction: In,
+          contact:,
+          message: message_id,
+          content_type:,
+          payload:,
+          at: now,
+        )
 
       Ok(stay(arrival, Active, [stored(status), audit, receipt]))
     }
@@ -744,7 +802,7 @@ pub fn raise_budget(
   use Nil <- result.try(check_positive(by))
 
   let current = relationship.budget
-  let granted = current.granted + by
+  let granted = int.min(current.granted + by, limits.max_budget_messages)
   let #(released, still_held) = list.split(current.held, granted - current.used)
   let raised =
     Budget(
@@ -854,14 +912,6 @@ fn outbound_kind(
   }
 }
 
-/// The session of a phase that has one.
-fn session_link(relationship: Relationship) -> Result(Link, Refusal) {
-  case relationship.phase {
-    AwaitingAccept(link) | PendingApproval(link) | Active(link) -> Ok(link)
-    Joining(..) | Closed(_) -> Error(NoSession)
-  }
-}
-
 /// The session of an active relationship, or `NotActive`.
 fn active_link(relationship: Relationship) -> Result(Link, Refusal) {
   case relationship.phase {
@@ -893,6 +943,13 @@ fn check_sendable(
     True, True -> Ok(Nil)
     False, _ -> Error(ContentTypeTooLong)
     True, False -> Error(PayloadTooLarge)
+  }
+}
+
+fn check_description(description: String) -> Result(Nil, Refusal) {
+  case message.description_fits(description) {
+    True -> Ok(Nil)
+    False -> Error(DescriptionTooLong)
   }
 }
 

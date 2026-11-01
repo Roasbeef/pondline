@@ -22,6 +22,7 @@ import core/crypto/suite.{type Suite}
 import core/endpoint.{type Endpoint, Loopback, Onion}
 import core/field
 import core/id.{type Id, type Queue}
+import core/limits
 import core/tlv
 import gleam/option.{None, Some}
 import gleam/result
@@ -139,7 +140,7 @@ pub fn decoder() -> tlv.Decoder(Route) {
 /// The largest encoded route: an onion hostname, a port, a queue identifier
 /// and a capability, with TLV framing, rounded up. Far above any honest
 /// route and far below anything worth allocating for.
-pub const max_route_bytes = 512
+pub const max_route_bytes = limits.max_route_bytes
 
 /// The TLV encoding of an inbox, which holds the read and admin
 /// capabilities. The caller keeps the bytes inside a `Secret` and never

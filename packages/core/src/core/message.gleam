@@ -40,19 +40,19 @@ pub const max_payload_bytes = limits.max_body_bytes
 
 /// The longest content type, in bytes. New limit, derived from nothing in
 /// `core/limits`; flagged for the spec's §11.3 table.
-pub const max_content_type_bytes = 128
+pub const max_content_type_bytes = limits.max_content_type_bytes
 
 /// The longest human-readable description in a `Hello`, in bytes. New
 /// limit, flagged for §11.3.
-pub const max_description_bytes = 256
+pub const max_description_bytes = limits.max_description_bytes
 
 /// The most message identifiers one receipt names. New limit, flagged for
 /// §11.3.
-pub const max_receipt_ids = 64
+pub const max_receipt_ids = limits.max_receipt_ids
 
 /// The largest encoded message: the payload bound plus room for the framing,
 /// the content type and a full receipt.
-pub const max_message_bytes = 67_584
+pub const max_message_bytes = limits.max_message_bytes
 
 /// A message from a peer, authenticated by the ratchet that carried it.
 pub type Message {
@@ -296,7 +296,7 @@ pub fn decode_hello(plaintext: BitArray) -> Result(Hello, tlv.TlvError) {
 }
 
 /// The largest encoded `Hello`: a route, a description and framing.
-pub const max_hello_bytes = 1024
+pub const max_hello_bytes = limits.max_hello_bytes
 
 /// The discriminator in type 0; an unassigned number is refused.
 fn kind_field() -> tlv.Field(Kind) {
@@ -324,6 +324,19 @@ fn kind_field() -> tlv.Field(Kind) {
 /// ```
 pub fn payload_fits(payload: BitArray) -> Bool {
   bit_array.byte_size(payload) <= max_payload_bytes
+}
+
+/// Whether `description` is within `max_description_bytes`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// message.description_fits("a build agent")
+/// // -> True
+/// ```
+pub fn description_fits(description: String) -> Bool {
+  bit_array.byte_size(bit_array.from_string(description))
+  <= max_description_bytes
 }
 
 /// Whether `content_type` is within `max_content_type_bytes`.

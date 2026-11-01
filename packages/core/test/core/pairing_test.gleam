@@ -21,7 +21,12 @@ fn paired() -> world.World {
   let w = world.new(world.Correct, offer.OperatorApproves, 3)
 
   w
-  |> world.run([Setup(0), Provision(0), Setup(1), Provision(1)])
+  |> world.run([
+    Setup(0),
+    Provision(0, world.Commit),
+    Setup(1),
+    Provision(1, world.Commit),
+  ])
   |> world.settle(4)
 }
 
@@ -38,7 +43,7 @@ pub fn pairing_reaches_pending_test() {
 pub fn approval_activates_both_sides_test() {
   let w =
     paired()
-    |> world.run([Approve(0)])
+    |> world.run([Approve(0, world.Commit)])
     |> world.settle(4)
 
   assert world.violations_of(w) == []
@@ -50,9 +55,13 @@ pub fn approval_activates_both_sides_test() {
 pub fn messages_flow_both_ways_with_receipts_test() {
   let w =
     paired()
-    |> world.run([Approve(0)])
+    |> world.run([Approve(0, world.Commit)])
     |> world.settle(4)
-    |> world.run([Send(0, 1), Send(0, 2), Send(1, 3)])
+    |> world.run([
+      Send(0, 1, world.Commit),
+      Send(0, 2, world.Commit),
+      Send(1, 3, world.Commit),
+    ])
     |> world.settle(4)
 
   assert world.violations_of(w) == []
@@ -67,7 +76,12 @@ pub fn messages_flow_both_ways_with_receipts_test() {
 pub fn auto_approve_needs_no_operator_test() {
   let w =
     world.new(world.Correct, offer.AutoApprove, 3)
-    |> world.run([Setup(0), Provision(0), Setup(1), Provision(1)])
+    |> world.run([
+      Setup(0),
+      Provision(0, world.Commit),
+      Setup(1),
+      Provision(1, world.Commit),
+    ])
     |> world.settle(5)
 
   assert world.violations_of(w) == []
@@ -79,7 +93,7 @@ pub fn auto_approve_needs_no_operator_test() {
 pub fn decline_closes_both_sides_test() {
   let w =
     paired()
-    |> world.run([Decline(0)])
+    |> world.run([Decline(0, world.Commit)])
     |> world.settle(4)
 
   let assert relationship.Closed(relationship.Declined) = phase_of(w, 0)
@@ -89,8 +103,8 @@ pub fn decline_closes_both_sides_test() {
 pub fn a_second_joiner_cannot_consume_the_invitation_test() {
   let w =
     world.new(world.Correct, offer.OperatorApproves, 3)
-    |> world.run([Setup(0), Provision(0), Setup(1), Setup(2)])
-    |> world.run([Provision(1), Provision(2)])
+    |> world.run([Setup(0), Provision(0, world.Commit), Setup(1), Setup(2)])
+    |> world.run([Provision(1, world.Commit), Provision(2, world.Commit)])
     |> world.settle(5)
 
   assert world.violations_of(w) == []
@@ -114,7 +128,7 @@ pub fn a_second_joiner_cannot_consume_the_invitation_test() {
   // Approval answers the one that won: one joiner becomes active, the other
   // is never answered.
   let approved =
-    world.run(w, [Approve(0)])
+    world.run(w, [Approve(0, world.Commit)])
     |> world.settle(4)
   let active =
     list.filter([phase_of(approved, 1), phase_of(approved, 2)], fn(phase) {
@@ -131,7 +145,7 @@ pub fn send_before_approval_is_refused_test() {
   let w = paired()
 
   // The inviter is pending and the joiner is awaiting: neither may send.
-  let after = world.run(w, [Send(0, 9), Send(1, 9)])
+  let after = world.run(w, [Send(0, 9, world.Commit), Send(1, 9, world.Commit)])
 
   assert world.party(after, 0).outbox == world.party(w, 0).outbox
   assert world.party(after, 1).outbox == world.party(w, 1).outbox

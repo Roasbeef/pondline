@@ -22,6 +22,16 @@
 //// persisted state. That is why effects are derived from the records and
 //// never the reverse.
 ////
+//// One refusal deserves saying plainly. `relationship.HeldFull` makes the
+//// shell drop and acknowledge a legitimate message, because the held queue
+//// is bounded and the message cannot be stored. The sender gets no receipt
+//// for it, which is accurate: a receipt means durably stored.
+////
+//// A `Processed` record names an envelope by identifier and digest, and the
+//// shell skips an envelope only when both match, so a corrupted copy that
+//// was dropped cannot cause a good retransmit under the same identifier to
+//// be dropped as a duplicate.
+////
 //// A transition that refuses returns an error and no plan, which is how
 //// "a refusal changes nothing" is typed: there is no state to commit. For
 //// an envelope the core refused to process, the shell writes the `Processed`
@@ -196,7 +206,8 @@ pub type Direction {
   Out
 }
 
-/// A nudge for the shell after the commit. None carries data.
+/// A nudge for the shell after the commit. Only `CreateQueue` carries data:
+/// the inbox the shell must create. None carries ciphertext.
 pub type Effect {
   /// There is committed outbox work: wake the delivery scheduler.
   Transmit
@@ -204,7 +215,8 @@ pub type Effect {
   /// There is something new for the local adapter.
   WakeAdapter(contact: Id(Contact))
 
-  /// Create this queue at its mailbox. The shell re-derives the need from
+  /// Create this queue at its mailbox. Carries the inbox, with its
+  /// capabilities, because creating a queue registers them. The shell re-derives the need from
   /// the persisted state after a restart, so the nudge may be lost.
   CreateQueue(inbox: Inbox)
 }

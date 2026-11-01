@@ -66,6 +66,43 @@ pub const max_skipped_message_keys = 2000
 /// wrap and reuse a message key.
 pub const max_message_number = 4_294_967_295
 
+/// The most application messages held over budget at once, per relationship.
+/// A message past it is refused without advancing the ratchet (256).
+pub const max_held_messages = 256
+
+/// The most application messages one pairing's budget may ever grant, so a
+/// budget always fits its u64 snapshot field and a raise cannot overflow
+/// (one million).
+pub const max_budget_messages = 1_000_000
+
+/// The longest content type, in bytes (128).
+pub const max_content_type_bytes = 128
+
+/// The longest human-readable description, in bytes (256).
+pub const max_description_bytes = 256
+
+/// The most message identifiers one receipt names (64).
+pub const max_receipt_ids = 64
+
+/// The largest encoded message: the body bound plus framing, the content
+/// type and a full receipt (64 KiB + 2 KiB).
+pub const max_message_bytes = 67_584
+
+/// The largest encoded `Hello`: a route, a description and framing (1 KiB).
+pub const max_hello_bytes = 1024
+
+/// The largest invitation file: the bundle, a route and a description, with
+/// framing (4 KiB).
+pub const max_invitation_bytes = 4096
+
+/// The largest encoded route: an onion hostname, a port, a queue identifier
+/// and a capability, with framing (512 bytes).
+pub const max_route_bytes = 512
+
+/// The largest stored snapshot: a ratchet state holding a full skipped-key
+/// store, with room for the rest (1 MiB).
+pub const max_snapshot_bytes = 1_048_576
+
 /// The padded size of a ciphertext of `size` bytes: the smallest bucket that
 /// holds it. A ciphertext larger than every bucket has no padded size and
 /// must be refused before it is stored, so the caller gets `Error(Nil)`

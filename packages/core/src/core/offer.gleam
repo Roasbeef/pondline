@@ -165,6 +165,13 @@ pub type Rejection {
   /// The `Hello`'s reply endpoint is not permitted by the carrier policy.
   Carrier(error: endpoint.EndpointError)
 
+  /// The `Hello`'s reply route is this offer's own inbox route: a joiner
+  /// asking us to reply to ourselves.
+  ReplyIsOwnInbox
+
+  /// The description exceeds `message.max_description_bytes`.
+  DescriptionTooLong
+
   /// The relationship transition that follows redemption refused.
   Refused(refusal: relationship.Refusal)
 
@@ -189,6 +196,7 @@ pub fn create(
   approval: Approval,
   now: Instant,
 ) -> Result(Plan(Offer), Rejection) {
+  use Nil <- result.try(check_description(terms.description))
   use identity <- result.try(
     identity.generate(suite)
     |> result.map_error(Crypto),
@@ -218,7 +226,7 @@ pub fn create(
       invitation: file,
       inbox: terms.inbox,
       approval:,
-      budget: terms.budget,
+      budget: relationship.budget(terms.budget).granted,
     )
 
   Ok(
@@ -345,7 +353,8 @@ fn consume(
     message.decode_hello(plaintext)
     |> result.map_error(BadHello),
   )
-  use Nil <- result.try(check_names(hello.invitation, offer.id))
+  use Nil <- result.try(check_names(hello.invitation, stock.invitation.id))
+  use Nil <- result.try(check_not_ours(hello.reply, stock))
   use _admitted <- result.try(
     endpoint.admit(hello.reply.endpoint, policy)
     |> result.map_error(Carrier),
@@ -418,6 +427,22 @@ fn recognise_retry(
   {
     True -> Ok(Duplicate)
     False -> Error(AlreadyConsumed)
+  }
+}
+
+/// Refuses a `Hello` that asks us to reply to our own inbox.
+fn check_not_ours(reply: route.Route, stock: Stock) -> Result(Nil, Rejection) {
+  case reply == route.route(stock.inbox) {
+    True -> Error(ReplyIsOwnInbox)
+    False -> Ok(Nil)
+  }
+}
+
+/// Refuses a description the decoders would refuse.
+fn check_description(description: String) -> Result(Nil, Rejection) {
+  case message.description_fits(description) {
+    True -> Ok(Nil)
+    False -> Error(DescriptionTooLong)
   }
 }
 

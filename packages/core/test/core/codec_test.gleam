@@ -226,7 +226,11 @@ fn walked() -> qcheck.Generator(world.World) {
     90,
   )
   |> qcheck.map(fn(picks) {
-    world.walk(world.new(world.Correct, offer.AutoApprove, 2), picks)
+    world.walk(
+      world.new(world.Correct, offer.AutoApprove, 2),
+      picks,
+      world.Chaotic,
+    )
   })
 }
 
@@ -260,8 +264,8 @@ pub fn corrupted_snapshots_never_crash_the_decoder_test() {
   let suite = fake_suite.suite()
   let paired =
     world.new(world.Correct, offer.AutoApprove, 2)
-    |> world.run([world.Setup(0), world.Provision(0)])
-    |> world.run([world.Setup(1), world.Provision(1)])
+    |> world.run([world.Setup(0), world.Provision(0, world.Commit)])
+    |> world.run([world.Setup(1), world.Provision(1, world.Commit)])
     |> world.settle(5)
   let assert Some(blob) = world.party(paired, 0).relationship
 
@@ -295,7 +299,7 @@ pub fn an_invitation_round_trips_and_a_bad_bundle_is_refused_test() {
   let suite = fake_suite.suite()
   let w =
     world.new(world.Correct, offer.AutoApprove, 2)
-    |> world.run([world.Setup(0), world.Provision(0)])
+    |> world.run([world.Setup(0), world.Provision(0, world.Commit)])
   let assert Some(file) = w.invitation_file
   let assert Ok(invite) = invitation.decode(suite, file)
 
@@ -341,8 +345,8 @@ pub fn secrets_never_appear_in_a_rendering_test() {
   let suite = fake_suite.suite()
   let w =
     world.new(world.Correct, offer.AutoApprove, 2)
-    |> world.run([world.Setup(0), world.Provision(0)])
-    |> world.run([world.Setup(1), world.Provision(1)])
+    |> world.run([world.Setup(0), world.Provision(0, world.Commit)])
+    |> world.run([world.Setup(1), world.Provision(1, world.Commit)])
     |> world.settle(5)
   let assert Some(rel) = world.relationship(w, 0)
 

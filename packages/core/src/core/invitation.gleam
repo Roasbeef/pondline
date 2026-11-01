@@ -25,6 +25,7 @@ import core/crypto/pqxdh.{type Bundle}
 import core/crypto/suite.{type Suite}
 import core/field
 import core/id.{type Id, type Invitation as InvitationKind}
+import core/limits
 import core/message
 import core/route.{type Route}
 import core/secret.{type Secret}
@@ -37,7 +38,7 @@ pub const format_version = 1
 
 /// The largest invitation file: the bundle, a route and a description, with
 /// framing, rounded up. New limit, flagged for §11.3.
-pub const max_invitation_bytes = 4096
+pub const max_invitation_bytes = limits.max_invitation_bytes
 
 /// A pairing offer as the joiner receives it.
 pub type Invitation {
