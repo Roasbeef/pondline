@@ -27,9 +27,12 @@ process.
 - `mailbox/http`: `start(node, Config(interface, port))` returns a `Server`
   with the bound port (port 0 is ephemeral); the mist handler, routing,
   bounded body read and one log line per request.
-- `mailbox` (`gleam run -m mailbox -- ...`): `main` and the two subcommands,
-  `serve --db <path> --port <n>` (prints `listening 127.0.0.1:<port>`, runs
-  until stopped) and `grant --db <path> --queues <n> --out <file>` (writes
+- `mailbox` (`gleam run -m mailbox -- ...`): `main`, `parse` and the two
+  subcommands, `serve --db <path> --port <n> [--tor-bin <path> --tor-state
+  <dir>]` (prints `listening 127.0.0.1:<port>`; with the Tor options it then
+  starts the sidecar, bootstraps, hosts an onion service named `mailbox`
+  that forwards to that port, and prints `onion <host>.onion:80`, the
+  address a daemon dials; runs until stopped) and `grant --db <path> --queues <n> --out <file>` (writes
   the 32-byte provisioning capability to a new 0600 file, prints the path
   only, never overwrites). Bad arguments print one line and exit 1.
 - `mailbox/internal/ffi_system`: the wall clock, a monotonic clock for
@@ -42,9 +45,10 @@ process.
 Depends on `core` (protocol, ids, capabilities, envelopes, limits, time)
 and `primitives` (`sha256`, `constant_time_equal`), plus `sqlight` (esqlite,
 Apache-2.0), `gleam_otp` and `gleam_erlang`, `mist` 6.0.3 (with `glisten`, Apache-2.0),
-`gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. Nothing depends on it
-as a library; the tor sidecar forwards the onion service to the port it
-prints.
+`gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. and `tor` (only to host the
+onion service; the sidecar forwards every stream on any virtual port to the
+loopback port, so 80 is just the conventional value the daemon dials).
+Nothing depends on it as a library.
 
 ## Traffic
 
@@ -88,6 +92,13 @@ prints.
   data. A request logs only method, path, status, response kind and duration
   (spec §12.4); `grant` never prints the capability, and writes it to a file
   created exclusively and restricted to 0600 before the bytes go in.
+- The Tor options are given both or neither. The onion service starts only
+  after the HTTP server is listening, the `onion` line follows the
+  `listening` line, and the sidecar is linked to the serving process, so it
+  dies with it. The Tor state directory holds the service key and its path
+  must be short (a Unix socket lives in it). The service exists before Tor
+  can reach it; a client retries (ADR-001). The onion path is tested only
+  with `REEDWIRE_TOR_NETWORK=1`.
 - The server binds `127.0.0.1` by default and the binary offers no other
   interface.
 - Known gaps: no TLS, auth headers, admin API or metrics; no per-connection

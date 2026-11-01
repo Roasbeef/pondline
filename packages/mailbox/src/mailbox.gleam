@@ -2,10 +2,16 @@
 ////
 //// Run it with `gleam run -m mailbox -- <subcommand> ...`:
 ////
-//// - `serve --db <path> --port <n>` opens the database, starts the node and
-////   the HTTP server on `127.0.0.1`, prints `listening 127.0.0.1:<port>` on
-////   stdout, and runs until the VM is stopped. Port 0 asks the system for a
-////   free port, and the line names the one it chose.
+//// - `serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>]`
+////   opens the database, starts the node and the HTTP server on
+////   `127.0.0.1`, prints `listening 127.0.0.1:<port>` on stdout, and runs
+////   until the VM is stopped. Port 0 asks the system for a free port, and
+////   the line names the one it chose. With the two Tor options it then
+////   starts the `reedwire-tor` sidecar, bootstraps it, hosts an onion
+////   service that forwards to that port, and prints one more line,
+////   `onion <host>.onion:80`, which is the address a daemon dials. The Tor
+////   state directory holds the service's key, and its path must be short
+////   enough for a Unix socket.
 //// - `grant --db <path> --queues <n> --out <file>` creates a provisioning
 ////   grant allowing `n` queues and writes its 32-byte capability to `file`
 ////   with mode 0600. It refuses to overwrite a file and prints only the
@@ -31,6 +37,7 @@ import gleam/erlang/process
 import gleam/int
 import gleam/io
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import mailbox/http
 import mailbox/internal/ffi_system
@@ -39,6 +46,8 @@ import mailbox/service
 import mailbox/store
 import primitives
 import simplifile
+import tor
+import tor/address
 
 /// The interface the server binds. It is not configurable.
 const loopback = "127.0.0.1"
@@ -46,9 +55,30 @@ const loopback = "127.0.0.1"
 /// Milliseconds between expiry sweeps of a running node.
 const sweep_period_ms = 60_000
 
+/// The virtual port of the onion service. The sidecar forwards a stream
+/// on any virtual port to the local port, so the value only has to be one
+/// the daemon dials; 80 is the conventional one.
+const onion_port = 80
+
+/// How long the sidecar may take to bootstrap, in milliseconds.
+const bootstrap_timeout_ms = 180_000
+
+/// How long the sidecar may take to create the onion service.
+const host_timeout_ms = 120_000
+
+/// Where the Tor sidecar lives and keeps its state.
+pub type TorHosting {
+  TorHosting(
+    /// The `reedwire-tor` binary.
+    binary: String,
+    /// The sidecar's state directory, which holds the service key.
+    state_dir: String,
+  )
+}
+
 /// A parsed command line.
-type Command {
-  Serve(db: String, port: Int)
+pub type Command {
+  Serve(db: String, port: Int, tor: Option(TorHosting))
   Grant(db: String, queues: Int, out: String)
 }
 
@@ -71,16 +101,28 @@ pub fn main() -> Nil {
 }
 
 /// Turns arguments into a command, or says what is wrong with them.
-fn parse(arguments: List(String)) -> Result(Command, String) {
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.parse(["serve", "--db", "m.db", "--port", "0"])
+/// // -> Ok(Serve("m.db", 0, None))
+/// mailbox.parse(["serve", "--db", "m.db", "--port", "0", "--tor-bin", "t"])
+/// // -> Error("--tor-bin and --tor-state go together")
+/// ```
+pub fn parse(arguments: List(String)) -> Result(Command, String) {
   // The first word names the subcommand; its options are checked against
   // that subcommand's own list.
   case arguments {
     ["serve", ..rest] -> {
-      use options <- result.try(pairs(rest, ["--db", "--port"]))
+      use options <- result.try(
+        pairs(rest, ["--db", "--port", "--tor-bin", "--tor-state"]),
+      )
       use db <- result.try(required(options, "--db"))
       use port <- result.try(number(options, "--port", 0, 65_535))
+      use tor <- result.try(tor_hosting(options))
 
-      Ok(Serve(db:, port:))
+      Ok(Serve(db:, port:, tor:))
     }
 
     ["grant", ..rest] -> {
@@ -94,8 +136,22 @@ fn parse(arguments: List(String)) -> Result(Command, String) {
 
     _ ->
       Error(
-        "usage: serve --db <path> --port <n> | grant --db <path> --queues <n> --out <file>",
+        "usage: serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>] | grant --db <path> --queues <n> --out <file>",
       )
+  }
+}
+
+/// The Tor options, which are given both or neither: a binary without a
+/// state directory has nowhere to keep the service key.
+fn tor_hosting(
+  options: Dict(String, String),
+) -> Result(Option(TorHosting), String) {
+  // Each option is present or absent, so there are four combinations and
+  // only two of them are meaningful.
+  case dict.get(options, "--tor-bin"), dict.get(options, "--tor-state") {
+    Error(Nil), Error(Nil) -> Ok(None)
+    Ok(binary), Ok(state_dir) -> Ok(Some(TorHosting(binary:, state_dir:)))
+    _, _ -> Error("--tor-bin and --tor-state go together")
   }
 }
 
@@ -165,13 +221,17 @@ fn number(
 /// Executes a command.
 fn run(command: Command) -> Result(Nil, String) {
   case command {
-    Serve(db:, port:) -> serve(db, port)
+    Serve(db:, port:, tor:) -> serve(db, port, tor)
     Grant(db:, queues:, out:) -> grant(db, queues, out)
   }
 }
 
 /// Starts the node and the server, announces the port and never returns.
-fn serve(db: String, port: Int) -> Result(Nil, String) {
+fn serve(
+  db: String,
+  port: Int,
+  hosting: Option(TorHosting),
+) -> Result(Nil, String) {
   let started =
     node.start(node.Config(
       path: db,
@@ -192,9 +252,53 @@ fn serve(db: String, port: Int) -> Result(Nil, String) {
   )
 
   io.println("listening " <> loopback <> ":" <> int.to_string(server.port))
+
+  // The onion line follows the listening line, so a reader that stops at
+  // the first line still gets the port it needs.
+  use Nil <- result.try(case hosting {
+    None -> Ok(Nil)
+
+    Some(hosting) -> {
+      use host <- result.map(host_onion(hosting, server.port))
+      io.println("onion " <> host)
+    }
+  })
+
   process.sleep_forever()
 
   Ok(Nil)
+}
+
+/// Starts the Tor sidecar, bootstraps it and hosts an onion service that
+/// forwards to `127.0.0.1:local_port`. Returns the address a daemon dials,
+/// `<host>.onion:80`. The sidecar is linked to the calling process, so it
+/// stops when the caller does. The service is created before Tor can reach
+/// it, so a client may need to retry for a while after this returns.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.host_onion(TorHosting("./reedwire-tor", "/tmp/mb-tor"), 8080)
+/// // -> Ok("abc...xyz.onion:80")
+/// ```
+pub fn host_onion(
+  hosting: TorHosting,
+  local_port: Int,
+) -> Result(String, String) {
+  use started <- result.try(
+    tor.start(tor.config(hosting.binary, hosting.state_dir))
+    |> result.replace_error("the Tor sidecar could not start"),
+  )
+  use Nil <- result.try(
+    tor.bootstrap(started, bootstrap_timeout_ms)
+    |> result.replace_error("Tor did not bootstrap"),
+  )
+  use onion <- result.try(
+    tor.host_onion(started, "mailbox", local_port, host_timeout_ms)
+    |> result.replace_error("the onion service could not be created"),
+  )
+
+  Ok(address.onion_host(onion.address) <> ":" <> int.to_string(onion_port))
 }
 
 /// Creates a grant allowing `queues` queues and stores its capability in a

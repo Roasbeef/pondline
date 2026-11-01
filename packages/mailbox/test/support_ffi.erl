@@ -1,5 +1,6 @@
 -module(support_ffi).
--export([millisecond/0, http_exchange/3, file_mode/1]).
+-export([millisecond/0, http_exchange/3, file_mode/1, getenv/1,
+         make_scratch_dir/0, remove_dir/1]).
 
 %% The atom `millisecond`, which Gleam cannot build without making an atom.
 millisecond() -> millisecond.
@@ -48,3 +49,21 @@ split_header(Line) ->
 file_mode(Path) ->
     {ok, Info} = file:read_file_info(Path),
     element(8, Info) band 8#777.
+
+%% The value of an environment variable, if it is set.
+getenv(Name) ->
+    case os:getenv(binary_to_list(Name)) of
+        false -> {error, nil};
+        Value -> {ok, list_to_binary(Value)}
+    end.
+
+%% A short path under /tmp: a unix socket path is limited to about 100
+%% bytes, and the platform temp directory can already use most of that.
+make_scratch_dir() ->
+    Dir = "/tmp/rwmb-" ++ integer_to_list(erlang:unique_integer([positive])),
+    ok = file:make_dir(Dir),
+    list_to_binary(Dir).
+
+remove_dir(Dir) ->
+    _ = file:del_dir_r(binary_to_list(Dir)),
+    nil.
