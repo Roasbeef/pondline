@@ -3,7 +3,7 @@
 //// truth; run `make gen-sql` after changing one.
 
 /// The schema version the migrations reach.
-pub const version = 1
+pub const version = 2
 
 /// The migrations in order: entry `n` (from zero) is `sql/` file number
 /// `n + 1` and moves a database from version `n` to version `n + 1`.
@@ -47,5 +47,22 @@ CREATE TABLE tombstones (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX tombstones_by_deadline ON tombstones (deadline);
+",
+  "-- Sealed invitations held for tickets (ADR-009). A blob is named by its
+-- locator, charged to the queue that stored it, and goes with that queue
+-- through the foreign key's cascade. The retrieve capability is kept only
+-- as its SHA-256 hash, like every other capability in this file.
+
+CREATE TABLE blobs (
+  blob_id BLOB NOT NULL PRIMARY KEY,
+  queue_id BLOB NOT NULL REFERENCES queues(queue_id) ON DELETE CASCADE,
+  retrieve_hash BLOB NOT NULL,
+  digest BLOB NOT NULL,
+  deadline INTEGER NOT NULL,
+  size INTEGER NOT NULL,
+  sealed BLOB NOT NULL
+) STRICT;
+
+CREATE INDEX blobs_by_deadline ON blobs (deadline);
 ",
 ]
