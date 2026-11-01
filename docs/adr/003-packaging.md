@@ -212,3 +212,139 @@ Assumed, not tested:
   library rewrite, or if the release grows large enough that dropping `ssl`
   (by configuring mist without it) is worth the effort; that would save
   about 7 MB.
+
+## Addendum (2026-11-01): the daemon release, install, and build identity
+
+### One tree, two programs
+
+The release is now `build/release/<platform>/reedwire/`, and it carries
+the daemon beside the mailbox: `bin/reedwire` (the CLI and `reedwire
+daemon`) and `bin/mailbox`, over one ERTS, one bundled libcrypto and one
+`reedwire-tor`. `scripts/release.sh` exports both Gleam shipments and
+merges them into one `lib/`; it fails the build if the two resolved any
+package to different versions, and if the two packages' `gleam.toml`
+versions differ. The assembly steps of the original decision are
+unchanged and now run once, as shared functions.
+
+One tree rather than one per program, because nearly all the weight is
+shared: of 47 MB, the ERTS (5 MB), the OTP libraries, libcrypto and the
+16 MB sidecar serve both. What only the mailbox needs is about 7 MB (mist
+and its packages, and `ssl`, `public_key` and `asn1`, which mist starts),
+and what only the daemon needs is about 0.5 MB. The versions already
+have to agree, since the daemon's tests run a real mailbox in one VM, and
+one tree is one OpenSSL to audit and replace. The cost is that a host
+that runs only one program carries the other's code, unused. Revisit if
+the mailbox becomes a separately versioned service.
+
+Layout additions:
+
+```
+reedwire/
+  BUILD                  version=, commit=, platform= (what install.sh and the smoke test read)
+  install.sh             the installer, so an unpacked tarball installs itself
+  bin/reedwire           launcher for the daemon package's `reedwire` module
+  bin/mailbox            launcher for the mailbox
+  bin/no_dot_erlang.boot replaces start_clean.boot
+```
+
+### Launcher changes
+
+- **One boot, not two.** The OpenSSL floor is checked inside the
+  program's own VM, as the first expression of its `-eval`, instead of in
+  a separate VM before it. `reedwire --version` takes 0.10 s from exec to
+  exit, where the old launcher spent 0.15 to 0.2 s on the check alone. A
+  crypto library that fails to load is refused with exit 78 and one
+  line, where it used to crash the boot. Checked by raising the floor to
+  3.7 (`bundled crypto is OpenSSL 3.6.3 ...; OpenSSL >= 3.5 is required`,
+  exit 78) and by moving the bundled dylib away (`the bundled crypto
+  library did not load`, exit 78, no crash dump).
+- **`no_dot_erlang.boot`.** `start_clean` runs the user's `~/.erlang`. A
+  CLI whose standard output can be a raw payload must not run code it did
+  not ship.
+- **Host Erlang variables removed.** `ERL_LIBS` would put foreign code
+  ahead of the release's on the code path; `ERL_FLAGS`, `ERL_AFLAGS` and
+  `ERL_ZFLAGS` add emulator arguments. The launcher unsets all four.
+- **No crash dumps by default.** A dump is every process heap, keys and
+  credentials included, written to the working directory. The launcher
+  sets `ERL_CRASH_DUMP_SECONDS=0` unless the operator set it.
+- **`-noinput`** for both programs, so `reedwire send --stdin`, which
+  reads `/dev/stdin` directly, is the only reader of standard input.
+
+### Build identity
+
+The version is the packages' `gleam.toml` version. The commit is
+`scripts/build-commit.sh`: `git rev-parse HEAD`, with `-dirty` appended
+when a tracked file differs from it (untracked files are not build
+inputs), or `unknown` outside a git tree. `release.sh` writes both into
+each launcher, which exports them as `REEDWIRE_BUILD_VERSION` and
+`REEDWIRE_BUILD_COMMIT`, and into `BUILD`. They are baked in rather than
+read at run time because a release runs on machines with no checkout.
+`daemon/build` and `mailbox/build` read them back (two small copies,
+since the packages share nothing but the pure `core`, which reads no
+environment); `reedwire --version` prints `reedwire 0.1.0 (commit <sha>)`,
+`mailbox --version` the same with `mailbox`, and `health` gains `version`
+and `commit` fields. A build run from source reports `dev` and `unknown`.
+
+### Install layout (`make install`, `scripts/install.sh`)
+
+```
+$PREFIX/bin/reedwire          -> ../lib/reedwire/current/bin/reedwire
+$PREFIX/bin/reedwire-mailbox  -> ../lib/reedwire/current/bin/mailbox
+$PREFIX/lib/reedwire/current  -> 0.1.0-<commit12>[-dirty]-darwin-arm64
+$PREFIX/lib/reedwire/0.1.0-<commit12>[-dirty]-darwin-arm64/   the release tree
+$PREFIX/lib/reedwire/.reedwire-install                        ownership marker
+```
+
+`PREFIX` defaults to `$HOME/.local`. The commands are relative symlinks:
+the launchers resolve their own links to find the tree, so no wrapper is
+generated and nothing records the prefix. The tree is copied under a
+staging name and renamed into place, and `current` is switched by a
+rename. A tree a running process uses (its physical path is on the VM's
+command line) is never replaced or pruned, and `uninstall` refuses while
+one runs. The script refuses to replace a `bin/` entry that is not
+exactly its own link, or a `lib/reedwire` without its marker, and checks
+both before changing anything. Reinstalling a clean commit keeps its
+tree: a rebuild is not byte-identical (the sqlite NIF is re-linked, and
+the bundled liblzma is whatever Homebrew has that day; it changed between
+two builds minutes apart while this was written). State directories and
+mailbox databases are never under the prefix and never touched.
+
+`make dist` writes `dist/reedwire-<version>-<platform>.tar.gz` (25 MB,
+688 entries) and a `.sha256` beside it; the archive unpacks into one
+directory of that name, whose `install.sh` installs it.
+
+### Evidence (macOS arm64, OTP 29.0.5, OpenSSL 3.6.3)
+
+`make release release-smoke` builds the tree in about 22 s with the
+sidecar already built, then runs `scripts/release-smoke.sh`: everything
+under `env -i PATH=/usr/bin:/bin`, the tree free of `parrot`,
+`gleam_httpc` and `inets`, both `--version`s equal to `BUILD`, the sidecar
+started and stopped, an ML-KEM-1024 round trip in the bundled VM, a
+mailbox granted and served on loopback, two `reedwire daemon --carrier
+loopback`, `health` reporting the identity, invite, accept and approve,
+one payload sent from stdin and received byte for byte, and all three VMs
+stopped by SIGTERM, with no process left that names the run's directory.
+It takes 3 to 4 s, bounded by `SMOKE_TIMEOUT` (180 s). The same script
+passed with `--installed <scratch prefix>` against the launchers
+`make install` put there, and with `--release` against an unpacked
+`make dist` tarball installed by its own `install.sh`. `scripts/demo.sh
+--carrier=loopback --release <tree>` passed every check, sandbox probes
+included, in 15 s. `make uninstall` left the prefix empty.
+
+Size: 47 MB in 614 files (`bin/` 16 MB, `lib/` 25 MB, ERTS 5 MB); the
+original mailbox-only tree was 46 MB.
+
+### Linux
+
+`release.sh` now has a Linux branch, selected by `uname`, that follows the
+recipe above: `ldd` for dependencies, the bundled `libcrypto.so.3` beside
+`crypto.so` with `patchelf --set-rpath '$ORIGIN'`, non-system sidecar
+libraries in `bin/lib` with `$ORIGIN/lib`, `/proc/<pid>/maps` for the
+one-libcrypto proof, and a leak check that treats only `/lib`, `/lib64`,
+`/usr/lib` and `/usr/lib64` (never OpenSSL) as system. **It has never run.**
+The script says so on every Linux build and needs `patchelf`. The first
+Linux build must pass `make release-smoke` before anything from it is
+trusted; the glibc floor of `beam.smp` and the sidecar is still unchecked.
+`install.sh` and `release-smoke.sh` use POSIX tools plus `mv -T` or
+`mv -h`, whichever the platform's `mv` accepts, and are expected to work
+there unchanged; that is also unverified.

@@ -12,7 +12,16 @@ make demo CARRIER=tor                       # the same, through make
 ```
 
 Options: `--skip-build` reuses the shipments from an earlier run, `--keep`
-leaves the temporary workspace (logs, databases) for inspection. The script
+leaves the temporary workspace (logs, databases) for inspection.
+
+`--release DIR` runs the demo from a release tree instead of the
+shipments, with nothing built: `build/release/<platform>/reedwire` after
+`make release`, an unpacked `make dist` tarball, or an installed copy
+(`--release ~/.local/lib/reedwire/current` after `make install`). Every
+program, the agents' CLI included, then runs on the tree's own Erlang
+runtime and OpenSSL, the Tor sidecar is the tree's, and the sandbox is
+given the tree in place of the host's Erlang. With `--carrier=loopback`
+it passes every check in about 15 s. The script
 needs `erl`, `gleam`, `jq`, `shasum` and `sandbox-exec` (all present on a
 recent macOS with Homebrew's Erlang), and for `--carrier=tor` the sidecar
 (`make sidecar`, built for you). Run it outside any other sandbox: it opens
