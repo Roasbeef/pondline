@@ -26,8 +26,11 @@
 //// Duplicates (a redelivered envelope, a mailbox that replays a ciphertext
 //// under a new envelope identifier), reordering (a fetch may pick any
 //// envelope), drops (a transmit may never happen), corruption (a flipped
-//// byte in a stored envelope), time passing (invitations and messages
-//// expire) and crashes (a computed plan is discarded) are all steps.
+//// byte in a stored envelope), loss (a mailbox that drops an envelope it
+//// already answered `Appended` for), time passing (invitations and messages
+//// expire, and the mailbox discards envelopes past their retention
+//// deadline, as its sweeper does) and crashes (a computed plan is
+//// discarded) are all steps.
 ////
 //// Each fault class has a bit in a mask (`Fault`), and a schedule offers a
 //// class only when its bit is set, so a swarm of schedules each enables a
@@ -38,23 +41,36 @@
 ////
 //// An outbox row has a status. The scheduler stops resending a row once the
 //// mailbox answered it (`Appended`), and the mailbox keeps a tombstone for
-//// every acknowledged envelope, so a retransmit after an acknowledgement is
+//// every acknowledged envelope, so a resend after an acknowledgement is
 //// answered and not stored again. A transmit whose reply is lost leaves the
 //// row `Pending`, so it is retried and the mailbox answers from what it
 //// already holds. Without both rules the settle would redeliver a message a
 //// corrupting mailbox had spoiled, and a lost message would look healed.
 ////
+//// What recovers such a message is end-to-end retransmission, as the
+//// daemon does it (`core/retransmit`, ADR-006). A row the mailbox answered
+//// is given a `retransmit_at` from `retransmit.due_at`; once the clock
+//// reaches it and no peer receipt has cleared it, the scheduler's
+//// `Retransmit` step commits a copy of the row's bytes under a fresh
+//// envelope identifier, and the copy is transmitted like any other row.
+//// The receiving shell looks a ratchet message's fingerprint up first and
+//// answers a known one with `relationship.resend_receipt`, so the copy is
+//// receipted and never delivered twice.
+////
 //// ## The heal phase
 ////
 //// `heal` turns every fault off and lets time pass: it pumps to a fixed
 //// point, lets the operator approve what waits for approval, raises the
-//// budget until nothing is held, and pumps again. The audits that follow
+//// budget until nothing is held, and pumps again; then, while any row is
+//// waiting for its receipt window, it moves the clock to the earliest
+//// `retransmit_at` and does it all again. The audits that follow
 //// (`audit_quiescence`, `audit_delivery`, `audit_close`, `audit_release`)
 //// check what must be true once nothing is left to do. Where a state is
-//// legitimately undeliverable (the receiver closed, the message expired) or
-//// is a known policy gap (the mailbox corrupted the only copy), the audit
-//// records a named, counted *excuse* (`excuses_of`) instead of passing
-//// silently, so a swarm can report how often each one was used.
+//// legitimately undeliverable (the receiver closed, the message expired),
+//// the audit records a named, counted *excuse* (`excuses_of`) instead of
+//// passing silently, so a swarm can report how often each one was used. A
+//// mailbox that corrupts or loses a stored envelope is no longer one of
+//// them: the retransmit recovers it.
 
 import core/crypto/fake_suite
 import core/crypto/suite.{type Suite}
@@ -63,9 +79,11 @@ import core/envelope.{type Padded}
 import core/frame
 import core/id
 import core/invitation
+import core/limits
 import core/offer.{type Approval, type Offer}
 import core/plan
 import core/relationship.{type Relationship}
+import core/retransmit
 import core/route
 import core/secret
 import core/snapshot
@@ -111,6 +129,14 @@ pub type Step {
   /// A transmit whose reply is lost: the mailbox appends the envelope and
   /// the scheduler never learns it did, so the row stays `Pending`.
   TransmitLost(Int, Int)
+
+  /// The scheduler sends a stored row again whose receipt window passed:
+  /// a copy of its bytes under a fresh envelope identifier.
+  Retransmit(Int, Int)
+
+  /// The mailbox loses a stored envelope it already answered for, leaving
+  /// no tombstone.
+  Lose(Int, Int)
 }
 
 /// The fault classes a schedule can switch on, one bit each in a mask.
@@ -138,6 +164,9 @@ pub type Fault {
 
   /// A transmit whose reply is lost.
   LostReplies
+
+  /// A stored envelope the mailbox loses after answering for it.
+  Loss
 }
 
 /// Whether the mailbox has answered a row's append.
@@ -156,6 +185,13 @@ pub type Row {
     padded: Padded,
     kind: plan.OutboundKind,
     status: RowStatus,
+    // The retention deadline, which for a message is its expiry.
+    deadline: Int,
+    // How many copies of these bytes were committed before this row.
+    retransmits: Int,
+    // When the row is due to be sent again, once the mailbox answered it
+    // and while no peer receipt has cleared it.
+    retransmit_at: Option(Int),
   )
 }
 
@@ -166,7 +202,7 @@ pub type Sent {
 }
 
 pub type Stored {
-  Stored(envelope: BitArray, padded: Padded, digest: BitArray)
+  Stored(envelope: BitArray, padded: Padded, digest: BitArray, deadline: Int)
 }
 
 pub type Party {
@@ -185,6 +221,9 @@ pub type Party {
     sent_messages: List(Sent),
     // The peer's queue and envelope of each `Close` committed from `Active`.
     closes: List(#(BitArray, BitArray)),
+    // The fingerprint of every ciphertext a message was stored from, by
+    // digest: the receiving shell's duplicate table.
+    fingerprints: Dict(BitArray, plan.Fingerprint),
   )
 }
 
@@ -246,6 +285,7 @@ pub fn new_seeded(
       headers: dict.new(),
       sent_messages: [],
       closes: [],
+      fingerprints: dict.new(),
     )
 
   World(
@@ -380,12 +420,26 @@ pub fn step(world: World, next: Step) -> World {
     Expire(number) -> expire(world, number)
     Transmit(number, index) -> transmit(world, number, index, Heard)
     TransmitLost(number, index) -> transmit(world, number, index, Lost)
+    Retransmit(number, index) -> retransmit_row(world, number, index)
     Fetch(number, index, fate) -> fetch(world, number, index, fate)
     Ack(number) -> ack(world, number)
     Corrupt(number, index) -> corrupt(world, number, index)
     Replay(number, index) -> replay(world, number, index)
-    Tick(seconds) -> World(..world, now: world.now + seconds)
+    Lose(number, index) -> lose(world, number, index)
+    Tick(seconds) -> sweep(World(..world, now: world.now + seconds))
   }
+}
+
+/// The mailbox's sweeper: an envelope past its retention deadline is
+/// discarded unfetched and leaves no tombstone, as `mailbox/store.sweep`
+/// does.
+fn sweep(world: World) -> World {
+  World(
+    ..world,
+    mailbox: dict.map_values(world.mailbox, fn(_queue, stored) {
+      list.filter(stored, fn(item) { item.deadline >= world.now })
+    }),
+  )
 }
 
 fn setup(world: World, number: Int) -> World {
@@ -740,6 +794,7 @@ fn wire_send(
   queue: BitArray,
   envelope: BitArray,
   padded: Padded,
+  deadline: Int,
 ) -> #(World, Answer) {
   let bytes = envelope.to_wire(padded)
   let committed =
@@ -769,7 +824,12 @@ fn wire_send(
               world.mailbox,
               queue,
               list.append(stored, [
-                Stored(envelope:, padded:, digest: digest(world, padded)),
+                Stored(
+                  envelope:,
+                  padded:,
+                  digest: digest(world, padded),
+                  deadline:,
+                ),
               ]),
             ),
           ),
@@ -788,7 +848,7 @@ fn transmit(world: World, number: Int, index: Int, reply: Reply) -> World {
     Some(Row(status: Appended, ..)) -> world
     Some(row) -> {
       let #(world, answer) =
-        wire_send(world, row.queue, row.envelope, row.padded)
+        wire_send(world, row.queue, row.envelope, row.padded, row.deadline)
 
       case answer, reply {
         Answered, Heard -> mark_appended(world, number, row.envelope)
@@ -798,6 +858,8 @@ fn transmit(world: World, number: Int, index: Int, reply: Reply) -> World {
   }
 }
 
+/// The scheduler records the mailbox's answer, and with it when the row is
+/// due to be sent again if no receipt comes (`retransmit.due_at`).
 fn mark_appended(world: World, number: Int, envelope: BitArray) -> World {
   let mine = party(world, number)
 
@@ -808,12 +870,127 @@ fn mark_appended(world: World, number: Int, envelope: BitArray) -> World {
       ..mine,
       outbox: list.map(mine.outbox, fn(row) {
         case row.envelope == envelope {
-          True -> Row(..row, status: Appended)
+          True ->
+            Row(
+              ..row,
+              status: Appended,
+              retransmit_at: retransmit.due_at(
+                  limits.receipt_window_seconds,
+                  row.kind,
+                  instant(world),
+                  row.retransmits,
+                  Instant(row.deadline),
+                )
+                |> option.map(fn(due) { due.unix_seconds }),
+            )
           False -> row
         }
       }),
     ),
   )
+}
+
+/// The scheduler sends a row again whose receipt window has passed: the
+/// core decides against the relationship as it is now, and a copy of the
+/// committed bytes is committed under the fresh identifier it chose. The
+/// replaced row is never sent again. A refusal ends the row's schedule,
+/// except a misbehaving randomness source, which leaves it due.
+fn retransmit_row(world: World, number: Int, index: Int) -> World {
+  let mine = party(world, number)
+
+  // Only a due row costs a snapshot decode; the pump asks about every row
+  // on every round.
+  case at(mine.outbox, index) {
+    Some(Row(retransmit_at: Some(due), ..) as row) if due <= world.now ->
+      retransmit_due(world, number, mine, row)
+    Some(_) | None -> world
+  }
+}
+
+fn retransmit_due(world: World, number: Int, mine: Party, row: Row) -> World {
+  case relationship(world, number) {
+    Some(rel) -> {
+      let assert Ok(envelope_id) = id.from_bytes(row.envelope)
+      let unreceipted =
+        retransmit.Unreceipted(
+          envelope: envelope_id,
+          kind: row.kind,
+          deadline: Instant(row.deadline),
+          retransmits: row.retransmits,
+        )
+
+      case
+        retransmit.retransmit(world.suite, rel, unreceipted, instant(world))
+      {
+        Ok(made) -> {
+          let copy =
+            Row(
+              ..row,
+              envelope: id.to_bytes(made.envelope),
+              status: Pending,
+              retransmits: made.retransmits,
+              retransmit_at: None,
+            )
+          let settled = settle_row(mine.outbox, row.envelope)
+
+          put_party(
+            world,
+            number,
+            Party(..mine, outbox: list.append(settled, [copy])),
+          )
+          |> event("retransmit")
+        }
+
+        Error(retransmit.NoRandomness) -> world
+
+        Error(_) ->
+          put_party(
+            world,
+            number,
+            Party(..mine, outbox: settle_row(mine.outbox, row.envelope)),
+          )
+      }
+    }
+    None -> world
+  }
+}
+
+/// The outbox with one row's retransmit schedule ended.
+fn settle_row(outbox: List(Row), envelope: BitArray) -> List(Row) {
+  list.map(outbox, fn(row) {
+    case row.envelope == envelope {
+      True -> Row(..row, retransmit_at: None)
+      False -> row
+    }
+  })
+}
+
+/// A mailbox that answered `Appended` and then lost the envelope: it is gone
+/// unfetched, with no tombstone.
+fn lose(world: World, number: Int, index: Int) -> World {
+  case party(world, number).queue {
+    None -> world
+    Some(queue) -> {
+      let stored = case dict.get(world.mailbox, queue) {
+        Ok(stored) -> stored
+        Error(Nil) -> []
+      }
+
+      case at(stored, index) {
+        None -> world
+        Some(item) ->
+          World(
+            ..world,
+            mailbox: dict.insert(
+              world.mailbox,
+              queue,
+              list.filter(stored, fn(other) { other.envelope != item.envelope }),
+            ),
+          )
+          |> event("lost-in-mailbox")
+      }
+    }
+  }
 }
 
 fn digest(world: World, padded: Padded) -> BitArray {
@@ -1028,7 +1205,39 @@ fn process(
     Commit ->
       commit(world, number, handled)
       |> note_expired(world, number, handled)
+      |> note_recovery(item, handled)
   }
+}
+
+/// Notes the retransmit paths the reach tests count, once they commit: a
+/// message delivered from a copy rather than the envelope it was first
+/// committed in, and a receipt regenerated for a known ciphertext.
+fn note_recovery(world: World, item: Stored, handled: Handled) -> World {
+  list.fold(handled.records, world, fn(world, record) {
+    case record {
+      plan.Delivered(message:, ..) ->
+        case first_envelope(world, id.to_bytes(message)) {
+          Some(first) if first != item.envelope ->
+            event(world, "delivered-by-retransmit")
+          Some(_) | None -> world
+        }
+
+      plan.Remembered(fingerprint:, ..) if fingerprint.receipts > 1 ->
+        event(world, "receipt-regenerated")
+
+      _ -> world
+    }
+  })
+}
+
+/// The envelope an application message was first committed in, by any
+/// party.
+fn first_envelope(world: World, message: BitArray) -> Option(BitArray) {
+  dict.values(world.parties)
+  |> list.flat_map(fn(mine) { mine.sent_messages })
+  |> list.find(fn(sent) { sent.message == message })
+  |> option.from_result
+  |> option.map(fn(sent) { sent.envelope })
 }
 
 /// An authenticated message that changes nothing but the session, in an
@@ -1052,12 +1261,19 @@ fn note_expired(
 fn send_rows(world: World, records: List(plan.Record)) -> World {
   list.fold(records, world, fn(world, record) {
     case record {
-      plan.Outbound(envelope: envelope_id, route: target, padded:, ..) ->
+      plan.Outbound(
+        envelope: envelope_id,
+        route: target,
+        padded:,
+        retention_deadline:,
+        ..,
+      ) ->
         wire_send(
           world,
           id.to_bytes(target.queue),
           id.to_bytes(envelope_id),
           padded,
+          retention_deadline.unix_seconds,
         ).0
       _ -> world
     }
@@ -1109,10 +1325,30 @@ fn handle(
     Ok(frame.Ratchet(bytes)) ->
       case relationship(world, number) {
         None -> dropped
-        Some(rel) ->
-          case
-            relationship.receive(world.suite, rel, instant(world), ref, bytes)
-          {
+        Some(rel) -> {
+          let known =
+            dict.get(
+              party(world, number).fingerprints,
+              relationship.fingerprint(world.suite, bytes),
+            )
+
+          // A ciphertext a message was already stored from is answered with
+          // its receipt again and never decrypted; anything else goes
+          // through the session.
+          let outcome = case known {
+            Ok(fingerprint) ->
+              relationship.resend_receipt(
+                world.suite,
+                rel,
+                instant(world),
+                ref,
+                fingerprint,
+              )
+            Error(Nil) ->
+              relationship.receive(world.suite, rel, instant(world), ref, bytes)
+          }
+
+          case outcome {
             Ok(made) ->
               Handled(
                 relationship: Some(made.state),
@@ -1122,6 +1358,7 @@ fn handle(
               )
             Error(_) -> dropped
           }
+        }
       }
   }
 }
@@ -1193,7 +1430,9 @@ fn check_phase(
   }
 }
 
-/// A receipt names only messages this party sent, and names each once.
+/// A receipt names only messages this party sent, and names each once. A
+/// second receipt for a message is not a violation: the peer regenerates
+/// one for every copy of the message it is sent (ADR-006).
 fn check_receipts(
   world: World,
   number: Int,
@@ -1210,11 +1449,8 @@ fn check_receipts(
         case list.all(named, list.contains(sent, _)) {
           False -> note(world, "receipt names a message never sent")
           True ->
-            case
-              list.any(named, list.contains(mine.received_by_peer, _))
-              || list.length(list.unique(named)) != list.length(named)
-            {
-              True -> note(world, "message receipted twice")
+            case list.length(list.unique(named)) != list.length(named) {
+              True -> note(world, "message receipted twice in one receipt")
               False -> world
             }
         }
@@ -1257,7 +1493,13 @@ fn check_delivery_allowed(
 
 fn apply_record(mine: Party, record: plan.Record, now: Int) -> Party {
   case record {
-    plan.Outbound(envelope: envelope_id, route: target, padded:, kind:, ..) ->
+    plan.Outbound(
+      envelope: envelope_id,
+      route: target,
+      padded:,
+      kind:,
+      retention_deadline:,
+    ) ->
       Party(
         ..mine,
         outbox: list.append(mine.outbox, [
@@ -1267,6 +1509,9 @@ fn apply_record(mine: Party, record: plan.Record, now: Int) -> Party {
             padded:,
             kind:,
             status: Pending,
+            deadline: retention_deadline.unix_seconds,
+            retransmits: 0,
+            retransmit_at: None,
           ),
         ]),
         sent_messages: case kind {
@@ -1314,16 +1559,42 @@ fn apply_record(mine: Party, record: plan.Record, now: Int) -> Party {
       )
     }
 
-    plan.PeerReceived(messages:, ..) ->
+    // A receipt is idempotent, since the peer regenerates one for every copy
+    // of a message it is sent, and it ends the retransmit schedule of every
+    // row that carries the message.
+    plan.PeerReceived(messages:, ..) -> {
+      let named = list.map(messages, id.to_bytes)
+
       Party(
         ..mine,
         received_by_peer: list.append(
           mine.received_by_peer,
-          list.map(messages, id.to_bytes),
+          list.filter(named, fn(message) {
+            !list.contains(mine.received_by_peer, message)
+          }),
+        ),
+        outbox: list.map(mine.outbox, fn(row) {
+          case row.kind {
+            plan.ApplicationOut(message:) ->
+              case list.contains(named, id.to_bytes(message)) {
+                True -> Row(..row, retransmit_at: None)
+                False -> row
+              }
+            plan.Handshake | plan.ReceiptOut(_) | plan.ControlOut(_) -> row
+          }
+        }),
+      )
+    }
+
+    plan.Remembered(fingerprint:, ..) ->
+      Party(
+        ..mine,
+        fingerprints: dict.insert(
+          mine.fingerprints,
+          fingerprint.digest,
+          fingerprint,
         ),
       )
-
-    plan.Remembered(..) -> mine
 
     plan.Audit(..) -> mine
   }
@@ -1433,7 +1704,7 @@ pub type Mode {
 }
 
 /// The mask with every fault class on.
-pub const every_fault = 0xFF
+pub const every_fault = 0x1FF
 
 /// A mask with exactly these classes on.
 pub fn mask_of(faults: List(Fault)) -> Int {
@@ -1453,6 +1724,7 @@ fn bit(fault: Fault) -> Int {
     Raises -> 5
     Reordering -> 6
     LostReplies -> 7
+    Loss -> 8
   }
 }
 
@@ -1489,6 +1761,7 @@ pub fn enabled_with(
   let replaying = is_on(mask, Replays) && int.modulo(choice, 13) == Ok(0)
   let raising = is_on(mask, Raises) && int.modulo(choice, 5) == Ok(0)
   let losing = is_on(mask, LostReplies) && int.modulo(choice, 7) == Ok(0)
+  let dropping = is_on(mask, Loss) && int.modulo(choice, 17) == Ok(0)
   let reordering = is_on(mask, Reordering)
 
   // One entry per step each party can take, in a stable order.
@@ -1513,6 +1786,7 @@ pub fn enabled_with(
       list.flatten([
         lifecycle(world, number, mine, destructive, raising, crashing, choice),
         pending_rows(mine, number, losing),
+        due_rows(world, mine, number),
         case queued {
           0 -> []
           _ -> [Ack(number)]
@@ -1531,6 +1805,10 @@ pub fn enabled_with(
             },
             case replaying {
               True -> [Replay(number, index)]
+              False -> []
+            },
+            case dropping {
+              True -> [Lose(number, index)]
               False -> []
             },
           ])
@@ -1558,6 +1836,18 @@ fn pending_rows(mine: Party, number: Int, losing: Bool) -> List(Step) {
       Appended, _ -> []
       Pending, True -> [Transmit(number, index), TransmitLost(number, index)]
       Pending, False -> [Transmit(number, index)]
+    }
+  })
+  |> list.flatten
+}
+
+/// The scheduler's other work: a retransmit for each stored row whose
+/// receipt window has passed. Honest, so offered whatever the mask.
+fn due_rows(world: World, mine: Party, number: Int) -> List(Step) {
+  list.index_map(mine.outbox, fn(row, index) {
+    case row.retransmit_at {
+      Some(due) if due <= world.now -> [Retransmit(number, index)]
+      Some(_) | None -> []
     }
   })
   |> list.flatten
@@ -1640,6 +1930,12 @@ fn pump(world: World) -> World {
         }
       })
 
+    // Due retransmits are committed now and transmitted by the next round.
+    let world =
+      list.fold(indices(rows), world, fn(world, index) {
+        step(world, Retransmit(number, index))
+      })
+
     list.fold([0, 1, 2], world, fn(world, other) {
       let queued = case party(world, other).queue {
         Some(queue) ->
@@ -1682,19 +1978,57 @@ fn converge(world: World, rounds: Int) -> World {
   }
 }
 
+/// The most times a heal moves the clock to the next receipt window. Each
+/// row is sent again at most `limits.max_retransmits` times, and rows
+/// stored together come due together, so this is far above what a world
+/// of a few hundred steps needs; a heal that exhausts it is a stall.
+const heal_windows = 400
+
 /// The heal phase: every fault is off and time passes, and nothing else. It
 /// pumps to a fixed point, lets the operator approve what waits for approval
 /// (a decision, not a fault), pumps again, raises each budget until nothing
-/// is held, and pumps a last time. It never retransmits a stored row and
-/// never re-stores an acknowledged envelope, because the scheduler and the
-/// mailbox do neither.
+/// is held, and pumps a last time. Then, while a stored row still waits for
+/// its receipt window, it moves the clock to the earliest `retransmit_at`
+/// and heals again, so a message a mailbox corrupted or lost is sent again
+/// as the daemon's scheduler would. It never re-stores an acknowledged
+/// envelope, because the mailbox does not.
 pub fn heal(world: World) -> World {
-  world
-  |> converge(heal_rounds)
-  |> approve_waiting
-  |> converge(heal_rounds)
-  |> raise_until_released
-  |> converge(heal_rounds)
+  heal_through_windows(world, heal_windows)
+}
+
+fn heal_through_windows(world: World, windows: Int) -> World {
+  let world =
+    world
+    |> converge(heal_rounds)
+    |> approve_waiting
+    |> converge(heal_rounds)
+    |> raise_until_released
+    |> converge(heal_rounds)
+
+  // The earliest schedule still open decides how far the clock moves; none
+  // left means nothing will ever be sent again, and the heal is done.
+  case next_retransmit(world), windows <= 0 {
+    None, _ -> world
+    Some(_), True -> note(world, "heal did not reach a fixed point")
+    Some(due), False ->
+      heal_through_windows(
+        step(world, Tick(int.max(due - world.now, 1))),
+        windows - 1,
+      )
+  }
+}
+
+/// The earliest `retransmit_at` of any row of any party.
+fn next_retransmit(world: World) -> Option(Int) {
+  dict.values(world.parties)
+  |> list.flat_map(fn(mine) {
+    list.filter_map(mine.outbox, fn(row) {
+      option.to_result(row.retransmit_at, Nil)
+    })
+  })
+  |> list.sort(int.compare)
+  |> list.first
+  |> option.from_result
 }
 
 fn approve_waiting(world: World) -> World {
@@ -1798,35 +2132,14 @@ fn is_closed(world: World, number: Int) -> Bool {
   }
 }
 
-/// Whether `number` processed `envelope` from `queue` as a different byte
-/// string than its sender committed: the mailbox corrupted the only copy.
-fn was_corrupted(
-  world: World,
-  number: Int,
-  queue: BitArray,
-  envelope: BitArray,
-  original: BitArray,
-) -> Bool {
-  case dict.get(party(world, number).processed, #(queue, envelope)) {
-    Ok(seen) -> seen != world.suite.sha256(original)
-    Error(Nil) -> False
-  }
-}
-
-/// The committed bytes of the row that carries `kind`, by sender.
-fn row_of(world: World, number: Int, kind: plan.OutboundKind) -> Option(Row) {
-  list.find(party(world, number).outbox, fn(row) { row.kind == kind })
-  |> option.from_result
-}
-
 /// After the heal, every committed application message is delivered to its
-/// peer exactly once, stored `Ready` or `Held`, and receipted exactly once.
-/// Three states excuse a missing delivery: the receiver's relationship is
-/// closed, the message's lifetime ran out on the clock, or the mailbox
-/// corrupted the only copy. The last is a policy gap: a stored row is never
-/// resent, so a corrupting mailbox loses the message for good. A missing
-/// receipt is excused when the sender closed, or when the receipt itself was
-/// corrupted the same way.
+/// peer exactly once, stored `Ready` or `Held`, and receipted. Two states
+/// excuse a missing delivery: the receiver's relationship is closed, or the
+/// message's lifetime ran out on the clock. A mailbox that corrupted or lost
+/// the envelope excuses nothing, since the sender retransmits it. A missing
+/// receipt is excused when the sender closed, since a closed relationship
+/// cannot read one, or when the message's lifetime ran out before a
+/// retransmit could ask for it again.
 pub fn audit_delivery(world: World) -> World {
   list.fold([0, 1, 2], world, fn(world, number) {
     list.fold(party(world, number).sent_messages, world, fn(world, sent) {
@@ -1847,117 +2160,66 @@ fn audit_message(world: World, number: Int, peer: Int, sent: Sent) -> World {
       other == sent.message
     })
     |> list.length
-  let original = case row_of(world, number, plan.ApplicationOut(id_of(sent))) {
-    Some(row) -> envelope.to_wire(row.padded)
-    None -> <<>>
-  }
+  let expired = world.now > sent.at + retention
 
   case delivered {
     0 ->
-      case
-        is_closed(world, peer),
-        world.now > sent.at + retention,
-        was_corrupted(world, peer, sent.queue, sent.envelope, original)
-      {
-        True, _, _ -> excuse(world, "receiver-closed")
-        _, True, _ -> excuse(world, "message-expired")
-        _, _, True -> excuse(world, "message-corrupted-in-mailbox")
-        _, _, _ -> note(world, "committed message was never delivered")
+      case is_closed(world, peer), expired {
+        True, _ -> excuse(world, "receiver-closed")
+        _, True -> excuse(world, "message-expired")
+        _, _ -> note(world, "committed message was never delivered")
       }
-    1 -> audit_receipt(world, number, peer, receipts)
+    1 -> audit_receipt(world, number, receipts, expired)
     _ -> note(world, "committed message delivered more than once")
   }
 }
 
-fn audit_receipt(world: World, number: Int, peer: Int, receipts: Int) -> World {
+fn audit_receipt(
+  world: World,
+  number: Int,
+  receipts: Int,
+  expired: Bool,
+) -> World {
   case receipts {
     1 -> world
     0 ->
-      case is_closed(world, number), receipt_corrupted(world, number, peer) {
+      case is_closed(world, number), expired {
         True, _ -> excuse(world, "sender-closed")
-        _, True -> excuse(world, "receipt-corrupted-in-mailbox")
+        _, True -> excuse(world, "message-expired-before-receipt")
         _, _ -> note(world, "delivered message was never receipted")
       }
     _ -> note(world, "delivered message receipted more than once")
   }
 }
 
-/// A receipt envelope names its messages only inside the ciphertext, so the
-/// excuse is as wide as the evidence: some receipt the peer sent to this
-/// party's queue was processed corrupted.
-fn receipt_corrupted(world: World, number: Int, peer: Int) -> Bool {
-  let queue = party(world, number).queue
-
-  list.any(party(world, peer).outbox, fn(row) {
-    case row.kind, queue {
-      plan.ReceiptOut(_), Some(inbox) if row.queue == inbox ->
-        was_corrupted(
-          world,
-          number,
-          inbox,
-          row.envelope,
-          envelope.to_wire(row.padded),
-        )
-      _, _ -> False
-    }
-  })
-}
-
-fn id_of(sent: Sent) -> id.Id(id.Message) {
-  let assert Ok(message) = id.from_bytes(sent.message)
-    as "a committed message identifier has the identifier size"
-  message
-}
-
 /// A message's lifetime on the clock.
 const retention = 604_800
 
 /// After the heal, every `Close` committed from `Active` has closed the
-/// peer, unless the mailbox corrupted that envelope (the same policy gap
-/// as in `audit_delivery`).
+/// peer. A mailbox that corrupted or lost the envelope excuses nothing, since
+/// a `Close` is retransmitted whatever the sender's phase. One state does:
+/// the `Close`'s own lifetime ran out, so the mailbox's sweeper discarded it
+/// unfetched and no copy may be sent past it.
 pub fn audit_close(world: World) -> World {
   list.fold([0, 1, 2], world, fn(world, number) {
     list.fold(party(world, number).closes, world, fn(world, close) {
       let #(queue, envelope_id) = close
+      let expired =
+        list.any(party(world, number).outbox, fn(row) {
+          row.envelope == envelope_id && world.now > row.deadline
+        })
 
       case owner(world, queue) {
         None -> note(world, "a close was sent to a queue no party owns")
         Some(peer) ->
-          case
-            is_closed(world, peer),
-            close_corrupted(world, number, peer, queue, envelope_id)
-          {
+          case is_closed(world, peer), expired {
             True, _ -> world
-            False, True -> excuse(world, "close-corrupted-in-mailbox")
+            False, True -> excuse(world, "close-expired")
             False, False -> note(world, "a close never closed the peer")
           }
       }
     })
   })
-}
-
-fn close_corrupted(
-  world: World,
-  number: Int,
-  peer: Int,
-  queue: BitArray,
-  envelope_id: BitArray,
-) -> Bool {
-  case
-    list.find(party(world, number).outbox, fn(row) {
-      row.envelope == envelope_id
-    })
-  {
-    Ok(row) ->
-      was_corrupted(
-        world,
-        peer,
-        queue,
-        envelope_id,
-        envelope.to_wire(row.padded),
-      )
-    Error(Nil) -> False
-  }
 }
 
 /// After the heal's raises, no active party still holds a message back.

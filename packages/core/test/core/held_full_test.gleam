@@ -2,7 +2,10 @@
 //// can never hold the 256 messages `HeldFull` needs; this test drives it
 //// directly. With no budget every message is held, the 257th is refused
 //// (the shell drops and acknowledges it, and the sender gets no receipt),
-//// and a heal that raises the budget releases exactly the held ones.
+//// and a heal that raises the budget releases exactly the held ones. The
+//// refused messages are not lost for good: a refusal spends no key, so the
+//// sender's retransmit, once the receipt window passes, is stored under the
+//// raised budget (ADR-006).
 
 import core/limits
 import core/offer
@@ -51,11 +54,12 @@ pub fn a_full_held_queue_refuses_the_next_message_test() {
     == limits.max_held_messages
   assert world.count_delivered(delivered, 0, plan.Ready) == 0
 
-  // The audit sees the dropped messages as undelivered, which is the
-  // documented refusal, so it reports them rather than excusing them.
+  // The heal raises the budget, releasing the held messages, and then lets
+  // the receipt window pass: the refused messages come again and are
+  // stored, each exactly once.
   let healed = delivered |> world.heal |> world.audit_all
   assert world.count_delivered(healed, 0, plan.Held) == 0
-  assert world.count_delivered(healed, 0, plan.Ready)
-    == limits.max_held_messages
-  assert list.length(world.violations_of(healed)) == extra
+  assert world.count_delivered(healed, 0, plan.Ready) == total
+  assert world.saw(healed, "delivered-by-retransmit")
+  assert world.violations_of(healed) == []
 }

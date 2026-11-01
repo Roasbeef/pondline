@@ -14,9 +14,12 @@
 ////
 //// A second property runs benign schedules, and a third chaotic ones, through
 //// the heal phase (`world.heal`, which only turns faults off and lets time
-//// pass) and requires quiescence, delivery and receipt of every committed
-//// message, every close to reach its peer, and no message left held. Where a
-//// state cannot deliver, the audit records a named excuse. A final group runs the
+//// pass, receipt windows included) and requires quiescence, delivery and
+//// receipt of every committed message, every close to reach its peer, and no
+//// message left held, under a mailbox that corrupts, loses and expires
+//// envelopes: end-to-end retransmission (ADR-006) recovers what the mailbox
+//// spoiled. Where a state cannot deliver (the receiver closed, the message
+//// expired), the audit records a named excuse. A final group runs the
 //// same schedules through deliberately broken shells and requires the
 //// checks to notice, so a green run means the checks can fail.
 
@@ -36,7 +39,9 @@ const sample_size = 150
 
 const schedule_length = 160
 
-const sharpness_seed = 31
+/// Chosen so the sample reaches every state below more than once; the reach
+/// of a rarer state such as `decline` depends on the seed.
+const sharpness_seed = 38
 
 /// An approval policy, a budget, and a schedule of picks.
 type Case =
@@ -180,17 +185,20 @@ pub fn schedules_reach_the_interesting_states_test() {
     > 0
 }
 
-/// How many sampled schedules a broken shell is flagged on.
-fn flagged(bug: world.Bug, violation: String) -> Int {
-  sample()
-  |> list.map(fn(case_) { play(bug, world.Chaotic, case_) })
-  |> count(fn(w) { list.contains(world.violations_of(w), violation) })
+/// Whether a broken shell is flagged on some sampled schedule. It stops at
+/// the first one, since walking all of them would only count.
+fn flagged(bug: world.Bug, violation: String) -> Bool {
+  list.any(sample(), fn(case_) {
+    play(bug, world.Chaotic, case_)
+    |> world.violations_of
+    |> list.contains(violation)
+  })
 }
 
 pub fn a_shell_that_sends_before_commit_is_caught_test() {
-  assert flagged(world.SendBeforeCommit, "sent before commit") > 0
+  assert flagged(world.SendBeforeCommit, "sent before commit")
 }
 
 pub fn a_shell_that_acks_before_commit_is_caught_test() {
-  assert flagged(world.AckBeforeCommit, "acknowledged before commit") > 0
+  assert flagged(world.AckBeforeCommit, "acknowledged before commit")
 }

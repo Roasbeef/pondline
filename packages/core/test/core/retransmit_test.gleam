@@ -1,6 +1,8 @@
 //// End-to-end retransmission (ADR-006), case by case: the schedule
-//// `retransmit.due_at` gives, and the refusals `retransmit.retransmit`
-//// and `relationship.resend_receipt` make.
+//// `retransmit.due_at` gives, the refusals `retransmit.retransmit` and
+//// `relationship.resend_receipt` make, and two scripted worlds in which a
+//// mailbox spoils the only copy of a message and of a receipt, and the
+//// message is still delivered once and receipted.
 
 import core/crypto/fake_suite
 import core/id
@@ -10,7 +12,11 @@ import core/plan
 import core/relationship
 import core/retransmit
 import core/time.{Instant}
-import core/world.{Ack, Approve, Provision, Setup}
+import core/world.{
+  Ack, Approve, Corrupt, Fetch, Lose, Provision, Retransmit, Send, Setup, Tick,
+  Transmit,
+}
+import gleam/list
 import gleam/option.{None, Some}
 
 /// A two-party world with the pairing approved and both sides `Active`.
@@ -31,6 +37,37 @@ fn active() -> world.World {
 fn message_id() -> id.Id(id.Message) {
   let assert Ok(message) = id.from_bytes(fake_suite.fresh(id.id_bytes))
   message
+}
+
+/// The index of the last row in a party's outbox whose kind matches.
+fn last_row(
+  w: world.World,
+  number: Int,
+  kind: fn(plan.OutboundKind) -> Bool,
+) -> Int {
+  let found =
+    list.index_fold(world.party(w, number).outbox, None, fn(found, row, index) {
+      case kind(row.kind) {
+        True -> Some(index)
+        False -> found
+      }
+    })
+  let assert Some(index) = found as "the party committed such a row"
+  index
+}
+
+fn is_application(kind: plan.OutboundKind) -> Bool {
+  case kind {
+    plan.ApplicationOut(_) -> True
+    _ -> False
+  }
+}
+
+fn is_receipt(kind: plan.OutboundKind) -> Bool {
+  case kind {
+    plan.ReceiptOut(_) -> True
+    _ -> False
+  }
 }
 
 pub fn the_window_doubles_and_stops_at_the_bound_test() {
@@ -179,4 +216,73 @@ pub fn a_known_ciphertext_is_answered_not_delivered_test() {
       plan.Fingerprint(..known, receipts: limits.max_retransmits + 1),
     )
     == Error(relationship.DuplicateIgnored)
+}
+
+pub fn a_corrupted_message_is_delivered_by_its_retransmit_test() {
+  let w = active() |> world.run([Send(1, 7, world.Commit)])
+  let row = last_row(w, 1, is_application)
+
+  // The mailbox stores it, answers, then corrupts the only copy; the
+  // receiver drops what it cannot decrypt and acknowledges it.
+  let w =
+    world.run(w, [
+      Transmit(1, row),
+      Corrupt(0, 0),
+      Fetch(0, 0, world.Commit),
+      Ack(0),
+    ])
+  assert world.count_delivered(w, 0, plan.Ready) == 0
+
+  // The receipt window passes with no receipt, so the sender sends the same
+  // bytes again under a new envelope.
+  let w =
+    world.run(w, [
+      Tick(limits.receipt_window_seconds),
+      Retransmit(1, row),
+    ])
+  let copy = list.length(world.party(w, 1).outbox) - 1
+  let w = world.run(w, [Transmit(1, copy), Fetch(0, 0, world.Commit), Ack(0)])
+  assert world.count_delivered(w, 0, plan.Ready) == 1
+  assert world.saw(w, "delivered-by-retransmit")
+
+  // The receipt for the copy reaches the sender and ends the schedule.
+  let receipt = last_row(w, 0, is_receipt)
+  let w =
+    world.run(w, [Transmit(0, receipt), Fetch(1, 0, world.Commit), Ack(1)])
+  assert list.length(world.party(w, 1).received_by_peer) == 1
+  assert list.all(world.party(w, 1).outbox, fn(sent) {
+    !is_application(sent.kind) || sent.retransmit_at == None
+  })
+  assert world.violations_of(w) == []
+}
+
+pub fn a_lost_receipt_is_regenerated_by_the_retransmit_test() {
+  let w = active() |> world.run([Send(1, 9, world.Commit)])
+  let row = last_row(w, 1, is_application)
+
+  // Delivered, and the receipt is stored at the sender's mailbox and lost
+  // there after `Appended`.
+  let w = world.run(w, [Transmit(1, row), Fetch(0, 0, world.Commit), Ack(0)])
+  let receipt = last_row(w, 0, is_receipt)
+  let w = world.run(w, [Transmit(0, receipt), Lose(1, 0)])
+  assert world.count_delivered(w, 0, plan.Ready) == 1
+  assert world.party(w, 1).received_by_peer == []
+
+  // The sender's retransmit cannot be decrypted (its key is spent), but its
+  // fingerprint is known: the receiver answers with the receipt again and
+  // does not deliver a second time.
+  let w =
+    world.run(w, [
+      Tick(limits.receipt_window_seconds),
+      Retransmit(1, row),
+    ])
+  let copy = list.length(world.party(w, 1).outbox) - 1
+  let w = world.run(w, [Transmit(1, copy), Fetch(0, 0, world.Commit), Ack(0)])
+  assert world.saw(w, "receipt-regenerated")
+  assert world.count_delivered(w, 0, plan.Ready) == 1
+
+  let again = last_row(w, 0, is_receipt)
+  let w = world.run(w, [Transmit(0, again), Fetch(1, 0, world.Commit), Ack(1)])
+  assert list.length(world.party(w, 1).received_by_peer) == 1
+  assert world.violations_of(w) == []
 }
