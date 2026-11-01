@@ -1,0 +1,10 @@
+name = "reedwire-formal"
+version = "0.1.0"
+defaultTargets = ["Reedwire", "gen-vectors"]
+
+[[lean_lib]]
+name = "Reedwire"
+
+[[lean_exe]]
+name = "gen-vectors"
+root = "GenVectors"
