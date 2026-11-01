@@ -2270,6 +2270,7 @@ pub fn undocumented(x) { x }
     "lint",
     "mailbox",
     "primitives",
+    "sim",
     "tor",
   ])
 }
@@ -2452,12 +2453,11 @@ pub fn r4_does_not_reach_the_harness_package_test() {
   |> finding.gate(finding.error_by_default())
   |> should.equal(#(0, 0))
 
-  should.equal(policy.harness_packages(), [])
+  should.equal(policy.harness_packages(), ["sim"])
 }
 
-/// What `policy.for_package` grants a harness package. The tree has no such
-/// package yet, so the exemption is exercised through the policy it builds
-/// rather than through a table entry.
+/// What `policy.for_package` grants a harness package, built directly so the
+/// exemption is checked apart from which packages the table names.
 fn harness_policy() -> policy.Policy {
   policy.Policy(..policy.default(), allow_panic: True)
 }

@@ -223,7 +223,7 @@ pub fn for_tests_like(base: Policy) -> Policy {
 /// `portable_packages` is: membership is a decision someone made, so it
 /// should read as one line of data that the tests can enumerate.
 pub fn harness_packages() -> List(String) {
-  []
+  ["sim"]
 }
 
 /// `base`, with R4 off when the source belongs to a package whose `src/`
@@ -272,7 +272,7 @@ pub fn portable_packages() -> List(String) {
 /// everywhere; this public list records the sweep and remains useful for census
 /// and policy tests.
 pub fn literate_packages() -> List(String) {
-  ["core", "daemon", "lint", "mailbox", "primitives", "tor"]
+  ["core", "daemon", "lint", "mailbox", "primitives", "sim", "tor"]
 }
 
 /// A dependency that exists only on the BEAM, named from both sides.

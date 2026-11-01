@@ -1,0 +1,25 @@
+name = "sim"
+version = "0.1.0"
+gleam = ">= 1.18.0"
+
+# The deterministic simulation of the real shell: two daemons and a mailbox
+# in one VM, driven by a seed (docs/dst/plan.md). A test harness that
+# compiles as a library so its campaign entry points can run with
+# `gleam run -m`. Production never depends on this package (spec §13.3).
+
+[dependencies]
+gleam_stdlib = ">= 1.0.0 and < 2.0.0"
+gleam_erlang = ">= 1.0.0 and < 2.0.0"
+gleam_otp = ">= 1.0.0 and < 2.0.0"
+sqlight = ">= 1.2.0 and < 2.0.0"
+simplifile = ">= 2.0.0 and < 3.0.0"
+argv = ">= 1.0.0 and < 2.0.0"
+qcheck = ">= 1.0.5 and < 2.0.0"
+weft = { git = "https://github.com/Roasbeef/weft.git", ref = "d90b192573fea90ea86b319627c49705fe8897b3" }
+core = { path = "../core" }
+primitives = { path = "../primitives" }
+daemon = { path = "../daemon" }
+mailbox = { path = "../mailbox" }
+
+[dev_dependencies]
+gleeunit = ">= 1.0.0 and < 2.0.0"
