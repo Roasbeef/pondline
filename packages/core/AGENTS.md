@@ -50,6 +50,18 @@ primitive functions the shell builds from `packages/primitives`.
   signature), `initiate` and `respond`.
 - `core/crypto/ratchet`: the Double Ratchet as `encrypt`/`decrypt`
   returning `#(State, output)`, and a total, bounded state codec.
+- `core/plan`: what a transition returns (`Plan`, `Record`, `Effect`),
+  including `Fingerprint` and the `Remembered` record, the receiver's memory
+  of a ciphertext it stored a message from.
+- `core/relationship`: the relationship state machine; `fingerprint` and
+  `resend_receipt` answer a ciphertext that arrives again with the same
+  logical receipt (ADR-006).
+- `core/retransmit`: end-to-end retransmission (ADR-006). `due_at` is the
+  schedule (`limits.receipt_window_seconds`, doubling, at most
+  `limits.max_retransmits` copies, never past the deadline);
+  `retransmit(suite, relationship, Unreceipted, now)` returns a
+  `Retransmission` (a fresh envelope for a copy of a stored row's bytes) or
+  a `Stop`.
 
 ## Relationships
 
@@ -92,18 +104,32 @@ None. `core` sends no messages and owns no processes.
   a stored count over the bound.
 - The fake `Suite` used by tests lives under `test/` only, so it cannot be
   compiled into a release (spec §13.3).
+- A retransmit is the same committed padded ciphertext under a new envelope
+  identifier, never a re-encryption; only application messages (while
+  `Active`) and `Accept`/`Reject`/`Close` are sent again, never receipts or
+  the handshake. A receiver answers a known fingerprint with
+  `resend_receipt` and never delivers it again, at most
+  `max_retransmits` extra times per ciphertext and never after the message
+  expired (`test/core/retransmit_test.gleam`).
 - The pure simulation (`test/core/world.gleam`, §13.1) models the shell as
   production behaves: an outbox row stops being resent once the mailbox
-  answered it, and the mailbox keeps a tombstone for every acknowledged
-  envelope. The heal phase (`world.heal`) only turns faults off and lets
-  time pass; it never retransmits a stored row, so a mailbox that corrupts
-  the only copy of a message loses it, and the delivery audit records that as
-  the counted excuse `message-corrupted-in-mailbox` (a policy gap, not a
-  pass). Other excuses are `receiver-closed`, `message-expired`,
-  `sender-closed` and the corrupted close and receipt twins. HeldFull is
-  reached by `held_full_test`, not by random schedules.
+  answered it, the mailbox keeps a tombstone for every acknowledged
+  envelope and sweeps envelopes past their retention deadline, and a stored
+  row whose receipt window passes is retransmitted (`Retransmit`). The heal
+  phase (`world.heal`) only turns faults off and lets time pass, moving the
+  clock through the receipt windows, so a message a mailbox corrupted or lost
+  (`Corrupt`, `Lose`) must still be delivered once and receipted. The
+  remaining excuses are `receiver-closed`, `message-expired`,
+  `message-expired-before-receipt`, `sender-closed`, `close-expired` and
+  `row-for-a-queue-never-created`. Mutation-checked: never scheduling a
+  retransmit fails the swarm with "committed message was never delivered",
+  and never remembering a fingerprint with "delivered message was never
+  receipted". HeldFull is reached by `held_full_test`, not by random
+  schedules; its refused messages are now delivered by their retransmit
+  once the budget is raised.
 - Swarm seeds (`test/core/swarm.gleam`): byte 0 mode (chaotic or benign,
-  approval, budget), bytes 1..2 the fault mask (one bit per `world.Fault`),
+  approval, budget), bytes 1..2 the fault mask (one bit per `world.Fault`,
+  nine classes, `Loss` the newest at bit 8),
   then three-byte ops. `swarm_test` plays 40 generated seeds and checks that
   a seed replays to an identical world. For a campaign, build with
   `gleam test` once, then
@@ -119,6 +145,8 @@ None. `core` sends no messages and owns no processes.
 
 - `docs/spec.md` §10.1 (functional core), §11.3 (limits), §13 (invariants
   and test strategy).
+- `docs/adr/006-end-to-end-retransmit.md` (retransmission and
+  regenerated receipts).
 - `docs/crypto-profile-v1.md` (the profile, byte for byte),
   `docs/adr/002-pq-crypto-over-otp.md` and
   `docs/adr/005-hybrid-authentication.md`.

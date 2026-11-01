@@ -70,12 +70,25 @@ this before changing any of them.
   version check, every record, the `Processed` row) in one `BEGIN IMMEDIATE`
   transaction and returns `Committed`, which only this module can build and
   which is the only source of effects. Tables: `relationships`, `offers`,
-  `outbox`, `processed`, `deliveries`, `sent_messages`, `audit`, `meta`.
+  `outbox`, `processed`, `deliveries`, `sent_messages`, `audit`, `meta`,
+  and (schema 2, ADR-006) `fingerprints`, with `outbox.retransmits` and
+  `outbox.retransmit_at`. `record_send(store, now, envelope, outcome)` sets
+  `retransmit_at` from `retransmit.due_at` when the mailbox stored a row and
+  its peer has not receipted it; a `PeerReceived` record clears it.
+  `Retransmitted` copies a stored row under a fresh envelope with an
+  `INSERT ... SELECT`, so a retransmit's bytes come only from the committed
+  row; `RetransmitStopped` ends a schedule. `due_retransmits` and
+  `fingerprint` are the readers; a `Remembered` record replaces a
+  fingerprint and prunes the expired ones.
 - `daemon/engine`: the single writer. One `weft/actor` holds the connection and
   runs each operation as a job: load state, run the pure transition with the
   real `Suite` and injected clock, commit, then call `notify`. It never touches
   the network. `process` applies the id-and-digest rule before opening a
-  frame. The store opens in the initialiser, not a `continuing` message, so a
+  frame, and looks a `Ratchet` frame's fingerprint up before the session:
+  a known ciphertext goes to `relationship.resend_receipt`, never to
+  `receive`. `retransmit` (job `Retransmit`, label `retransmit`) commits a
+  copy of each stored row whose receipt window passed, or ends its schedule.
+  The store opens in the initialiser, not a `continuing` message, so a
   database that cannot open fails the start; it traps exits and `on_shutdown`
   closes the store.
 - `daemon/scheduler`: a `weft/actor` that sends committed `queued` outbox
@@ -89,7 +102,10 @@ this before changing any of them.
   `in_flight` with a `Claim` that names its owner (`Sending` the run's
   subject, `Expiring`, or `Held`): a run's end marker releases only its own
   `Sending` claims, and a row whose outcome the engine could not record is
-  `Held` until the next tick instead of being resent at once. The rescan is `actor.periodic`
+  `Held` until the next tick instead of being resent at once. Every `Tick`
+  first asks `engine.retransmit` (ADR-006), so the copies it commits are
+  queued rows the same tick's dispatch sends; the window is in the injected
+  clock's seconds. The rescan is `actor.periodic`
   (`tick_ms`) plus a first tick via `continuing`; the engine has no soonest
   `next_attempt_at` query, so a computed named timeout is not possible yet.
   `classify` and `backoff_seconds` are the pure policy.
@@ -170,6 +186,14 @@ Invariants:
   code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
+- End-to-end retransmission (ADR-006) is tested against a real mailbox whose
+  database the test damages after `Appended`
+  (`test/daemon/retransmit_test.gleam`): a corrupted message is delivered
+  once by its retransmit and receipted, and a lost receipt is regenerated
+  when the retransmit arrives. The sender runs on
+  `support.shiftable_clock`, so the window passes at once. Mutation-checked:
+  never scheduling a retransmit fails both, and skipping the fingerprint
+  lookup fails the lost-receipt test.
 - A restart resumes committed state: an unsent outbox row is sent on start,
   and an envelope committed but unacknowledged is acknowledged by the next
   fetcher round, with no second delivery to the agent.
