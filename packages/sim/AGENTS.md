@@ -86,15 +86,15 @@ inside its step.
   in five-second rounds (liveness checked every thirty) for at most fifteen
   virtual minutes. It never restarts, reconnects or resets anything.
 - **Excuses are exact and counted** (the swarm prints a census):
-  `h4_retried_send` (a payload delivered twice whose send answered
-  `Unavailable` and was retried), `h4_retried_accept` (one joiner with no
-  peer per `Unavailable` accept answer), `lied_append` (a failed row whose
-  `Append` response was a lie), `closed_queue_unacked` (a processed row left
-  unacknowledged on the queue of a closed relationship: the fetcher retires
-  before its round acknowledges), `corrupted_fetch` (a message, receipt or
-  handshake whose envelope reached its reader in a lied-about fetch
-  response, which the reader dropped and acknowledged). `sim/oracle`'s
-  module doc is the reference.
+  `lied_append` (a failed row whose `Append` response was a lie) and
+  `corrupted_fetch` (a message, receipt or handshake whose envelope reached
+  its reader in a lied-about fetch response, which the reader dropped and
+  acknowledged). `sim/oracle`'s module doc is the reference. Removed as
+  fixed: `h4_retried_send` and `h4_retried_accept` (ADR-011; the ops send
+  each payload tag as its idempotency key with `api.send_with_key`, and an
+  accept is keyed by its invitation) and `closed_queue_unacked` (the
+  fetcher acknowledges before it checks liveness, and the fetch manager
+  drains retired queues a restart left owing).
 - **Kill budget.** At most two kills per daemon incarnation and two on the
   mailbox, so the supervisors' wall-clock restart intensity never decides a
   run.
@@ -116,20 +116,20 @@ campaigns need `+t` raised: each daemon start makes atoms for its names.
 ## Regressions
 
 `sim.regressions()` holds the seeds of production bugs the swarm found and
-that are not fixed yet; the test asserts each still fails its check:
-
-- H2: a byzantine peer repeats a message id; the receiver's commit fails on
-  `UNIQUE (contact, message_id)`, the envelope is never acknowledged and
-  every later one on that queue waits behind it (`queues_drained`).
-
-When a fix lands, move its seed to the corpus, where it must pass. Fixed so
-far:
+that are not fixed yet; the test asserts each still fails its check. It is
+empty. When a fix lands, move its seed to the corpus, where it must pass.
+Fixed so far:
 
 - H1 (ADR-008): a daemon clock five seconds ahead of the mailbox; the
   default deadline (`now + retention`) was refused `BadDeadline`, which the
   scheduler treated as permanent (`outbox_settled`). The sender's slack
   below the mailbox's maximum and the retried, shortened offers fixed it;
-  the seed is the corpus's last entry.
+  the seed is the corpus's second-to-last entry.
+- H2 (ADR-010): a byzantine peer repeats a message id; the receiver's commit
+  failed on `UNIQUE (contact, message_id)`, the envelope was never
+  acknowledged and every later one on that queue waited behind it
+  (`queues_drained`). The core now ignores the repeat and records an
+  incident; the seed is the corpus's last entry.
 
 ## Known gaps
 
