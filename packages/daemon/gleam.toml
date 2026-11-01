@@ -8,6 +8,8 @@ gleam_erlang = ">= 1.0.0 and < 2.0.0"
 gleam_otp = ">= 1.0.0 and < 2.0.0"
 mug = ">= 3.0.0 and < 4.0.0"
 sqlight = ">= 1.2.0 and < 2.0.0"
+# The generated SQL module imports parrot/dev (ADR-007).
+parrot = ">= 2.3.0 and < 3.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.0.0 and < 2.0.0"
 weft = { git = "https://github.com/Roasbeef/weft.git", ref = "d90b192573fea90ea86b319627c49705fe8897b3" }
