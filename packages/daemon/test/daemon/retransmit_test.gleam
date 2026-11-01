@@ -116,7 +116,7 @@ pub fn a_message_the_mailbox_corrupted_is_delivered_once_test() {
     support.when(api.status(a, sent) == Ok(api.ReceivedByPeer))
   })
 
-  // Exactly once: the receipt ended the schedule, and nothing more came.
+  // Exactly once: B handed the agent the copy and nothing more.
   process.sleep(1500)
   let assert Ok(again) = api.receive(b, None, 10)
   assert list.length(again) == 1
@@ -152,6 +152,10 @@ pub fn a_lost_receipt_is_regenerated_by_the_retransmit_test() {
 
   // The mailbox loses the receipt after answering for it.
   support.lose_stored(mailbox, inbox_a.queue, receipt.envelope)
+
+  // A is stopped, so nothing else reads its inbox: an empty inbox proves
+  // the receipt is gone, and only the retransmit can bring a new one.
+  assert support.stored_in(inbox_a) == []
 
   // A comes back after the window. Its retransmit cannot be decrypted by B
   // (the key is spent), but B knows the ciphertext and answers with the
