@@ -1222,8 +1222,7 @@ pub type Message(element) {
   rules a port is held to — payloads immutable within a state, every
   `case state, message` pair written, `unlinked` when the starter must not
   share fate, children published beneath their parent — and the standing
-  rejections are in `docs/weft.md`. `core`, `machine` and `prompt` never
-  import it (Part IV §5).
+  rejections are in `docs/weft.md`. `core` never imports it (Part IV §5).
 
 ### FFI
 
