@@ -570,6 +570,15 @@ For external effects, the host still needs idempotency keys, transactional integ
 
 **The system promises durable, replay-aware delivery—not universal exactly-once effects.**
 
+*Amended by ADR-011.* The daemon's own commands that a caller retries after
+an unknown outcome do not duplicate their effect. Accepting an invitation the
+daemon already accepted MUST return the first relationship and start no
+second one. A send MAY carry a caller-chosen idempotency key, scoped to the
+relationship, at most `max_send_key_bytes` bytes and remembered for
+`send_key_seconds`: a send whose key is remembered with the same content type,
+payload and reply target returns the first message's identifier and queues
+nothing, and one whose key names a different request is refused.
+
 ---
 
 # 9. Local API and agent permissions
@@ -759,6 +768,7 @@ These are engineering starting points, not measured optimal values.
 | Retention slack below the mailbox's maximum | 1 hour (ADR-008) |
 | Retention deadlines offered per append | At most 4, each halving the lifetime (ADR-008) |
 | Processing attempts before an envelope is quarantined | 5 (ADR-010) |
+| Send idempotency key | 1 to 128 bytes, remembered 7 days (ADR-011) |
 | Initial queue capacity | 64 MiB, with separate message/rate limits |
 | Ratchet work limits | Fixed by the crypto profile; never unbounded |
 
