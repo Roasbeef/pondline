@@ -13,8 +13,10 @@ pub type Error {
   /// label is a fixed string such as "x25519 public key".
   Malformed(what: String)
 
-  /// A signature did not verify. The label names which one: "identity
-  /// binding", "signed prekey" or "post-quantum prekey".
+  /// A signature did not verify, in either of its halves: every signature
+  /// is hybrid, and Ed25519 and ML-DSA-65 must both verify. The label
+  /// names which one: "identity binding", "signed prekey", "post-quantum
+  /// prekey" or "initiator transcript".
   BadSignature(which: String)
 
   /// An X25519 agreement failed, which for the real primitive means the peer

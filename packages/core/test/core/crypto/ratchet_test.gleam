@@ -9,6 +9,7 @@
 import core/crypto/error
 import core/crypto/fake_suite
 import core/crypto/identity
+import core/crypto/keys
 import core/crypto/pqxdh
 import core/crypto/ratchet
 import core/secret
@@ -254,10 +255,17 @@ pub fn the_fake_handshake_rejects_a_bad_bundle_signature_test() {
   let assert Ok(inviter) = identity.generate(suite)
   let assert Ok(prekeys) = pqxdh.generate_prekeys(suite, inviter)
   let encoded = pqxdh.encode_bundle(prekeys.bundle)
-  let assert Ok(head) = bit_array.slice(encoded, 0, 130)
-  let assert Ok(tail) = bit_array.slice(encoded, 131, 1857 - 131)
 
-  assert pqxdh.decode_bundle(suite, <<head:bits, 0, tail:bits>>)
+  // The first byte of the signed prekey's signature, after the version, the
+  // identity and the prekey itself.
+  let at = 1 + identity.public_identity_bytes + keys.x25519_bytes
+  let assert Ok(head) = bit_array.slice(encoded, 0, at)
+  let assert Ok(<<byte>>) = bit_array.slice(encoded, at, 1)
+  let assert Ok(tail) =
+    bit_array.slice(encoded, at + 1, pqxdh.bundle_bytes - at - 1)
+  let flipped = int.bitwise_exclusive_or(byte, 1)
+
+  assert pqxdh.decode_bundle(suite, <<head:bits, flipped, tail:bits>>)
     == Error(error.BadSignature("signed prekey"))
 }
 

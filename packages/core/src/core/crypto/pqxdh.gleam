@@ -10,8 +10,8 @@
 //// are no one-time prekeys, because an invitation's bundle is already
 //// single-use. The joiner verifies the bundle, runs the agreement and
 //// sends one `InitialMessage`, which carries its identity, the ephemeral
-//// key, the KEM ciphertext, a commitment naming the bundle, and the first
-//// ratchet message.
+//// key, the KEM ciphertext, a commitment naming the bundle, a hybrid
+//// signature over the handshake transcript, and the first ratchet message.
 ////
 //// ## The agreement
 ////
@@ -20,22 +20,43 @@
 //// (SS, CT) = ML-KEM-1024.Encaps(PQSPK)
 //// SK = HKDF(salt = 0^32, ikm = 0xFF^32 || DH1 || DH2 || DH3 || SS,
 ////           info = "Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1", L = 32)
-//// AD = encode(IK_init) || encode(IK_resp)
+//// AD = fingerprint(IK_init) || fingerprint(IK_resp)
 //// ```
 ////
 //// The ratchet starts from `SK` and `AD`, and the responder's first ratchet
-//// key pair is the signed prekey, as in Signal's hand-off from X3DH.
+//// key pair is the signed prekey, as in Signal's hand-off from X3DH. Signal
+//// puts the identity encodings themselves in `AD`; a hybrid identity is
+//// 5389 bytes, and `AD` is stored in every ratchet state and authenticated
+//// with every message, so Reedwire uses the identities' fingerprints
+//// (SHA-256 of each encoding) instead. SHA-256's collision resistance binds
+//// the identities as tightly, for 64 bytes rather than 10778.
 ////
 //// ## What authenticates what
 ////
-//// Both identities carry a verified binding, and the bundle's signed
-//// prekeys verify under the bundle's identity, so a bundle whose prekeys
-//// were swapped (mailbox substitution) is rejected when it is decoded. The
-//// KEM is implicitly rejecting: a forged ciphertext decapsulates to an
-//// unrelated secret, so the responder detects it as a failed authentication
-//// of the first ratchet message, not as a KEM error. The commitment is the
-//// SHA-256 of the bundle's encoding; a responder holding a different bundle
-//// refuses the message as `UnknownBundle` without doing any agreement.
+//// Every signature here is hybrid, Ed25519 and ML-DSA-65 over the same
+//// bytes, and every check requires both halves
+//// (`docs/adr/005-hybrid-authentication.md`). Both identities carry a
+//// verified binding, and the bundle's signed prekeys verify under the
+//// bundle's identity, so a bundle whose prekeys were swapped (mailbox
+//// substitution) is rejected when it is decoded.
+////
+//// The joiner authenticates explicitly: it signs the transcript
+//// (`initial_transcript`) with both of its signing keys, and `respond`
+//// verifies both signatures before any agreement. Classical PQXDH
+//// authenticates the joiner only through DH1, an X25519 agreement a
+//// quantum adversary could forge; the signature makes the joiner's
+//// authentication need ML-DSA-65 broken as well. The inviter stays
+//// implicitly authenticated, as in PQXDH: only the holder of the SPK and
+//// PQSPK secrets, both signed under the inviter's hybrid identity, can
+//// derive the key the first reply is encrypted under.
+////
+//// The KEM is implicitly rejecting: a ciphertext the joiner itself mangled
+//// decapsulates to an unrelated secret, so the responder detects it as a
+//// failed authentication of the first ratchet message, not as a KEM error.
+//// A ciphertext anyone else changed fails the transcript signature first.
+//// The commitment is the SHA-256 of the bundle's encoding; a responder
+//// holding a different bundle refuses the message as `UnknownBundle`
+//// without doing any agreement.
 ////
 //// ## After the handshake
 ////
@@ -49,7 +70,7 @@ import core/crypto/error.{
 import core/crypto/hkdf
 import core/crypto/identity.{type Identity, type PublicIdentity}
 import core/crypto/keys.{
-  type KemCiphertext, type KemPublic, type KemSecret, type Signature,
+  type HybridSignature, type KemCiphertext, type KemPublic, type KemSecret,
   type X25519Public, type X25519Secret,
 }
 import core/crypto/ratchet
@@ -73,22 +94,34 @@ pub const spk_label = <<"Reedwire_SignedPrekey_v1":utf8>>
 /// 1568-byte public key.
 pub const pqspk_label = <<"Reedwire_PQSignedPrekey_v1":utf8>>
 
-/// The size of an encoded bundle: 1 + 128 + 32 + 64 + 1568 + 64 bytes.
-pub const bundle_bytes = 1857
+/// The label the initiator's transcript signature covers, followed by the
+/// transcript fields (`initial_transcript`).
+pub const transcript_label = <<"Reedwire_InitiatorTranscript_v1":utf8>>
+
+/// The size of an encoded bundle: the version (1), the inviter's public
+/// identity (5389), the SPK (32) and its hybrid signature (3373), the PQSPK
+/// (1568) and its hybrid signature (3373), 13736 bytes.
+pub const bundle_bytes = 13_736
 
 /// The size of the bundle commitment: a SHA-256 digest.
 pub const commitment_bytes = 32
 
+/// The size of an initial message before its ratchet message: the version
+/// (1), the initiator's public identity (5389), EK (32), CT (1568), the
+/// bundle commitment (32) and the hybrid transcript signature (3373),
+/// 10395 bytes.
+pub const initial_fixed_bytes = 10_395
+
 /// The inviter's public prekey bundle. Opaque: it is built only by
 /// `generate_prekeys` or by `decode_bundle`, and both guarantee that the
-/// identity binding and both prekey signatures verified.
+/// identity binding and both hybrid prekey signatures verified.
 pub opaque type Bundle {
   Bundle(
     identity: PublicIdentity,
     spk: X25519Public,
-    spk_signature: Signature,
+    spk_signature: HybridSignature,
     pqspk: KemPublic,
-    pqspk_signature: Signature,
+    pqspk_signature: HybridSignature,
   )
 }
 
@@ -104,15 +137,23 @@ pub type Prekeys {
   Prekeys(bundle: Bundle, spk_secret: X25519Secret, pqspk_secret: KemSecret)
 }
 
-/// What the joiner sends first. `message` is a wire message from
-/// `ratchet.encrypt`. The identity inside has a verified binding, because
-/// `decode_initial` checks it.
+/// What the joiner sends first. The identity inside has a verified
+/// binding, because `decode_initial` checks it; the transcript signature is
+/// checked by `respond`, which alone knows the responder's half of the
+/// transcript.
 pub type InitialMessage {
   InitialMessage(
+    /// The joiner's public identity.
     identity: PublicIdentity,
+    /// The joiner's ephemeral X25519 key, EK.
     ephemeral: X25519Public,
+    /// The ML-KEM-1024 ciphertext to the bundle's PQSPK.
     kem_ciphertext: KemCiphertext,
+    /// SHA-256 of the bundle the joiner answered.
     bundle_commitment: BitArray,
+    /// The joiner's hybrid signature over `initial_transcript`.
+    transcript_signature: HybridSignature,
+    /// The first ratchet message, from `ratchet.encrypt`.
     message: BitArray,
   )
 }
@@ -138,14 +179,10 @@ pub fn generate_prekeys(
 ) -> Result(Prekeys, Error) {
   use #(spk_secret, spk) <- result.try(keys.generate_x25519(suite))
   use #(pqspk_secret, pqspk) <- result.try(keys.generate_kem(suite))
-  use spk_signature <- result.try(keys.sign(
+  use spk_signature <- result.try(identity.sign(suite, owner, spk_message(spk)))
+  use pqspk_signature <- result.try(identity.sign(
     suite,
-    owner.signing,
-    spk_message(spk),
-  ))
-  use pqspk_signature <- result.try(keys.sign(
-    suite,
-    owner.signing,
+    owner,
     pqspk_message(pqspk),
   ))
 
@@ -182,30 +219,32 @@ pub fn bundle_identity(bundle: Bundle) -> PublicIdentity {
 }
 
 /// The canonical encoding of a bundle: the version byte, the inviter's
-/// public identity (128 bytes), the signed prekey (32) and its signature
-/// (64), the ML-KEM prekey (1568) and its signature (64), 1857 bytes in all.
+/// public identity (5389 bytes), the signed prekey (32) and its hybrid
+/// signature (3373), the ML-KEM prekey (1568) and its hybrid signature
+/// (3373), 13736 bytes in all.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// pqxdh.encode_bundle(prekeys.bundle)
-/// // -> <<_:14856>>
+/// // -> <<_:109_888>>
 /// ```
 pub fn encode_bundle(bundle: Bundle) -> BitArray {
   <<
     wire_version:size(8),
     identity.encode_public(bundle.identity):bits,
     keys.x25519_public_bytes(bundle.spk):bits,
-    keys.signature_bytes(bundle.spk_signature):bits,
+    keys.hybrid_signature_bytes(bundle.spk_signature):bits,
     keys.kem_public_bytes(bundle.pqspk):bits,
-    keys.signature_bytes(bundle.pqspk_signature):bits,
+    keys.hybrid_signature_bytes(bundle.pqspk_signature):bits,
   >>
 }
 
 /// Decodes a bundle and verifies everything in it: the identity binding and
-/// both prekey signatures under the identity's Ed25519 key. A bundle whose
-/// prekey was replaced by anyone but the identity's owner fails here, which
-/// is what makes mailbox substitution detectable.
+/// both prekey signatures, each of which needs its Ed25519 and its
+/// ML-DSA-65 half to verify under the identity's two signing keys. A bundle
+/// whose prekey was replaced by anyone but the identity's owner fails here,
+/// which is what makes mailbox substitution detectable.
 ///
 /// ## Examples
 ///
@@ -218,9 +257,9 @@ pub fn decode_bundle(suite: Suite, bytes: BitArray) -> Result(Bundle, Error) {
   use Nil <- result.try(check_version(version, "bundle"))
   use #(owner, rest) <- result.try(identity.read_public(suite, rest))
   use #(spk, rest) <- result.try(read_x25519_public(rest))
-  use #(spk_signature, rest) <- result.try(read_signature(rest))
+  use #(spk_signature, rest) <- result.try(read_signature(rest, "bundle"))
   use #(pqspk, rest) <- result.try(read_kem_public(rest))
-  use #(pqspk_signature, rest) <- result.try(read_signature(rest))
+  use #(pqspk_signature, rest) <- result.try(read_signature(rest, "bundle"))
   use Nil <- result.try(wire.end(rest, "bundle"))
   use Nil <- result.try(verify_prekey(
     suite,
@@ -240,15 +279,16 @@ pub fn decode_bundle(suite: Suite, bytes: BitArray) -> Result(Bundle, Error) {
   Ok(Bundle(owner, spk, spk_signature, pqspk, pqspk_signature))
 }
 
-/// Checks one prekey signature under the identity's Ed25519 key, naming the prekey in the error.
+/// Checks one hybrid prekey signature under the identity's two signing
+/// keys, naming the prekey in the error.
 fn verify_prekey(
   suite: Suite,
   owner: PublicIdentity,
   message: BitArray,
-  signature: Signature,
+  signature: HybridSignature,
   which: String,
 ) -> Result(Nil, Error) {
-  case keys.verify(suite, identity.signing_key(owner), message, signature) {
+  case identity.verify(suite, owner, message, signature) {
     True -> Ok(Nil)
     False -> Error(BadSignature(which))
   }
@@ -261,7 +301,7 @@ fn check_version(version: Int, what: String) -> Result(Nil, Error) {
   }
 }
 
-/// Reads a 32-byte X25519 public key off the front of a serialized state.
+/// Reads a 32-byte X25519 public key off the front of a bundle.
 fn read_x25519_public(
   bytes: BitArray,
 ) -> Result(#(X25519Public, BitArray), Error) {
@@ -271,14 +311,18 @@ fn read_x25519_public(
   Ok(#(key, rest))
 }
 
-/// Reads a 64-byte signature off the front of a bundle.
-fn read_signature(bytes: BitArray) -> Result(#(Signature, BitArray), Error) {
+/// Reads a 3373-byte hybrid signature off the front of `bytes`, naming the
+/// enclosing encoding in the error.
+fn read_signature(
+  bytes: BitArray,
+  what: String,
+) -> Result(#(HybridSignature, BitArray), Error) {
   use #(raw, rest) <- result.try(wire.take(
     bytes,
-    keys.ed25519_signature_bytes,
-    "bundle",
+    keys.hybrid_signature_size,
+    what,
   ))
-  use signature <- result.try(keys.signature(raw))
+  use signature <- result.try(keys.hybrid_signature(raw))
 
   Ok(#(signature, rest))
 }
@@ -308,8 +352,9 @@ pub fn commitment(suite: Suite, bundle: Bundle) -> BitArray {
 }
 
 /// The initiator's side: verify nothing further (a `Bundle` is already
-/// verified), agree on a secret, start the ratchet as sender, and encrypt
-/// `plaintext` as the first ratchet message.
+/// verified), agree on a secret, start the ratchet as sender, encrypt
+/// `plaintext` as the first ratchet message, and sign the transcript with
+/// both of the initiator's signing keys.
 ///
 /// Returns the initiator's ratchet state, which the caller persists, and the
 /// message to send.
@@ -338,10 +383,27 @@ pub fn initiate(
   ))
   use shared <- result.try(derive_shared(suite, dh1, dh2, dh3, kem_secret))
 
-  let ad = associated_data(initiator.public, bundle.identity)
+  let ad = associated_data(suite, initiator.public, bundle.identity)
 
   use state <- result.try(ratchet.init_sender(suite, shared, ad, bundle.spk))
   use #(state, message) <- result.try(ratchet.encrypt(suite, state, plaintext))
+
+  // The signature comes last because it covers the ratchet message too, so
+  // every byte the responder acts on is bound to the initiator's keys.
+  let bundle_commitment = commitment(suite, bundle)
+
+  use transcript_signature <- result.try(identity.sign(
+    suite,
+    initiator,
+    transcript(
+      initiator.public,
+      bundle.identity,
+      bundle_commitment,
+      ek_public,
+      kem_ciphertext,
+      message,
+    ),
+  ))
 
   Ok(#(
     state,
@@ -349,15 +411,81 @@ pub fn initiate(
       identity: initiator.public,
       ephemeral: ek_public,
       kem_ciphertext: kem_ciphertext,
-      bundle_commitment: commitment(suite, bundle),
+      bundle_commitment: bundle_commitment,
+      transcript_signature: transcript_signature,
       message: message,
     ),
   ))
 }
 
-/// The responder's side: check the commitment, recompute the agreement,
-/// start the ratchet with the signed prekey as its first key pair, and
-/// decrypt the first message.
+/// The bytes the initiator's transcript signature covers, for a responder
+/// whose public identity is `responder`:
+///
+/// ```text
+/// transcript_label || version (1)
+///   || encode(IK_init) (5389) || encode(IK_resp) (5389)
+///   || bundle_commitment (32) || EK (32) || CT (1568) || ratchet_message
+/// ```
+///
+/// That is every field of the initial message except the signature itself,
+/// plus the responder's identity, so a signature made for one bundle, one
+/// ephemeral key or one ciphertext verifies for no other. The identities
+/// are signed in full rather than by fingerprint, unlike the session `AD`:
+/// nothing else in the transcript carries them (the commitment names the
+/// responder's only through a hash, the initiator's not at all), the
+/// signature is made once per relationship so their size costs nothing
+/// that recurs, and the signature then binds the keys themselves. Every field
+/// before the ratchet message has a fixed size, so the concatenation is
+/// unambiguous without length prefixes. Public so tests can sign a
+/// transcript of their own; protocol code reaches it only through
+/// `initiate` and `respond`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// pqxdh.initial_transcript(initial, inviter.public)
+/// ```
+pub fn initial_transcript(
+  initial: InitialMessage,
+  responder: PublicIdentity,
+) -> BitArray {
+  transcript(
+    initial.identity,
+    responder,
+    initial.bundle_commitment,
+    initial.ephemeral,
+    initial.kem_ciphertext,
+    initial.message,
+  )
+}
+
+/// The transcript from its parts, shared by `initiate` (which signs it
+/// before the `InitialMessage` exists) and `initial_transcript` (which
+/// rebuilds it from one), so the two can never lay it out differently.
+fn transcript(
+  initiator: PublicIdentity,
+  responder: PublicIdentity,
+  bundle_commitment: BitArray,
+  ephemeral: X25519Public,
+  kem_ciphertext: KemCiphertext,
+  message: BitArray,
+) -> BitArray {
+  <<
+    transcript_label:bits,
+    wire_version:size(8),
+    identity.encode_public(initiator):bits,
+    identity.encode_public(responder):bits,
+    bundle_commitment:bits,
+    keys.x25519_public_bytes(ephemeral):bits,
+    keys.kem_ciphertext_bytes(kem_ciphertext):bits,
+    message:bits,
+  >>
+}
+
+/// The responder's side: check the commitment, verify the initiator's
+/// hybrid transcript signature, recompute the agreement, start the ratchet
+/// with the signed prekey as its first key pair, and decrypt the first
+/// message.
 ///
 /// Any failure leaves the caller's `Prekeys` untouched: nothing is consumed
 /// until the caller stores the returned state and retires the bundle named
@@ -384,6 +512,11 @@ pub fn respond(
     commitment,
     initial.bundle_commitment,
   ))
+
+  // Explicit initiator authentication, both halves, before any agreement:
+  // without it the joiner is authenticated only through DH1, which is
+  // X25519 alone.
+  use Nil <- result.try(check_transcript(suite, responder, initial))
   use dh1 <- result.try(keys.dh(
     suite,
     prekeys.spk_secret,
@@ -398,7 +531,7 @@ pub fn respond(
   ))
   use shared <- result.try(derive_shared(suite, dh1, dh2, dh3, kem_secret))
 
-  let ad = associated_data(initial.identity, responder.public)
+  let ad = associated_data(suite, initial.identity, responder.public)
   let state =
     ratchet.init_receiver(shared, ad, prekeys.spk_secret, prekeys.bundle.spk)
 
@@ -416,6 +549,26 @@ fn check_identity(responder: Identity, bundle: Bundle) -> Result(Nil, Error) {
   case responder.public == bundle.identity {
     True -> Ok(Nil)
     False -> Error(IdentityMismatch)
+  }
+}
+
+/// The initiator's transcript signature must verify, Ed25519 and ML-DSA-65
+/// both, under the identity the message names.
+fn check_transcript(
+  suite: Suite,
+  responder: Identity,
+  initial: InitialMessage,
+) -> Result(Nil, Error) {
+  case
+    identity.verify(
+      suite,
+      initial.identity,
+      initial_transcript(initial, responder.public),
+      initial.transcript_signature,
+    )
+  {
+    True -> Ok(Nil)
+    False -> Error(BadSignature("initiator transcript"))
   }
 }
 
@@ -468,21 +621,36 @@ pub fn derive_shared(
   |> result.map(secret.new)
 }
 
-/// The session's associated data: the initiator's identity encoding followed
-/// by the responder's, so every message is bound to both parties.
-fn associated_data(
+/// The session's associated data: the initiator's identity fingerprint
+/// followed by the responder's, 64 bytes, so every message is bound to both
+/// parties. There is no label: `AD` is only ever associated data under
+/// keys derived from this handshake's `SK`, so no other use of the same
+/// bytes can be confused with it, and a label would cost every message.
+/// Public so a test can pin the layout; protocol code reaches it only
+/// through `initiate` and `respond`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// pqxdh.associated_data(suite, joiner.public, inviter.public)
+/// // -> <<_:512>>
+/// ```
+pub fn associated_data(
+  suite: Suite,
   initiator: PublicIdentity,
   responder: PublicIdentity,
 ) -> BitArray {
   <<
-    identity.encode_public(initiator):bits,
-    identity.encode_public(responder):bits,
+    identity.fingerprint(suite, initiator):bits,
+    identity.fingerprint(suite, responder):bits,
   >>
 }
 
 /// The wire form of an initial message: the version byte, the initiator's
-/// public identity (128 bytes), the ephemeral key (32), the KEM ciphertext
-/// (1568), the bundle commitment (32), then the ratchet message to the end.
+/// public identity (5389 bytes), the ephemeral key (32), the KEM
+/// ciphertext (1568), the bundle commitment (32), the hybrid transcript
+/// signature (3373), then the ratchet message to the end. The fixed part
+/// is `initial_fixed_bytes`.
 ///
 /// ## Examples
 ///
@@ -496,13 +664,15 @@ pub fn encode_initial(initial: InitialMessage) -> BitArray {
     keys.x25519_public_bytes(initial.ephemeral):bits,
     keys.kem_ciphertext_bytes(initial.kem_ciphertext):bits,
     initial.bundle_commitment:bits,
+    keys.hybrid_signature_bytes(initial.transcript_signature):bits,
     initial.message:bits,
   >>
 }
 
 /// Decodes an initial message, verifying the initiator's identity binding.
-/// The ratchet message at the end is kept as bytes and only parsed when
-/// `respond` decrypts it.
+/// The transcript signature is only checked for shape here: verifying it
+/// needs the responder's identity, which `respond` has. The ratchet message
+/// at the end is kept as bytes and only parsed when `respond` decrypts it.
 ///
 /// ## Examples
 ///
@@ -527,9 +697,13 @@ pub fn decode_initial(
     keys.kem_ciphertext_size,
     "initial message",
   ))
-  use #(commitment, message) <- result.try(wire.take(
+  use #(commitment, rest) <- result.try(wire.take(
     rest,
     commitment_bytes,
+    "initial message",
+  ))
+  use #(signature, message) <- result.try(read_signature(
+    rest,
     "initial message",
   ))
   use ephemeral <- result.try(keys.x25519_public(ephemeral))
@@ -540,6 +714,7 @@ pub fn decode_initial(
     ephemeral: ephemeral,
     kem_ciphertext: ciphertext,
     bundle_commitment: commitment,
+    transcript_signature: signature,
     message: message,
   ))
 }

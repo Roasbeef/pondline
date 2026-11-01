@@ -40,11 +40,14 @@ primitive functions the shell builds from `packages/primitives`.
   codec's module doc; `refusal/1` maps decode errors to a `Refusal`.
 - `core/http1`: pure, total HTTP/1.1 framing for the mailbox binding; an
   incremental response parser bounded as bytes arrive.
-- `core/crypto/keys`, `identity`, `hkdf`: typed X25519, Ed25519 and ML-KEM
-  keys; the per-relationship `Identity` whose `PublicIdentity` exists only
-  with a verified binding signature; RFC 5869 HKDF.
-- `core/crypto/pqxdh`: opaque `Bundle` (signatures verified on decode),
-  `Prekeys`, `InitialMessage`, `initiate` and `respond`.
+- `core/crypto/keys`, `identity`, `hkdf`: typed X25519, Ed25519, ML-DSA-65
+  and ML-KEM keys, and `HybridSignature` (Ed25519 and ML-DSA-65 over one
+  message); the per-relationship `Identity` (two signing keys and an
+  agreement key) whose `PublicIdentity` exists only with a verified hybrid
+  binding; RFC 5869 HKDF.
+- `core/crypto/pqxdh`: opaque `Bundle` (hybrid signatures verified on
+  decode), `Prekeys`, `InitialMessage` (with the joiner's hybrid transcript
+  signature), `initiate` and `respond`.
 - `core/crypto/ratchet`: the Double Ratchet as `encrypt`/`decrypt`
   returning `#(State, output)`, and a total, bounded state codec.
 
@@ -78,6 +81,12 @@ None. `core` sends no messages and owns no processes.
   keeps the returned state (spec §5.3). Encryption is deterministic in the
   state, so a ciphertext must not leave the process before its state is
   committed.
+- Authentication is hybrid (`docs/adr/005-hybrid-authentication.md`):
+  every signature check (identity binding, both prekey signatures, the
+  joiner's transcript) requires the Ed25519 and the ML-DSA-65 half, and
+  `keys` has no function that verifies one half alone. `respond` verifies
+  the transcript before any agreement. Each check is mutation-tested in
+  `packages/primitives/test/primitives/hybrid_auth_test.gleam`.
 - Skip bounds are checked before any key is derived; the skipped-key store
   evicts its oldest keys rather than refusing, and `decode_state` refuses
   a stored count over the bound.
@@ -110,6 +119,7 @@ None. `core` sends no messages and owns no processes.
 
 - `docs/spec.md` §10.1 (functional core), §11.3 (limits), §13 (invariants
   and test strategy).
-- `docs/crypto-profile-v1.md` (the profile, byte for byte) and
-  `docs/adr/002-pq-crypto-over-otp.md`.
+- `docs/crypto-profile-v1.md` (the profile, byte for byte),
+  `docs/adr/002-pq-crypto-over-otp.md` and
+  `docs/adr/005-hybrid-authentication.md`.
 - `docs/gleam-style.md` Part IV §5 (purity layering).

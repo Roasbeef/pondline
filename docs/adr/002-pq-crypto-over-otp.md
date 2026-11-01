@@ -75,3 +75,19 @@ No external vectors exist for it.
 - Revisit if OTP's ML-KEM binding changes, if a reviewed native
   implementation becomes a better home for the primitives, or if
   zeroization becomes a requirement.
+
+## Addendum (2026-11-01): authentication is hybrid
+
+`docs/adr/005-hybrid-authentication.md` amends this record. The primitive
+list above gains ML-DSA-65, also from OTP's `crypto` over OpenSSL 3.5 or
+newer, so the dependency is unchanged. Two statements above no longer
+hold as written. "Ed25519 identity with a binding signature" is now an
+identity of two signing keys, Ed25519 and ML-DSA-65, whose binding and
+prekey signatures are hybrid (both algorithms over the same bytes, both
+required). And the assumption that PQXDH as specialised here keeps
+Signal's security argument now covers one more departure: the initiator
+signs the handshake transcript with both of its keys, which PQXDH does
+not do. Quantum-resistant authentication, which the profile listed as not
+provided, is provided at the handshake. ML-DSA-65 has no fixed-output
+vector through OTP 29 (hedged signing, no seeded key generation), so like
+ML-KEM it is checked by sizes, round trips and rejections.

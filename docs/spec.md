@@ -275,7 +275,7 @@ The cryptographic component must support asynchronous session establishment, aut
 
 The proposed reference construction is **PQXDH followed by an established ratcheting protocol**, rather than a custom handshake or custom symmetric-key schedule.
 
-PQXDH strengthens initial confidentiality against quantum adversaries but its specified authentication still relies on classical assumptions. A classical Double Ratchet alone does not provide continuous post-quantum recovery after compromise; Signal documents separate post-quantum and hybrid ratchets for that purpose. [Signal Messenger](https://signal.org/docs/specifications/pqxdh/)
+PQXDH strengthens initial confidentiality against quantum adversaries but its specified authentication still relies on classical assumptions. Reedwire's profile does not inherit that: every authentication step MUST require both a classical and a post-quantum proof, with identity bindings, prekey signatures and an initiator transcript signature each made with Ed25519 and ML-DSA-65 together (`docs/adr/005-hybrid-authentication.md`, `docs/crypto-profile-v1.md`). A classical Double Ratchet alone does not provide continuous post-quantum recovery after compromise; Signal documents separate post-quantum and hybrid ratchets for that purpose. [Signal Messenger](https://signal.org/docs/specifications/pqxdh/)
 
 The product must describe the guarantees of the selected profile accurately, rather than label the whole system simply “post-quantum.”
 
