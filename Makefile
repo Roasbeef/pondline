@@ -31,7 +31,7 @@ build: ## Warning-free build of every Gleam package
 	done
 
 .PHONY: test
-test: ## Run every package's tests
+test: sidecar ## Run every package's tests (builds the Tor sidecar the tor tests drive)
 	@set -e; for p in $(PACKAGES); do \
 		echo "==> test $$p"; \
 		(cd packages/$$p && gleam test); \
@@ -40,6 +40,12 @@ test: ## Run every package's tests
 .PHONY: test-%
 test-%: ## Run one package's tests, e.g. make test-core
 	@cd packages/$* && gleam test
+
+# ---------------------------------------------------------------- sidecar
+
+.PHONY: sidecar
+sidecar: ## Build the reedwire-tor Arti sidecar (release); the tor package's tests need it
+	cargo build --release --manifest-path native/reedwire-tor/Cargo.toml
 
 # ---------------------------------------------------------------- formatting
 

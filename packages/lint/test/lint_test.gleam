@@ -2270,6 +2270,7 @@ pub fn undocumented(x) { x }
     "lint",
     "mailbox",
     "primitives",
+    "tor",
   ])
 }
 

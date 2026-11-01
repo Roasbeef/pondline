@@ -272,7 +272,7 @@ pub fn portable_packages() -> List(String) {
 /// everywhere; this public list records the sweep and remains useful for census
 /// and policy tests.
 pub fn literate_packages() -> List(String) {
-  ["core", "daemon", "lint", "mailbox", "primitives"]
+  ["core", "daemon", "lint", "mailbox", "primitives", "tor"]
 }
 
 /// A dependency that exists only on the BEAM, named from both sides.
