@@ -89,6 +89,18 @@ doc-check: ## Gate the per-package CLAUDE.md/AGENTS.md graph and docs/ citations
 gen-sql: ## Regenerate the SQL modules after editing any .sql file (needs sqlite3, and the network once; ADR-007)
 	@scripts/gen-sql.sh
 
+# ---------------------------------------------------------------- formal
+
+# Each formal/<tool>/check.sh runs one prover or model checker and exits
+# non-zero on a failed property or a broken-variant model that no longer
+# fails (docs/formal/). They need tools `make check` does not (Lean, P, TLC,
+# a protocol prover), so they run here rather than in the gate.
+.PHONY: formal
+formal: ## Run every formal check under formal/ (proofs, model checkers; docs/formal/)
+	@set -e; for script in formal/*/check.sh; do \
+		echo "==> $$script"; bash "$$script"; \
+	done
+
 # ---------------------------------------------------------------- housekeeping
 
 .PHONY: clean
