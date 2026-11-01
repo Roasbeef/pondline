@@ -2,7 +2,7 @@
 //// (`docs/gleam-style.md` Part IV §4).
 ////
 //// No pure alternative exists for any of these: X25519, Ed25519, ML-KEM,
-//// ChaCha20-Poly1305 and HMAC must come from a reviewed constant-time
+//// ML-DSA, ChaCha20-Poly1305 and HMAC must come from a reviewed constant-time
 //// implementation, and on the BEAM that is OTP's `crypto` application over
 //// OpenSSL. Each binding goes through `primitives_ffi`, which catches every
 //// exception so that no OpenSSL error, and with it no key material, reaches
@@ -75,6 +75,25 @@ pub fn mlkem1024_decapsulate(
   secret: BitArray,
   ciphertext: BitArray,
 ) -> Result(BitArray, Nil)
+
+/// `crypto:generate_key(mldsa65, [])`, returned secret first.
+@external(erlang, "primitives_ffi", "mldsa65_keypair")
+pub fn mldsa65_keypair() -> #(BitArray, BitArray)
+
+/// `crypto:sign(mldsa65, none, Message, Secret)`.
+@external(erlang, "primitives_ffi", "mldsa65_sign")
+pub fn mldsa65_sign(
+  secret: BitArray,
+  message: BitArray,
+) -> Result(BitArray, Nil)
+
+/// `crypto:verify(mldsa65, none, Message, Signature, Public)`.
+@external(erlang, "primitives_ffi", "mldsa65_verify")
+pub fn mldsa65_verify(
+  public: BitArray,
+  message: BitArray,
+  signature: BitArray,
+) -> Bool
 
 /// `crypto:crypto_one_time_aead(chacha20_poly1305, ..., true)`, tag appended.
 @external(erlang, "primitives_ffi", "aead_seal")

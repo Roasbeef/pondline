@@ -37,6 +37,15 @@ pub const mlkem1024_ciphertext_bytes = 1568
 /// The size of the shared secret ML-KEM produces.
 pub const mlkem_shared_secret_bytes = 32
 
+/// The size of an ML-DSA-65 public key (FIPS 204).
+pub const mldsa65_public_bytes = 1952
+
+/// The size of an ML-DSA-65 secret key, in OpenSSL's expanded form.
+pub const mldsa65_secret_bytes = 4032
+
+/// The size of an ML-DSA-65 signature.
+pub const mldsa65_signature_bytes = 3309
+
 /// The ChaCha20-Poly1305 key size.
 pub const aead_key_bytes = 32
 
@@ -238,6 +247,54 @@ pub fn mlkem1024_decapsulate(
   ciphertext: BitArray,
 ) -> Result(BitArray, Nil) {
   ffi_crypto.mlkem1024_decapsulate(secret, ciphertext)
+}
+
+/// A fresh ML-DSA-65 key pair (FIPS 204), as `#(secret, public)`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let #(_secret, public) = mldsa65_keypair()
+/// bit_array.byte_size(public)
+/// // -> 1952
+/// ```
+pub fn mldsa65_keypair() -> #(BitArray, BitArray) {
+  ffi_crypto.mldsa65_keypair()
+}
+
+/// An ML-DSA-65 signature over `message`, with an empty context string.
+/// OpenSSL signs in FIPS 204's hedged mode, so two signatures of the same
+/// message differ; both verify. An error for a secret of the wrong size.
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(signature) = mldsa65_sign(secret, <<"m">>)
+/// mldsa65_verify(public, <<"m">>, signature)
+/// // -> True
+/// ```
+pub fn mldsa65_sign(
+  secret: BitArray,
+  message: BitArray,
+) -> Result(BitArray, Nil) {
+  ffi_crypto.mldsa65_sign(secret, message)
+}
+
+/// Whether `signature` is a valid ML-DSA-65 signature over `message` by
+/// `public`, with an empty context string. Malformed inputs verify as false.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mldsa65_verify(public, <<"m">>, <<0:26_472>>)
+/// // -> False
+/// ```
+pub fn mldsa65_verify(
+  public: BitArray,
+  message: BitArray,
+  signature: BitArray,
+) -> Bool {
+  ffi_crypto.mldsa65_verify(public, message, signature)
 }
 
 /// ChaCha20-Poly1305 encryption (RFC 8439): the ciphertext with its

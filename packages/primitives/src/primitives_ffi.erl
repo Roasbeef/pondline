@@ -13,6 +13,7 @@
          x25519_keypair/0, x25519_public/1, x25519/2,
          ed25519_keypair/0, ed25519_public/1, ed25519_sign/2, ed25519_verify/3,
          mlkem1024_keypair/0, mlkem1024_encapsulate/1, mlkem1024_decapsulate/2,
+         mldsa65_keypair/0, mldsa65_sign/2, mldsa65_verify/3,
          aead_seal/4, aead_open/4,
          openssl_version/0]).
 
@@ -85,6 +86,31 @@ mlkem1024_decapsulate(Secret, Ciphertext)
   when byte_size(Secret) =:= 3168, byte_size(Ciphertext) =:= 1568 ->
     ?GUARD(crypto:decapsulate_key(mlkem1024, Secret, Ciphertext));
 mlkem1024_decapsulate(_, _) -> {error, nil}.
+
+%% ML-DSA-65 (FIPS 204). The secret is OpenSSL's expanded private key, 4032
+%% bytes; OTP 29 cannot rebuild a key pair from the 32-byte seed through
+%% generate_key/3, so the expanded form is what Reedwire stores. Signing is
+%% OpenSSL's default hedged mode, which mixes fresh randomness into every
+%% signature, so two signatures of one message differ and both verify.
+mldsa65_keypair() ->
+    {Public, Secret} = crypto:generate_key(mldsa65, []),
+    {Secret, Public}.
+
+mldsa65_sign(Secret, Message) when byte_size(Secret) =:= 4032 ->
+    ?GUARD(crypto:sign(mldsa65, none, Message, Secret));
+mldsa65_sign(_, _) -> {error, nil}.
+
+%% A wrong-sized public key makes crypto:verify raise rather than return
+%% false, and the raised error carries the key; the size guard and the catch
+%% both turn that into false.
+mldsa65_verify(Public, Message, Signature)
+  when byte_size(Public) =:= 1952, byte_size(Signature) =:= 3309 ->
+    try crypto:verify(mldsa65, none, Message, Signature, Public) of
+        true -> true;
+        _ -> false
+    catch _:_ -> false
+    end;
+mldsa65_verify(_, _, _) -> false.
 
 %% ChaCha20-Poly1305 (RFC 8439). The output is the ciphertext with the
 %% 16-byte tag appended.
