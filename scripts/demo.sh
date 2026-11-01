@@ -83,12 +83,13 @@ else
   PATIENCE=60
 fi
 
-# The agents send one message at a time (see agents/asker.sh). Without it,
-# two daemon faults show up when messages are queued in a burst: over Tor
-# the receiver drops messages that arrive out of order, and over loopback a
-# message over budget was delivered to the agent instead of held. Set
-# PACE_SENDS=0 to reproduce them (docs/demo.md, "Known issues").
-PACE_SENDS=${PACE_SENDS:-1}
+# The agents queue their sends back to back by default. PACE_SENDS=1 makes
+# each agent wait until the daemon reports a message stored by the mailbox
+# before it sends the next, which orders the sends and avoids the burst
+# faults the demo once showed (docs/demo.md, "Burst behavior"). The faults no
+# longer reproduce, and regression tests guard them; the knob stays for
+# isolating a failure.
+PACE_SENDS=${PACE_SENDS:-0}
 
 # ------------------------------------------------------------------ output
 

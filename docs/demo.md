@@ -102,21 +102,44 @@ the script (the build is included in the first line).
 | budget phase (hold, raise, release) | 8 s | 29 s |
 | total | 38 s | 125 s |
 
-## Known issues the demo works around
+## Burst behavior and pacing
 
-Both are in the daemon and were found while building this demo. The agents
-send one message at a time and wait until the daemon reports it stored
-(`PACE_SENDS=1`, the default). `PACE_SENDS=0` removes the pacing and
-reproduces them.
+The agents queue their sends back to back (`PACE_SENDS=0`, the default).
+`PACE_SENDS=1` makes each send wait until the daemon reports the message
+stored by the mailbox, which orders the sends.
+
+While the demo was being built, unpaced runs showed two symptoms, and the
+demo was paced to work around them:
 
 - Over Tor, five tasks queued back to back were all dropped by the receiver
   (`processed.outcome = 'dropped'`, acknowledged to the mailbox, so lost),
-  after the first was applied. Queued messages are delivered concurrently
-  and reached the mailbox in a different order; the spec calls for bounded
-  out-of-order reception.
-- Over loopback with a burst, the two messages over budget appeared in
-  `contacts list` as `held=2` yet were stored as `ready` and delivered to
-  the agent. Paced, they are held correctly.
+  after the first was applied, as if they had reached the mailbox out of
+  order.
+- Over loopback, the two messages over budget appeared in `contacts list`
+  as `held=2` yet were stored as `ready` and delivered to the agent.
+
+Neither reproduced after the weft port, in the daemon's tests or in the
+demo. The earlier failures most likely came from a half-ported working tree,
+though that was not proven. Unpaced, the demo passed five loopback runs and
+one Tor run at the commit that made `PACE_SENDS=0` the default. The symptoms
+are now guarded by tests, so a regression fails the build and not only a
+demo run:
+
+- `packages/core/test/core/reorder_test.gleam`: five sends delivered to the
+  mailbox newest first are all delivered, once each.
+- `packages/core/test/core/world.gleam`, checked by the simulation: every
+  held message has a `Held` delivery, and the `Ready` deliveries equal the
+  budget's `used`.
+- `packages/daemon/test/daemon/burst_test.gleam`: a burst appended out of
+  order is applied in full, and a burst over a budget of three is held
+  (`used=3 held=2`, three `ready` rows, two `held` rows) and released by
+  `raise_budget`.
+- `packages/daemon/test/daemon/store_test.gleam`: a second `Delivered` for
+  the same contact and message fails the commit and rolls it back, so the
+  store can no longer keep one row while the state believes another.
+
+Set `PACE_SENDS=1` to pace the sends if a run fails and you want to separate
+a burst problem from another one.
 
 ## What it does not show
 

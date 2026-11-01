@@ -37,11 +37,10 @@ reply="$AGENT_DIR/reply.json"
 meta="$AGENT_DIR/reply.meta"
 
 # Optional pacing: with PACE_SENDS=1 a send waits until the daemon reports
-# the message stored by the mailbox before the next one starts. Queued
-# messages are otherwise delivered concurrently, so over Tor they can reach
-# the mailbox in a different order than they were sent, and the peer was
-# observed to drop messages that arrive out of order (docs/demo.md, "Known
-# issue"). This is a workaround in the agent, not a feature.
+# the message stored by the mailbox before the next one starts, so sends
+# reach the mailbox in order. Off by default: the daemon handles bursts and
+# reordering itself (docs/demo.md, "Burst behavior"), and the knob remains
+# for isolating a failure.
 pace() {
   [ "${PACE_SENDS:-0}" = 1 ] || return 0
   waited=0
