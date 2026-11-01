@@ -4,7 +4,9 @@
 ////
 //// This module owns the schema, the durability pragmas and every SQL string
 //// in the daemon. Nothing above it writes SQL, and nothing below it knows
-//// what a transition is. The shape follows `mailbox/store`: a connection
+//// what a transition is. The schema's text is the migration files under
+//// `packages/daemon/sql/`, one per version, which `make gen-sql` embeds in
+//// the generated `daemon/schema` (ADR-007); this module applies them. The shape follows `mailbox/store`: a connection
 //// held by exactly one process (the engine), pragmas that make a commit
 //// durable (a write-ahead log, `synchronous=FULL`, `fullfsync` because
 //// macOS `fsync` does not flush the drive cache), and `user_version`
@@ -98,6 +100,7 @@ import core/route.{type Inbox, type Route}
 import core/secret
 import core/snapshot
 import core/time.{type Instant, Instant}
+import daemon/schema
 import gleam/dynamic/decode
 import gleam/int
 import gleam/list
@@ -105,8 +108,10 @@ import gleam/option.{type Option, None, Some}
 import gleam/result
 import sqlight
 
-/// The schema version this build writes and understands.
-pub const schema_version = 2
+/// The schema version this build writes and understands: the number of
+/// migration files under `packages/daemon/sql/`, as `daemon/schema` embeds
+/// them.
+pub const schema_version = schema.version
 
 /// How long SQLite waits on a locked database before giving up. Only an
 /// outside process can contend with the engine, so this is a courtesy.
@@ -326,114 +331,6 @@ pub type InvitationFile {
   FileGone
 }
 
-/// The statements that bring an empty database to each version. Entry `n`
-/// moves version `n` to `n + 1`, so the list is append-only.
-const migrations = [
-  "
-CREATE TABLE meta (
-  key TEXT NOT NULL PRIMARY KEY,
-  value BLOB NOT NULL
-) STRICT, WITHOUT ROWID;
-
-CREATE TABLE relationships (
-  contact BLOB NOT NULL PRIMARY KEY,
-  version INTEGER NOT NULL,
-  phase TEXT NOT NULL,
-  description TEXT NOT NULL,
-  inbox_queue BLOB NOT NULL UNIQUE,
-  inbox BLOB NOT NULL,
-  blob BLOB NOT NULL
-) STRICT;
-
-CREATE TABLE offers (
-  invitation BLOB NOT NULL PRIMARY KEY,
-  version INTEGER NOT NULL,
-  phase TEXT NOT NULL,
-  description TEXT NOT NULL,
-  deadline INTEGER NOT NULL,
-  inbox_queue BLOB NOT NULL UNIQUE,
-  inbox BLOB NOT NULL,
-  blob BLOB NOT NULL,
-  file BLOB NOT NULL
-) STRICT;
-
-CREATE TABLE outbox (
-  envelope BLOB NOT NULL PRIMARY KEY,
-  contact BLOB NOT NULL,
-  kind TEXT NOT NULL,
-  message_id BLOB,
-  route BLOB NOT NULL,
-  padded BLOB NOT NULL,
-  deadline INTEGER NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('queued', 'stored', 'failed')),
-  attempts INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at INTEGER NOT NULL,
-  receipt BLOB
-) STRICT;
-
-CREATE INDEX outbox_due ON outbox (status, next_attempt_at);
-
-CREATE TABLE processed (
-  queue BLOB NOT NULL,
-  envelope BLOB NOT NULL,
-  digest BLOB NOT NULL,
-  outcome TEXT NOT NULL,
-  acked INTEGER NOT NULL DEFAULT 0,
-  PRIMARY KEY (queue, envelope)
-) STRICT, WITHOUT ROWID;
-
-CREATE TABLE deliveries (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  contact BLOB NOT NULL,
-  message_id BLOB NOT NULL,
-  content_type TEXT NOT NULL,
-  payload BLOB NOT NULL,
-  in_reply_to BLOB,
-  status TEXT NOT NULL
-    CHECK (status IN ('ready', 'held', 'expired', 'consumed')),
-  received_at INTEGER NOT NULL,
-  UNIQUE (contact, message_id)
-) STRICT;
-
-CREATE TABLE sent_messages (
-  message_id BLOB NOT NULL PRIMARY KEY,
-  contact BLOB NOT NULL,
-  state TEXT NOT NULL CHECK (
-    state IN ('locally_queued', 'stored_by_mailbox', 'received_by_peer',
-              'failed')
-  )
-) STRICT;
-
-CREATE TABLE audit (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT,
-  contact BLOB NOT NULL,
-  direction TEXT NOT NULL,
-  message_id BLOB NOT NULL,
-  content_type TEXT NOT NULL,
-  payload BLOB NOT NULL,
-  at INTEGER NOT NULL
-) STRICT;
-",
-  "
-ALTER TABLE outbox ADD COLUMN retransmits INTEGER NOT NULL DEFAULT 0;
-ALTER TABLE outbox ADD COLUMN retransmit_at INTEGER;
-
-CREATE INDEX outbox_retransmit ON outbox (retransmit_at)
-  WHERE retransmit_at IS NOT NULL;
-
-CREATE TABLE fingerprints (
-  contact BLOB NOT NULL,
-  digest BLOB NOT NULL,
-  message_id BLOB NOT NULL,
-  expires_at INTEGER NOT NULL,
-  receipts INTEGER NOT NULL,
-  PRIMARY KEY (contact, digest)
-) STRICT, WITHOUT ROWID;
-
-CREATE INDEX fingerprints_by_expiry ON fingerprints (expires_at);
-",
-]
-
 // -------------------------------------------------------------- lifecycle
 
 /// Opens (creating if absent) the database at `path`, applies the durability
@@ -545,7 +442,7 @@ fn migrate(store: Store) -> Result(Nil, Error) {
   // the migrations it has not seen.
   case found > schema_version {
     True -> Error(FutureSchema(found:, supported: schema_version))
-    False -> apply_migrations(store, list.drop(migrations, found), found)
+    False -> apply_migrations(store, list.drop(schema.migrations, found), found)
   }
 }
 
