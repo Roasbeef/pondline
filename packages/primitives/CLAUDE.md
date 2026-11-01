@@ -23,11 +23,16 @@ the protocol logic stays pure.
 - `primitives/suite`: `suite()`, the production `core/crypto/suite.Suite`
   built from the functions above. The only place the record is filled with
   real implementations; the fake lives in `core`'s `test/` only.
+- `test/primitives/vectors` (test only): the loader for the trimmed
+  Wycheproof and NIST ACVP vector files under `test/vectors/`, which
+  `test/vectors/trim.py` derives from the upstream repositories at the
+  commit and SHA-256 each file records.
 
 ## Relationships
 
 Depends on `gleam_stdlib`, OTP's `crypto`, and `core` (for the `Suite` type
-alone; `core` never depends back). Consumed by the daemon and mailbox
+alone; `core` never depends back). The tests also take `simplifile` and
+`gleam_json`, to read the vector files; neither reaches `src/`. Consumed by the daemon and mailbox
 shells, which take `primitives/suite.suite()`. Its tests run the real
 handshake and ratchet over these primitives.
 
@@ -53,6 +58,20 @@ None. Pure function calls into OpenSSL; no processes, no messages.
   protocols over real crypto.
 - ML-KEM decapsulation of a forged ciphertext returns an unrelated secret,
   not an error. Authentication comes from what that secret later keys.
+- The standard vector suites run through the `primitives` API, never
+  through `crypto:` directly (`test/primitives/wycheproof_*_test.gleam`,
+  `test/primitives/acvp_*_test.gleam`): Wycheproof X25519 (every zero
+  shared secret refused, every other case computed as RFC 7748 says),
+  Ed25519 (every invalid and malleated signature refused; the small-order
+  and mixed-order `acceptable` cases are pinned as accepted), ChaCha20-
+  Poly1305 (every modified tag and every nonce size but 12 bytes refused),
+  HMAC-SHA-256 and HKDF-SHA-256 (sizes past 8160 refused); NIST ACVP
+  ML-KEM-1024 (NIST key pairs and ciphertexts, the implicit-rejection
+  secret of every modified ciphertext, the encapsulation-key modulus check
+  and the decapsulation-key hash check) and ML-DSA-65 (NIST key pairs sign
+  and verify through the binding, NIST signatures with an empty context
+  verify and ones under another context do not). `docs/formal/crypto.md`
+  records the sources, counts and what each suite cannot reach.
 - `test/primitives/hybrid_auth_test.gleam` holds the tests that fail if any
   hybrid signature check verifies only its classical half: identity
   binding, both prekey signatures and the joiner's transcript, each with
@@ -63,3 +82,5 @@ None. Pure function calls into OpenSSL; no processes, no messages.
 - `docs/adr/002-pq-crypto-over-otp.md` (the decision and its evidence).
 - `docs/crypto-profile-v1.md` (the algorithms, layouts and guarantees).
 - `docs/spec.md` §5 (the crypto contract).
+- `docs/formal/crypto.md` (the symbolic proof of the handshake and the
+  vector results, with what each abstracts).
