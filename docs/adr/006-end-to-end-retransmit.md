@@ -136,5 +136,9 @@ What is implemented and tested:
   mailbox expired is also past retransmission; the planned sender slack on
   the retention deadline (`docs/dst/plan.md`, clock skew) would make the
   retransmit cover that window too.
+- Rows a schema 1 file holds as stored and unreceipted at upgrade get no
+  `retransmit_at` (the migration adds the column empty, and only a later
+  `record_send(Stored)` sets it), so they are never retransmitted. This is
+  a one-time gap at the upgrade.
 - Revisit the window and the bound with measurements from real deployments:
   how long receivers are offline, and how often mailboxes lose data.
