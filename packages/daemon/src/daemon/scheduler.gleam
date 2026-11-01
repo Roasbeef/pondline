@@ -75,7 +75,7 @@ import core/mailbox/protocol
 import core/time
 import daemon/engine
 import daemon/log
-import daemon/mail
+import daemon/mail.{type Handle}
 import daemon/mailbox_client
 import daemon/status
 import daemon/store
@@ -88,6 +88,7 @@ import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
 import weft
 import weft/actor
+import weft/timer
 
 /// Milliseconds between periodic dispatches. A retry that comes due is sent
 /// within this long; an ordinary send is nudged and does not wait for it.
@@ -118,15 +119,17 @@ pub type Config {
     /// How to reach mailboxes.
     dialer: Dialer,
     /// The writer whose committed rows are sent.
-    engine: Name(engine.Message),
+    engine: Handle(engine.Message),
     /// Told whether the mailbox answered.
-    status: Name(status.Message),
+    status: Handle(status.Message),
     /// The current time.
     clock: fn() -> time.Instant,
     /// SHA-256, to check a receipt against the bytes sent.
     sha256: fn(BitArray) -> BitArray,
     /// The deadline of each run of sends, in milliseconds.
     send_deadline_ms: Int,
+    /// Where the actor's tick and each run's deadline are armed.
+    timer: timer.Source,
   )
 }
 
@@ -252,6 +255,7 @@ fn builder(
   |> actor.on_message(handle)
   |> actor.named(name)
   |> actor.periodic(every: tick_ms, sending: Tick)
+  |> actor.with_timer_source(config.timer)
 }
 
 /// Tells the scheduler a row was committed. Safe to lose: the periodic tick
@@ -263,8 +267,8 @@ fn builder(
 /// scheduler.nudge(name)
 /// // -> Nil
 /// ```
-pub fn nudge(name: Name(Message)) -> Nil {
-  mail.tell(name, Nudge)
+pub fn nudge(name: Handle(Message)) -> Nil {
+  mail.tell(name, "nudge", Nudge)
 }
 
 /// How many seconds to wait before the retry that follows `attempts` failed
@@ -450,6 +454,7 @@ pub fn send_batch(
   |> weft.new
   |> weft.limit(max_in_flight)
   |> weft.deadline(config.send_deadline_ms)
+  |> weft.with_timer_source(config.timer)
   |> weft.start_relayed(sink)
 }
 

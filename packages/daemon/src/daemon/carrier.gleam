@@ -55,7 +55,7 @@
 //// passes the queue id in hex); this module passes it through unchanged.
 
 import core/endpoint
-import daemon/mail
+import daemon/mail.{type Handle}
 import daemon/status
 import daemon/transport.{type Connection, type Dialer, type TransportError}
 import gleam/erlang/process.{type Name, type Selector, type Subject}
@@ -68,6 +68,7 @@ import tor/address
 import tor/stream
 import weft
 import weft/state_machine as sm
+import weft/timer
 
 /// How long a bootstrap may take before the carrier calls it failed.
 pub const bootstrap_timeout_ms = 180_000
@@ -101,11 +102,12 @@ type State {
 type Data {
   Data(
     held: Option(tor.Tor),
-    status: Name(status.Message),
+    status: Handle(status.Message),
     self: Subject(Message),
     events: Subject(tor.Event),
     bootstrap: fn() -> Result(Nil, Nil),
     deadline_ms: Int,
+    timer: timer.Source,
   )
 }
 
@@ -116,16 +118,17 @@ type Data {
 /// ## Examples
 ///
 /// ```gleam
-/// carrier.start(name, status_name, Some("/opt/reedwire/reedwire-tor"), dir)
+/// carrier.start(name, status, Some("/opt/reedwire/reedwire-tor"), dir, timer.WallClock)
 /// // -> Ok(started)
 /// ```
 pub fn start(
   name: Name(Message),
-  status_name: Name(status.Message),
+  status_name: Handle(status.Message),
   binary: Option(String),
   state_dir: String,
+  source: timer.Source,
 ) -> actor.StartResult(Subject(Message)) {
-  sm.start(builder(name, status_name, binary, state_dir))
+  sm.start(builder(name, status_name, binary, state_dir, source))
 }
 
 /// The carrier as a supervised child.
@@ -133,15 +136,16 @@ pub fn start(
 /// ## Examples
 ///
 /// ```gleam
-/// carrier.supervised(name, status_name, None, dir)
+/// carrier.supervised(name, status, None, dir, timer.WallClock)
 /// ```
 pub fn supervised(
   name: Name(Message),
-  status_name: Name(status.Message),
+  status_name: Handle(status.Message),
   binary: Option(String),
   state_dir: String,
+  source: timer.Source,
 ) -> supervision.ChildSpecification(Subject(Message)) {
-  sm.supervised(builder(name, status_name, binary, state_dir))
+  sm.supervised(builder(name, status_name, binary, state_dir, source))
 }
 
 /// Starts a carrier that bootstraps with `bootstrap` instead of a sidecar,
@@ -150,7 +154,7 @@ pub fn supervised(
 /// for a real sidecar; a subject is read only by the process that made it,
 /// so the machine makes it and hands it out. It holds no handle, so dials
 /// fail, and exists to exercise the bootstrap's outcomes and the restarts
-/// without Tor.
+/// without Tor. Its run deadlines are on the wall clock.
 ///
 /// ## Examples
 ///
@@ -166,7 +170,7 @@ pub fn supervised(
 /// ```
 pub fn start_with_bootstrap(
   name: Name(Message),
-  status_name: Name(status.Message),
+  status_name: Handle(status.Message),
   bootstrap: fn() -> Result(Nil, Nil),
   deadline_ms: Int,
   subscribe: fn(Subject(tor.Event)) -> Nil,
@@ -185,6 +189,7 @@ pub fn start_with_bootstrap(
         events:,
         bootstrap:,
         deadline_ms:,
+        timer: timer.WallClock,
       )),
     )
   })
@@ -197,23 +202,26 @@ pub fn start_with_bootstrap(
 /// in the new process, which then owns the handle.
 fn builder(
   name: Name(Message),
-  status_name: Name(status.Message),
+  status_name: Handle(status.Message),
   binary: Option(String),
   state_dir: String,
+  source: timer.Source,
 ) -> sm.Builder(State, Data, Message, Subject(Message)) {
   sm.new_with_initialiser(60_000, fn(subject) {
-    launch(subject, status_name, binary, state_dir)
+    launch(subject, status_name, binary, state_dir, source)
   })
   |> sm.on_event(handle)
   |> sm.named(name)
+  |> sm.with_timer_source(source)
 }
 
 /// Starts the sidecar and its bootstrap, or notes there is none.
 fn launch(
   subject: Subject(Message),
-  status_name: Name(status.Message),
+  status_name: Handle(status.Message),
   binary: Option(String),
   state_dir: String,
+  source: timer.Source,
 ) -> Result(sm.Initialised(State, Data, Message, Subject(Message)), String) {
   // Without a binary there is no Tor and nothing to start.
   case binary {
@@ -231,6 +239,7 @@ fn launch(
           events: process.new_subject(),
           bootstrap: fn() { Error(Nil) },
           deadline_ms: 0,
+          timer: source,
         ),
       )
       |> sm.returning(subject)
@@ -262,6 +271,7 @@ fn launch(
             |> result.replace_error(Nil)
           },
           deadline_ms: bootstrap_deadline_ms,
+          timer: source,
         )),
       )
     }
@@ -277,6 +287,7 @@ fn run(data: Data) -> Selector(Message) {
   let _relay =
     weft.new([data.bootstrap])
     |> weft.deadline(data.deadline_ms)
+    |> weft.with_timer_source(data.timer)
     |> weft.start_relayed(sink)
 
   process.new_selector()
@@ -395,9 +406,9 @@ fn fail(data: Data) -> sm.Next(State, Data, Message) {
 /// ## Examples
 ///
 /// ```gleam
-/// carrier.dialer(name, endpoint.TorOnly)
+/// carrier.dialer(handle, endpoint.TorOnly)
 /// ```
-pub fn dialer(name: Name(Message), policy: endpoint.CarrierPolicy) -> Dialer {
+pub fn dialer(name: Handle(Message), policy: endpoint.CarrierPolicy) -> Dialer {
   transport.new_dialer(policy, fn(host, port, group, timeout_ms) {
     dial_onion(name, host, port, group, timeout_ms)
   })
@@ -406,14 +417,14 @@ pub fn dialer(name: Name(Message), policy: endpoint.CarrierPolicy) -> Dialer {
 /// Opens one onion stream through the sidecar and wraps it as a
 /// `Connection`.
 fn dial_onion(
-  name: Name(Message),
+  name: Handle(Message),
   host: endpoint.OnionAddress,
   port: endpoint.Port,
   group: String,
   timeout_ms: Int,
 ) -> Result(Connection, TransportError) {
   use held <- result.try(
-    mail.ask(name, 1000, GetTor)
+    mail.ask(name, "get_tor", 1000, GetTor)
     |> result.replace_error(transport.ConnectFailed),
   )
   use started <- result.try(option.to_result(held, transport.ConnectFailed))

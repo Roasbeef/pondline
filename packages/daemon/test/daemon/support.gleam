@@ -24,6 +24,7 @@ import primitives
 import simplifile
 import sqlight
 import weft/poll
+import weft/timer
 
 /// A running mailbox and what a daemon needs to use it.
 pub type Mailbox {
@@ -66,6 +67,9 @@ pub fn start_mailbox() -> Mailbox {
       sweep_period_ms: 60_000,
       clock:,
       names: mailbox_node.new_names(),
+      timer: timer.WallClock,
+      interceptor: None,
+      store_faults: None,
     ))
   let assert Ok(server) =
     mailbox_http.start(

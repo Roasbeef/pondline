@@ -37,7 +37,7 @@ import core/mailbox/protocol
 import core/route.{type Inbox}
 import daemon/engine
 import daemon/log
-import daemon/mail
+import daemon/mail.{type Handle}
 import daemon/mailbox_client
 import daemon/status
 import daemon/transport.{type Dialer}
@@ -47,6 +47,7 @@ import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
 import weft/state_machine as sm
+import weft/timer
 
 /// Milliseconds between scans when nothing is failing.
 pub const tick_ms = 1000
@@ -63,11 +64,13 @@ pub type Config {
     /// How to reach the mailbox.
     dialer: Dialer,
     /// The writer that knows which queues are pending.
-    engine: Name(engine.Message),
+    engine: Handle(engine.Message),
     /// Told whether the mailbox answered.
-    status: Name(status.Message),
+    status: Handle(status.Message),
     /// The allowance the mailbox operator issued.
     provision: Capability(Provision),
+    /// Where the `scan` timeout is armed.
+    timer: timer.Source,
   )
 }
 
@@ -134,6 +137,7 @@ fn builder(
   })
   |> sm.on_event(handle)
   |> sm.named(name)
+  |> sm.with_timer_source(config.timer)
 }
 
 /// Tells the provisioner a queue is waiting. Safe to lose.
@@ -144,8 +148,8 @@ fn builder(
 /// provisioner.nudge(name)
 /// // -> Nil
 /// ```
-pub fn nudge(name: Name(Message)) -> Nil {
-  mail.tell(name, Nudge)
+pub fn nudge(name: Handle(Message)) -> Nil {
+  mail.tell(name, "nudge", Nudge)
 }
 
 /// The delay before the next scan after `failures` failed scans in a row.

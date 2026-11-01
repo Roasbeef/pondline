@@ -10,7 +10,7 @@ mug = ">= 3.0.0 and < 4.0.0"
 sqlight = ">= 1.2.0 and < 2.0.0"
 simplifile = ">= 2.0.0 and < 3.0.0"
 argv = ">= 1.0.0 and < 2.0.0"
-weft = "== 0.4.6"
+weft = { path = "../../../weft" }
 gleam_json = ">= 3.0.0 and < 4.0.0"
 core = { path = "../core" }
 primitives = { path = "../primitives" }

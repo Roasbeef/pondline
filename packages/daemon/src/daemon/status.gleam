@@ -19,7 +19,7 @@
 //// `weft/event_manager`. It does no first work before serving, so
 //// `continuing` has nothing to order.
 
-import daemon/mail
+import daemon/mail.{type Handle}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/otp/supervision
 import weft/actor
@@ -108,8 +108,8 @@ pub fn supervised(
 /// status.set_tor(name, status.TorBootstrapped)
 /// // -> Nil
 /// ```
-pub fn set_tor(name: Name(Message), status: TorStatus) -> Nil {
-  mail.tell(name, SetTor(status))
+pub fn set_tor(name: Handle(Message), status: TorStatus) -> Nil {
+  mail.tell(name, "set_tor", SetTor(status))
 }
 
 /// Records whether the last mailbox call got through.
@@ -120,8 +120,8 @@ pub fn set_tor(name: Name(Message), status: TorStatus) -> Nil {
 /// status.set_mailbox(name, status.MailboxReachable)
 /// // -> Nil
 /// ```
-pub fn set_mailbox(name: Name(Message), status: MailboxStatus) -> Nil {
-  mail.tell(name, SetMailbox(status))
+pub fn set_mailbox(name: Handle(Message), status: MailboxStatus) -> Nil {
+  mail.tell(name, "set_mailbox", SetMailbox(status))
 }
 
 /// The current observations; unknown ones when the cell is not running.
@@ -132,8 +132,8 @@ pub fn set_mailbox(name: Name(Message), status: MailboxStatus) -> Nil {
 /// status.read(name)
 /// // -> Snapshot(TorNotUsed, MailboxReachable)
 /// ```
-pub fn read(name: Name(Message)) -> Snapshot {
-  case mail.ask(name, 1000, Read) {
+pub fn read(name: Handle(Message)) -> Snapshot {
+  case mail.ask(name, "read", 1000, Read) {
     Ok(snapshot) -> snapshot
     Error(Nil) -> Snapshot(tor: TorUnavailable, mailbox: MailboxUnknown)
   }

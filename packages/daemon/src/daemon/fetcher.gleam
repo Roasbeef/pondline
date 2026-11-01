@@ -57,16 +57,18 @@ import core/limits
 import core/mailbox/protocol
 import core/route.{type Inbox}
 import daemon/engine
+import daemon/mail.{type Handle}
 import daemon/mailbox_client
 import daemon/status
 import daemon/transport.{type Dialer}
-import gleam/erlang/process.{type Name, type Subject}
+import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
 import gleam/otp/actor as otp_actor
 import gleam/result
 import weft
 import weft/state_machine as sm
+import weft/timer
 
 /// The budget for a call that is not a long poll.
 pub const call_timeout_ms = 30_000
@@ -93,15 +95,17 @@ pub type Config {
     /// How to reach the mailbox.
     dialer: Dialer,
     /// The writer that processes envelopes and knows what is committed.
-    engine: Name(engine.Message),
+    engine: Handle(engine.Message),
     /// Told whether the mailbox answered.
-    status: Name(status.Message),
+    status: Handle(status.Message),
     /// The queue to read, with the capability to read it.
     inbox: Inbox,
     /// The deadline of the acknowledging run, in milliseconds.
     ack_deadline_ms: Int,
     /// The deadline of the polling run, in milliseconds.
     poll_deadline_ms: Int,
+    /// Where the backoff timeout and each run's deadline are armed.
+    timer: timer.Source,
   )
 }
 
@@ -198,6 +202,7 @@ pub fn start(config: Config) -> otp_actor.StartResult(Subject(Message)) {
     |> Ok
   })
   |> sm.on_event(handle)
+  |> sm.with_timer_source(config.timer)
   |> sm.start
 }
 
@@ -238,7 +243,9 @@ fn begin_round(data: Data) -> sm.Next(State, Data, Message) {
 
     Live -> {
       let config = data.config
-      start_run(data.acks, config.ack_deadline_ms, fn() { ack_pending(config) })
+      start_run(data.acks, config, config.ack_deadline_ms, fn() {
+        ack_pending(config)
+      })
 
       sm.transition(to: Acking, data:)
     }
@@ -283,7 +290,7 @@ fn polled(data: Data, pulled: Pulled) -> sm.Next(State, Data, Message) {
 /// the engine.
 fn begin_poll(data: Data) -> sm.Next(State, Data, Message) {
   let config = data.config
-  start_run(data.polls, config.poll_deadline_ms, fn() {
+  start_run(data.polls, config, config.poll_deadline_ms, fn() {
     use batch <- result.try(fetch_batch(config))
 
     process_batch(config, batch)
@@ -299,17 +306,19 @@ fn failed(data: Data) -> sm.Next(State, Data, Message) {
   |> sm.with_state_timeout(backoff_ms(data.failures), Begin)
 }
 
-/// One step as a `weft` run of one task, bounded by `deadline_ms` and
-/// relayed to `sink`. The relay is linked to the machine, so a machine that
-/// dies takes the run with it.
+/// One step as a `weft` run of one task, bounded by `deadline_ms` on the
+/// config's timer source and relayed to `sink`. The relay is linked to the
+/// machine, so a machine that dies takes the run with it.
 fn start_run(
   sink: Subject(Pulled),
+  config: Config,
   deadline_ms: Int,
   work: fn() -> Result(Nil, RoundFailed),
 ) -> Nil {
   let _relay =
     weft.new([work])
     |> weft.deadline(deadline_ms)
+    |> weft.with_timer_source(config.timer)
     |> weft.start_relayed(sink)
 
   Nil

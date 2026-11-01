@@ -54,6 +54,17 @@
 //// processed-and-dropped, so the mailbox can still be acknowledged once the
 //// drop is durable.
 ////
+//// ## Job kinds and the fault hook
+////
+//// Every job is labelled with a `JobKind`, one per public function, which
+//// names the job to a mail interceptor (`kind_label`) and to an optional
+//// fault hook. `handle` asks the hook for the job's `JobFate` (`fate`), and
+//// `run`'s closure applies it (`answer`): `FailBeforeApply` answers
+//// `Unavailable` without running the job, and `ApplyThenFail` runs it, commit
+//// and notices included, then answers `Unavailable`, the ask that applied
+//// and then errored. Only a simulation sets the hook; without one every job
+//// applies.
+////
 //// ## Flow
 ////
 //// 1. `start` opens the store and runs `ensure_agent_id`.
@@ -81,7 +92,7 @@ import core/relationship.{type Relationship}
 import core/route.{type Inbox}
 import core/time.{type Instant}
 import daemon/log
-import daemon/mail
+import daemon/mail.{type Handle}
 import daemon/store.{type Store}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
@@ -152,13 +163,61 @@ pub type Config {
     accept_budget: Int,
     /// Told what a commit made true, after the commit.
     notify: fn(Notice) -> Nil,
+    /// A fault hook for the store's transactions, or `None` in production.
+    store_faults: Option(store.Faults),
+    /// A fault hook for the engine's jobs, or `None` in production.
+    faults: Option(fn(JobKind) -> JobFate),
   )
 }
 
-/// The actor's mailbox protocol: one variant, a job to run against its own
-/// state. Public only because the name's type mentions it.
+/// Which operation a job is, one per public function below. It labels the
+/// job for the fault hook and for a mail interceptor, and carries no
+/// argument, so neither can see a value.
+pub type JobKind {
+  Invite
+  InvitationFile
+  Accept
+  Provisioned
+  Approve
+  Decline
+  Close
+  RaiseBudget
+  Send
+  Consume
+  ExpireOffers
+  Process
+  Contacts
+  Deliveries
+  MessageState
+  Audit
+  LiveInboxes
+  PendingInboxes
+  DueOutbox
+  RecordSend
+  Unacked
+  MarkAcked
+  OutboxPending
+}
+
+/// What the fault hook makes of one job. Only a simulation sets a hook; a
+/// production engine applies every job.
+pub type JobFate {
+  /// Run the job and answer with its result.
+  Apply
+
+  /// Answer `Unavailable` without running the job: nothing changed.
+  FailBeforeApply
+
+  /// Run the job, commit and notify included, then answer `Unavailable`:
+  /// the caller cannot tell this from `FailBeforeApply`.
+  ApplyThenFail
+}
+
+/// The actor's mailbox protocol: one variant, a labelled job to run against
+/// its own state under the fate the fault hook gives it. Public only because
+/// the name's type mentions it.
 pub opaque type Message {
-  Run(job: fn(State) -> Nil)
+  Run(kind: JobKind, job: fn(State, JobFate) -> Nil)
 }
 
 /// Everything a job may touch: the connection and the injected
@@ -172,6 +231,7 @@ type State {
     mailbox: Endpoint,
     accept_budget: Int,
     notify: fn(Notice) -> Nil,
+    faults: Option(fn(JobKind) -> JobFate),
   )
 }
 
@@ -223,7 +283,7 @@ pub fn supervised(
 /// Opens the store and makes sure the daemon has an agent identifier.
 fn initial_state(config: Config) -> Result(State, String) {
   use opened <- result.try(
-    store.open(config.path, config.suite)
+    store.open_with(config.path, config.suite, config.store_faults)
     |> result.replace_error("the daemon database could not be opened"),
   )
 
@@ -236,6 +296,7 @@ fn initial_state(config: Config) -> Result(State, String) {
       mailbox: config.mailbox,
       accept_budget: config.accept_budget,
       notify: config.notify,
+      faults: config.faults,
     )
 
   use _ <- result.try(
@@ -272,29 +333,65 @@ fn close_store(state: State, _reason: process.ExitReason) -> Nil {
 
 /// Runs one job to completion before the next is read.
 fn handle(state: State, message: Message) -> actor.Next(State, Message) {
-  // One variant: run the job against the actor's own state.
+  // One variant: run the job against the actor's own state, with the fate
+  // the fault hook gives its kind. This is the one place every engine call
+  // passes, so a hook here reaches all of them.
   case message {
-    Run(job:) -> {
-      job(state)
+    Run(kind:, job:) -> {
+      job(state, fate(state, kind))
       actor.continue(state)
     }
   }
 }
 
+/// What the fault hook decides for one job. Without a hook every job
+/// applies, which is production.
+fn fate(state: State, kind: JobKind) -> JobFate {
+  // The hook is consulted only when a simulation installed one.
+  case state.faults {
+    None -> Apply
+    Some(decide) -> decide(kind)
+  }
+}
+
 /// Hands a job to the engine and waits for its answer.
 fn run(
-  name: Name(Message),
+  name: Handle(Message),
+  kind: JobKind,
   job: fn(State) -> Result(a, Failure),
 ) -> Result(a, Failure) {
   let asked =
-    mail.ask(name, call_timeout_ms, fn(reply_with) {
-      Run(fn(state) { process.send(reply_with, job(state)) })
+    mail.ask(name, kind_label(kind), call_timeout_ms, fn(reply_with) {
+      Run(kind:, job: fn(state, fate) {
+        process.send(reply_with, answer(state, fate, job))
+      })
     })
 
   // An answer is the job's own result; no answer in time is `Unavailable`.
   case asked {
     Ok(answer) -> answer
     Error(Nil) -> Error(Unavailable)
+  }
+}
+
+/// Runs a job under its fate and says what its caller hears. A job that
+/// applies and then fails has committed and notified exactly as one that
+/// succeeded; only the answer is lost, as when a reply misses its caller.
+fn answer(
+  state: State,
+  fate: JobFate,
+  job: fn(State) -> Result(a, Failure),
+) -> Result(a, Failure) {
+  // The fate decides whether the job runs and whether its answer survives.
+  case fate {
+    Apply -> job(state)
+
+    FailBeforeApply -> Error(Unavailable)
+
+    ApplyThenFail -> {
+      let _ = job(state)
+      Error(Unavailable)
+    }
   }
 }
 
@@ -312,12 +409,12 @@ fn run(
 /// // -> Ok(invitation_id)
 /// ```
 pub fn invite(
-  name: Name(Message),
+  name: Handle(Message),
   description: String,
   approval: Approval,
   budget: Int,
 ) -> Result(Id(InvitationKind), Failure) {
-  run(name, fn(state) {
+  run(name, Invite, fn(state) {
     use inbox <- result.try(new_inbox(state))
 
     let terms = relationship.Terms(inbox:, description:, budget:)
@@ -346,10 +443,10 @@ pub fn invite(
 /// // -> Ok(Some(<<...>>))
 /// ```
 pub fn invitation_file(
-  name: Name(Message),
+  name: Handle(Message),
   invitation: Id(InvitationKind),
 ) -> Result(Option(BitArray), Failure) {
-  run(name, fn(state) {
+  run(name, InvitationFile, fn(state) {
     use found <- result.try(
       fault(store.invitation_file(state.store, invitation)),
     )
@@ -373,11 +470,11 @@ pub fn invitation_file(
 /// // -> Ok(contact)
 /// ```
 pub fn accept(
-  name: Name(Message),
+  name: Handle(Message),
   file: BitArray,
   description: String,
 ) -> Result(Id(Contact), Failure) {
-  run(name, fn(state) {
+  run(name, Accept, fn(state) {
     use invite <- result.try(
       invitation.decode(state.suite, file)
       |> result.replace_error(InvalidInvitation(
@@ -414,10 +511,10 @@ pub fn accept(
 /// // -> Ok(Nil)
 /// ```
 pub fn provisioned(
-  name: Name(Message),
+  name: Handle(Message),
   queue: Id(Queue),
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, Provisioned, fn(state) {
     use offered <- result.try(fault(store.offer_by_queue(state.store, queue)))
 
     // The queue belongs to an offer or to a joining relationship; a queue
@@ -511,10 +608,10 @@ fn revise_with(
 /// // -> Ok(Nil)
 /// ```
 pub fn approve(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Id(Contact),
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, Approve, fn(state) {
     use _ <- result.try(
       revise(state, contact, fn(current) {
         relationship.approve(state.suite, current, state.clock())
@@ -534,10 +631,10 @@ pub fn approve(
 /// // -> Ok(Nil)
 /// ```
 pub fn decline(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Id(Contact),
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, Decline, fn(state) {
     use _ <- result.try(
       revise(state, contact, fn(current) {
         relationship.decline(state.suite, current, state.clock())
@@ -557,10 +654,10 @@ pub fn decline(
 /// // -> Ok(Nil)
 /// ```
 pub fn close(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Id(Contact),
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, Close, fn(state) {
     use _ <- result.try(
       revise(state, contact, fn(current) {
         relationship.close(state.suite, current, state.clock())
@@ -580,11 +677,11 @@ pub fn close(
 /// // -> Ok(Nil)
 /// ```
 pub fn raise_budget(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Id(Contact),
   by: Int,
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, RaiseBudget, fn(state) {
     use _ <- result.try(
       revise(state, contact, fn(current) {
         relationship.raise_budget(current, by)
@@ -606,13 +703,13 @@ pub fn raise_budget(
 /// // -> Ok(message_id)
 /// ```
 pub fn send(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Id(Contact),
   content_type: String,
   payload: BitArray,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), Failure) {
-  run(name, fn(state) {
+  run(name, Send, fn(state) {
     use made <- result.try(
       revise(state, contact, fn(current) {
         relationship.send(
@@ -678,10 +775,10 @@ fn revise(
 /// // -> Ok(Nil)
 /// ```
 pub fn consume(
-  name: Name(Message),
+  name: Handle(Message),
   message: Id(MessageKind),
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, Consume, fn(state) {
     use consumed <- result.try(fault(store.consume(state.store, message)))
 
     // A message that is not ready, held ones included, cannot be consumed.
@@ -701,8 +798,8 @@ pub fn consume(
 /// engine.expire_offers(name)
 /// // -> Ok(Nil)
 /// ```
-pub fn expire_offers(name: Name(Message)) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+pub fn expire_offers(name: Handle(Message)) -> Result(Nil, Failure) {
+  run(name, ExpireOffers, fn(state) {
     let now = state.clock()
 
     use due <- result.try(fault(store.expirable_offers(state.store, now)))
@@ -733,12 +830,14 @@ pub fn expire_offers(name: Name(Message)) -> Result(Nil, Failure) {
 /// // -> Ok(engine.Fresh)
 /// ```
 pub fn process(
-  name: Name(Message),
+  name: Handle(Message),
   queue: Id(Queue),
   envelope: Id(Envelope),
   padded: Padded,
 ) -> Result(Handled, Failure) {
-  run(name, fn(state) { handle_envelope(state, queue, envelope, padded) })
+  run(name, Process, fn(state) {
+    handle_envelope(state, queue, envelope, padded)
+  })
 }
 
 /// The inbound path: the duplicate check, then the frame.
@@ -876,9 +975,9 @@ fn receive(
 /// // -> Ok([record])
 /// ```
 pub fn contacts(
-  name: Name(Message),
+  name: Handle(Message),
 ) -> Result(List(store.ContactRecord), Failure) {
-  run(name, fn(state) { fault(store.contacts(state.store)) })
+  run(name, Contacts, fn(state) { fault(store.contacts(state.store)) })
 }
 
 /// Ready deliveries, oldest first.
@@ -890,11 +989,11 @@ pub fn contacts(
 /// // -> Ok([record])
 /// ```
 pub fn deliveries(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Option(Id(Contact)),
   max: Int,
 ) -> Result(List(store.DeliveryRecord), Failure) {
-  run(name, fn(state) {
+  run(name, Deliveries, fn(state) {
     fault(store.ready_deliveries(state.store, contact, max))
   })
 }
@@ -908,10 +1007,10 @@ pub fn deliveries(
 /// // -> Ok(store.StoredByMailbox)
 /// ```
 pub fn message_state(
-  name: Name(Message),
+  name: Handle(Message),
   message: Id(MessageKind),
 ) -> Result(store.SentState, Failure) {
-  run(name, fn(state) {
+  run(name, MessageState, fn(state) {
     use found <- result.try(fault(store.sent_state(state.store, message)))
     option.to_result(found, NotFound)
   })
@@ -926,11 +1025,11 @@ pub fn message_state(
 /// // -> Ok([entry])
 /// ```
 pub fn audit(
-  name: Name(Message),
+  name: Handle(Message),
   contact: Option(Id(Contact)),
   limit: Int,
 ) -> Result(List(store.AuditRecord), Failure) {
-  run(name, fn(state) { fault(store.audit(state.store, contact, limit)) })
+  run(name, Audit, fn(state) { fault(store.audit(state.store, contact, limit)) })
 }
 
 /// The inboxes to fetch from.
@@ -941,8 +1040,8 @@ pub fn audit(
 /// engine.live_inboxes(name)
 /// // -> Ok([inbox])
 /// ```
-pub fn live_inboxes(name: Name(Message)) -> Result(List(Inbox), Failure) {
-  run(name, fn(state) { fault(store.live_inboxes(state.store)) })
+pub fn live_inboxes(name: Handle(Message)) -> Result(List(Inbox), Failure) {
+  run(name, LiveInboxes, fn(state) { fault(store.live_inboxes(state.store)) })
 }
 
 /// The inboxes whose queue the mailbox must still be asked to create.
@@ -953,8 +1052,10 @@ pub fn live_inboxes(name: Name(Message)) -> Result(List(Inbox), Failure) {
 /// engine.pending_inboxes(name)
 /// // -> Ok([inbox])
 /// ```
-pub fn pending_inboxes(name: Name(Message)) -> Result(List(Inbox), Failure) {
-  run(name, fn(state) { fault(store.pending_inboxes(state.store)) })
+pub fn pending_inboxes(name: Handle(Message)) -> Result(List(Inbox), Failure) {
+  run(name, PendingInboxes, fn(state) {
+    fault(store.pending_inboxes(state.store))
+  })
 }
 
 /// The committed outbox rows that are due.
@@ -966,10 +1067,12 @@ pub fn pending_inboxes(name: Name(Message)) -> Result(List(Inbox), Failure) {
 /// // -> Ok([row])
 /// ```
 pub fn due_outbox(
-  name: Name(Message),
+  name: Handle(Message),
   limit: Int,
 ) -> Result(List(store.OutboxRow), Failure) {
-  run(name, fn(state) { fault(store.due(state.store, state.clock(), limit)) })
+  run(name, DueOutbox, fn(state) {
+    fault(store.due(state.store, state.clock(), limit))
+  })
 }
 
 /// Records the scheduler's report on one outbox row.
@@ -981,11 +1084,11 @@ pub fn due_outbox(
 /// // -> Ok(Nil)
 /// ```
 pub fn record_send(
-  name: Name(Message),
+  name: Handle(Message),
   envelope: Id(Envelope),
   outcome: store.SendOutcome,
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) {
+  run(name, RecordSend, fn(state) {
     fault(store.record_send(state.store, envelope, outcome))
   })
 }
@@ -1000,10 +1103,10 @@ pub fn record_send(
 /// // -> Ok([envelope])
 /// ```
 pub fn unacked(
-  name: Name(Message),
+  name: Handle(Message),
   queue: Id(Queue),
 ) -> Result(List(Id(Envelope)), Failure) {
-  run(name, fn(state) { fault(store.unacked(state.store, queue)) })
+  run(name, Unacked, fn(state) { fault(store.unacked(state.store, queue)) })
 }
 
 /// Records that the mailbox acknowledged these envelopes.
@@ -1015,11 +1118,13 @@ pub fn unacked(
 /// // -> Ok(Nil)
 /// ```
 pub fn mark_acked(
-  name: Name(Message),
+  name: Handle(Message),
   queue: Id(Queue),
   envelopes: List(Id(Envelope)),
 ) -> Result(Nil, Failure) {
-  run(name, fn(state) { fault(store.mark_acked(state.store, queue, envelopes)) })
+  run(name, MarkAcked, fn(state) {
+    fault(store.mark_acked(state.store, queue, envelopes))
+  })
 }
 
 /// How many outbox rows still wait for a mailbox.
@@ -1030,8 +1135,8 @@ pub fn mark_acked(
 /// engine.outbox_pending(name)
 /// // -> Ok(0)
 /// ```
-pub fn outbox_pending(name: Name(Message)) -> Result(Int, Failure) {
-  run(name, fn(state) { fault(store.pending_count(state.store)) })
+pub fn outbox_pending(name: Handle(Message)) -> Result(Int, Failure) {
+  run(name, OutboxPending, fn(state) { fault(store.pending_count(state.store)) })
 }
 
 // ------------------------------------------------------------- helpers
@@ -1135,4 +1240,40 @@ fn refused(refusal: relationship.Refusal) -> Failure {
     relationship.HeldFull -> "too many messages are held"
     relationship.DescriptionTooLong -> "the description is too long"
   })
+}
+
+/// The fixed word a job kind is labelled with in an intercepted parcel.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.kind_label(engine.RecordSend)
+/// // -> "record_send"
+/// ```
+pub fn kind_label(kind: JobKind) -> String {
+  case kind {
+    Invite -> "invite"
+    InvitationFile -> "invitation_file"
+    Accept -> "accept"
+    Provisioned -> "provisioned"
+    Approve -> "approve"
+    Decline -> "decline"
+    Close -> "close"
+    RaiseBudget -> "raise_budget"
+    Send -> "send"
+    Consume -> "consume"
+    ExpireOffers -> "expire_offers"
+    Process -> "process"
+    Contacts -> "contacts"
+    Deliveries -> "deliveries"
+    MessageState -> "message_state"
+    Audit -> "audit"
+    LiveInboxes -> "live_inboxes"
+    PendingInboxes -> "pending_inboxes"
+    DueOutbox -> "due_outbox"
+    RecordSend -> "record_send"
+    Unacked -> "unacked"
+    MarkAcked -> "mark_acked"
+    OutboxPending -> "outbox_pending"
+  }
 }

@@ -34,7 +34,7 @@ fn active_contact(daemon: api.Daemon) {
 }
 
 fn inbox_of(daemon: api.Daemon) {
-  let assert Ok([inbox]) = engine.live_inboxes(api.engine_name(daemon))
+  let assert Ok([inbox]) = engine.live_inboxes(api.engine_handle(daemon))
   inbox
 }
 
@@ -105,7 +105,7 @@ pub fn a_processed_envelope_is_acknowledged_after_a_restart_test() {
   let assert Ok(offline) = node.start_offline(settings_b)
   let inbox = inbox_of(offline)
   let assert [stored] = support.stored_in(inbox)
-  let name = api.engine_name(offline)
+  let name = api.engine_handle(offline)
 
   assert engine.process(name, inbox.queue, stored.envelope, stored.ciphertext)
     == Ok(engine.Fresh)

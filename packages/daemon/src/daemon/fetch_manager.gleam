@@ -28,15 +28,17 @@ import core/id
 import core/route.{type Inbox}
 import daemon/engine
 import daemon/fetcher
-import daemon/mail
+import daemon/mail.{type Handle}
 import daemon/status
 import daemon/transport.{type Dialer}
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Name, type Pid, type Subject}
 import gleam/list
 import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
 import weft/actor
+import weft/timer
 
 /// Milliseconds between reconciles.
 pub const tick_ms = 2000
@@ -47,9 +49,11 @@ pub type Config {
     /// How fetchers reach the mailbox.
     dialer: Dialer,
     /// The writer that knows the live queues.
-    engine: Name(engine.Message),
+    engine: Handle(engine.Message),
     /// Told whether the mailbox answered.
-    status: Name(status.Message),
+    status: Handle(status.Message),
+    /// Where the manager's tick and every fetcher's timers are armed.
+    timer: timer.Source,
   )
 }
 
@@ -107,6 +111,7 @@ fn builder(
   |> actor.on_message(handle)
   |> actor.named(name)
   |> actor.periodic(every: tick_ms, sending: Tick)
+  |> actor.with_timer_source(config.timer)
 }
 
 /// Tells the manager the set of live queues may have changed. Safe to lose.
@@ -117,8 +122,8 @@ fn builder(
 /// fetch_manager.nudge(name)
 /// // -> Nil
 /// ```
-pub fn nudge(name: Name(Message)) -> Nil {
-  mail.tell(name, Reconcile)
+pub fn nudge(name: Handle(Message)) -> Nil {
+  mail.tell(name, "reconcile", Reconcile)
 }
 
 /// Reconciles on a nudge; on a tick also retires expired offers.
@@ -162,14 +167,18 @@ fn ensure_fetcher(state: State, inbox: Inbox) -> State {
     True -> state
 
     False -> {
+      // Each fetcher's messages are labelled with its own queue, so an
+      // interceptor can tell two fetchers' calls apart.
+      let holder = "fetcher/" <> bit_array.base16_encode(key)
       let config =
         fetcher.Config(
           dialer: state.config.dialer,
-          engine: state.config.engine,
-          status: state.config.status,
+          engine: mail.from(state.config.engine, holder),
+          status: mail.from(state.config.status, holder),
           inbox:,
           ack_deadline_ms: fetcher.ack_deadline_ms,
           poll_deadline_ms: fetcher.poll_deadline_ms,
+          timer: state.config.timer,
         )
 
       // A fetcher that fails to start is simply absent; the next tick tries

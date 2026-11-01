@@ -48,10 +48,11 @@ import core/secret.{type Secret}
 import core/time.{type Instant}
 import daemon/engine
 import daemon/events
+import daemon/mail.{type Handle}
 import daemon/status
 import daemon/store
 import gleam/bit_array
-import gleam/erlang/process.{type Name, type Pid, type Subject}
+import gleam/erlang/process.{type Pid, type Subject}
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
@@ -67,13 +68,14 @@ pub const invite_poll_ms = 50
 /// A running daemon, as its callers hold it. Built only by `node`.
 pub opaque type Daemon {
   Daemon(
-    engine: Name(engine.Message),
-    events: Name(events.Message(Event)),
-    status: Name(status.Message),
+    engine: Handle(engine.Message),
+    events: Handle(events.Message(Event)),
+    status: Handle(status.Message),
     suite: Suite,
     carrier: CarrierPolicy,
     supervisor: Pid,
     state_dir: String,
+    poll_clock: poll.Clock,
   )
 }
 
@@ -191,23 +193,46 @@ pub type Health {
 }
 
 /// Assembles the handle `node.start` returns. Not for other callers: the
-/// names must belong to a running tree.
+/// handles must belong to a running tree. `poll_clock` is what `invite` and
+/// `node.stop` wait on.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// api.assemble(engine, events, status, suite, policy, supervisor, dir)
+/// api.assemble(engine, events, status, suite, policy, supervisor, dir, clock)
 /// ```
 pub fn assemble(
-  engine: Name(engine.Message),
-  events: Name(events.Message(Event)),
-  status: Name(status.Message),
+  engine: Handle(engine.Message),
+  events: Handle(events.Message(Event)),
+  status: Handle(status.Message),
   suite: Suite,
   carrier: CarrierPolicy,
   supervisor: Pid,
   state_dir: String,
+  poll_clock: poll.Clock,
 ) -> Daemon {
-  Daemon(engine:, events:, status:, suite:, carrier:, supervisor:, state_dir:)
+  Daemon(
+    engine:,
+    events:,
+    status:,
+    suite:,
+    carrier:,
+    supervisor:,
+    state_dir:,
+    poll_clock:,
+  )
+}
+
+/// The clock the daemon's waits poll on, for `node.stop`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.poll_clock(daemon)
+/// // -> poll.monotonic() in production
+/// ```
+pub fn poll_clock(daemon: Daemon) -> poll.Clock {
+  daemon.poll_clock
 }
 
 /// The supervisor process of the tree behind a handle, for `node.stop`.
@@ -233,14 +258,14 @@ pub fn state_dir(daemon: Daemon) -> String {
   daemon.state_dir
 }
 
-/// The engine's name, for tests that drive the writer directly.
+/// The engine's handle, for tests that drive the writer directly.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// api.engine_name(daemon)
+/// engine.live_inboxes(api.engine_handle(daemon))
 /// ```
-pub fn engine_name(daemon: Daemon) -> Name(engine.Message) {
+pub fn engine_handle(daemon: Daemon) -> Handle(engine.Message) {
   daemon.engine
 }
 
@@ -288,16 +313,21 @@ fn await_file(
   invitation: Id(InvitationKind),
 ) -> Result(BitArray, ApiError) {
   let waited =
-    poll.until(within: invite_wait_ms, every: invite_poll_ms, attempt: fn() {
-      case engine.invitation_file(daemon.engine, invitation) {
-        Ok(Some(bytes)) -> poll.Done(bytes)
+    poll.until_on(
+      clock: daemon.poll_clock,
+      within: invite_wait_ms,
+      every: poll.Fixed(invite_poll_ms),
+      attempt: fn() {
+        case engine.invitation_file(daemon.engine, invitation) {
+          Ok(Some(bytes)) -> poll.Done(bytes)
 
-        // Until the queue exists the offer is not exportable.
-        Ok(None) -> poll.Retry
+          // Until the queue exists the offer is not exportable.
+          Ok(None) -> poll.Retry
 
-        Error(failure) -> poll.Fail(from_failure(failure))
-      }
-    })
+          Error(failure) -> poll.Fail(from_failure(failure))
+        }
+      },
+    )
 
   // A wait that runs out is the engine being too slow, which the caller retries.
   case waited {

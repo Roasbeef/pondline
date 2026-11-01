@@ -41,6 +41,20 @@
 //// or fetched, which is how a daemon can be inspected or its crash recovery
 //// exercised.
 ////
+//// The database is `daemon.db` in the state directory, created `0600` by
+//// `private_database`, unless the config overrides its location; the lock
+//// is always a file there.
+////
+//// ## Simulation seams
+////
+//// `launch` threads the config's seams into the children: the timer source
+//// into every weft actor, state machine and run, the fault hooks into the
+//// engine and its store, the dialer override into the network workers
+//// (`network_dialer`), and the mail interceptor into every handle, which
+//// `address` labels with the holder's role and the target's. With the
+//// production config each handle is a direct send and each seam is what the
+//// code did before it existed.
+////
 //// ## Flow
 ////
 //// 1. `start` calls `check_config`, `prepare_directory` and `launch`.
@@ -58,10 +72,12 @@ import daemon/engine
 import daemon/events
 import daemon/fetch_manager
 import daemon/lock
+import daemon/mail
 import daemon/provisioner
 import daemon/scheduler
 import daemon/status
 import daemon/store
+import daemon/transport
 import gleam/erlang/process
 import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
@@ -186,7 +202,7 @@ fn probe(config: Config) -> Result(Nil, StartError) {
 
     True -> {
       use opened <- result.try(
-        store.open(directory <> "/" <> database_file, config.suite)
+        store.open(database_path(config), config.suite)
         |> result.replace_error(StartupFailed),
       )
 
@@ -223,9 +239,18 @@ fn prepare_directory(config: Config) -> Result(Nil, StartError) {
     simplifile.set_permissions_octal(directory, 0o700)
     |> result.replace_error(StateDirUnusable),
   )
-  use _ <- result.try(private_file(directory <> "/" <> database_file))
+  use _ <- result.try(private_database(config))
 
   private_file(directory <> "/" <> lock_file)
+}
+
+/// Creates the default database file `0600`. An override is opened as
+/// given, because a simulation's in-memory URI names no file.
+fn private_database(config: Config) -> Result(Nil, StartError) {
+  case config.database {
+    None -> private_file(config.state_dir <> "/" <> database_file)
+    Some(_) -> Ok(Nil)
+  }
 }
 
 /// Makes sure a file exists with mode `0600`.
@@ -260,7 +285,8 @@ fn launch(
       fetch_manager: process.new_name("daemon_fetch_manager"),
     )
   let directory = config.state_dir
-  let dialer = carrier.dialer(names.carrier, config.carrier)
+  let dialer = network_dialer(config, names)
+  let notices = notice_routes(config, names)
 
   let base =
     static_supervisor.new(static_supervisor.RestForOne)
@@ -269,20 +295,23 @@ fn launch(
     |> static_supervisor.add(events.supervised(names.events))
     |> static_supervisor.add(carrier.supervised(
       names.carrier,
-      names.status,
+      address(config, names.status, "carrier", "status"),
       config.tor,
       directory,
+      config.timer,
     ))
     |> static_supervisor.add(engine.supervised(
       names.engine,
       engine.Config(
-        path: directory <> "/" <> database_file,
+        path: database_path(config),
         suite: config.suite,
         clock: config.clock,
         policy: config.carrier,
         mailbox: config.mailbox.endpoint,
         accept_budget: config.accept_budget,
-        notify: fn(notice) { route_notice(names, notice) },
+        notify: fn(notice) { route_notice(notices, notice) },
+        store_faults: config.store_faults,
+        faults: config.engine_faults,
       ),
     ))
 
@@ -296,28 +325,31 @@ fn launch(
         names.scheduler,
         scheduler.Config(
           dialer:,
-          engine: names.engine,
-          status: names.status,
+          engine: address(config, names.engine, "scheduler", "engine"),
+          status: address(config, names.status, "scheduler", "status"),
           clock: config.clock,
           sha256: config.suite.sha256,
           send_deadline_ms: scheduler.send_deadline_ms,
+          timer: config.timer,
         ),
       ))
       |> static_supervisor.add(provisioner.supervised(
         names.provisioner,
         provisioner.Config(
           dialer:,
-          engine: names.engine,
-          status: names.status,
+          engine: address(config, names.engine, "provisioner", "engine"),
+          status: address(config, names.status, "provisioner", "status"),
           provision:,
+          timer: config.timer,
         ),
       ))
       |> static_supervisor.add(fetch_manager.supervised(
         names.fetch_manager,
         fetch_manager.Config(
           dialer:,
-          engine: names.engine,
-          status: names.status,
+          engine: address(config, names.engine, "fetch_manager", "engine"),
+          status: address(config, names.status, "fetch_manager", "status"),
+          timer: config.timer,
         ),
       ))
   }
@@ -326,13 +358,14 @@ fn launch(
   case static_supervisor.start(tree) {
     Ok(started) ->
       Ok(api.assemble(
-        names.engine,
-        names.events,
-        names.status,
+        address(config, names.engine, "api", "engine"),
+        address(config, names.events, "api", "events"),
+        address(config, names.status, "api", "status"),
         config.suite,
         config.carrier,
         started.pid,
         directory,
+        config.poll_clock,
       ))
 
     Error(_) -> Error(classify_failure(directory))
@@ -356,21 +389,80 @@ fn tor_status(config: Config) -> status.TorStatus {
   }
 }
 
+/// The handles the engine's notices go out on, held by the engine.
+type Routes {
+  Routes(
+    scheduler: mail.Handle(scheduler.Message),
+    provisioner: mail.Handle(provisioner.Message),
+    events: mail.Handle(events.Message(api.Event)),
+    fetch_manager: mail.Handle(fetch_manager.Message),
+  )
+}
+
+/// Builds the engine's notice handles once, at launch.
+fn notice_routes(config: Config, names: Names) -> Routes {
+  Routes(
+    scheduler: address(config, names.scheduler, "engine", "scheduler"),
+    provisioner: address(config, names.provisioner, "engine", "provisioner"),
+    events: address(config, names.events, "engine", "events"),
+    fetch_manager: address(
+      config,
+      names.fetch_manager,
+      "engine",
+      "fetch_manager",
+    ),
+  )
+}
+
+/// A handle for the holder `from` to reach `to`: direct in production, and
+/// through the configured interceptor in a simulation.
+fn address(
+  config: Config,
+  name: process.Name(message),
+  from: String,
+  to: String,
+) -> mail.Handle(message) {
+  mail.address(name, config.interceptor, from:, to:)
+}
+
+/// The dialer the network workers share: the configured one, or the
+/// carrier's onion-and-loopback dialer under the carrier policy.
+fn network_dialer(config: Config, names: Names) -> transport.Dialer {
+  case config.dialer {
+    Some(dialer) -> dialer
+
+    None ->
+      carrier.dialer(
+        address(config, names.carrier, "dialer", "carrier"),
+        config.carrier,
+      )
+  }
+}
+
+/// Where the database is opened: the override, or `daemon.db` in the state
+/// directory.
+fn database_path(config: Config) -> String {
+  case config.database {
+    Some(path) -> path
+    None -> config.state_dir <> "/" <> database_file
+  }
+}
+
 /// Turns one of the engine's notices into the nudge or event it means. This
 /// is the whole of the engine-to-worker wiring.
-fn route_notice(names: Names, notice: engine.Notice) -> Nil {
+fn route_notice(routes: Routes, notice: engine.Notice) -> Nil {
   case notice {
-    engine.Nudge(plan.Transmit) -> scheduler.nudge(names.scheduler)
+    engine.Nudge(plan.Transmit) -> scheduler.nudge(routes.scheduler)
 
-    engine.Nudge(plan.CreateQueue(_)) -> provisioner.nudge(names.provisioner)
+    engine.Nudge(plan.CreateQueue(_)) -> provisioner.nudge(routes.provisioner)
 
     engine.Nudge(plan.WakeAdapter(contact:)) ->
-      events.publish(names.events, api.MessagesReady(contact))
+      events.publish(routes.events, api.MessagesReady(contact))
 
     engine.Changed(contact:) ->
-      events.publish(names.events, api.ContactChanged(contact))
+      events.publish(routes.events, api.ContactChanged(contact))
 
-    engine.Topology -> fetch_manager.nudge(names.fetch_manager)
+    engine.Topology -> fetch_manager.nudge(routes.fetch_manager)
   }
 }
 
@@ -393,23 +485,32 @@ pub fn stop(daemon: api.Daemon) -> Nil {
   process.unlink(supervisor)
   process.kill(supervisor)
 
-  wait_for_lock(api.state_dir(daemon) <> "/" <> lock_file, stop_wait_ms)
+  wait_for_lock(
+    api.state_dir(daemon) <> "/" <> lock_file,
+    stop_wait_ms,
+    api.poll_clock(daemon),
+  )
 }
 
-/// Polls until the lock can be taken or the wait is over. The `Retry` arm is
-/// a backstop that no test exercises: the lock's `on_shutdown` frees it
-/// before a following `start` probes it, so no test sees the first attempt
-/// fail.
-fn wait_for_lock(path: String, within_ms: Int) -> Nil {
+/// Polls until the lock can be taken or the wait is over, on the daemon's
+/// poll clock. The `Retry` arm is a backstop that no test exercises: the
+/// lock's `on_shutdown` frees it before a following `start` probes it, so no
+/// test sees the first attempt fail.
+fn wait_for_lock(path: String, within_ms: Int, clock: poll.Clock) -> Nil {
   // A free lock ends the stop; a spent wait ends it too, and the caller
   // finds out when it starts on the directory again.
   let _ =
-    poll.until(within: within_ms, every: 20, attempt: fn() {
-      case lock.is_free(path) {
-        True -> poll.Done(Nil)
-        False -> poll.Retry
-      }
-    })
+    poll.until_on(
+      clock:,
+      within: within_ms,
+      every: poll.Fixed(20),
+      attempt: fn() {
+        case lock.is_free(path) {
+          True -> poll.Done(Nil)
+          False -> poll.Retry
+        }
+      },
+    )
 
   Nil
 }

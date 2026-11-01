@@ -75,8 +75,8 @@ pub fn logs_and_errors_carry_no_secret_test() {
   let rendered = [string.inspect(delivered), string.inspect(entries), ..errors]
 
   // The capabilities of both sides' inboxes, and the invitation file.
-  let assert Ok(inboxes_a) = engine.live_inboxes(api.engine_name(a))
-  let assert Ok(inboxes_b) = engine.live_inboxes(api.engine_name(b))
+  let assert Ok(inboxes_a) = engine.live_inboxes(api.engine_handle(a))
+  let assert Ok(inboxes_b) = engine.live_inboxes(api.engine_handle(b))
   let secrets =
     list.flat_map(list.append(inboxes_a, inboxes_b), capabilities)
     |> list.prepend(hex(file))

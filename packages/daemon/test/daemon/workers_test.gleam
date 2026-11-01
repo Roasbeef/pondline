@@ -17,6 +17,7 @@ import daemon/api
 import daemon/carrier
 import daemon/engine
 import daemon/fetcher
+import daemon/mail
 import daemon/node
 import daemon/scheduler
 import daemon/status
@@ -30,6 +31,7 @@ import gleam/otp/actor
 import primitives
 import tor
 import weft
+import weft/timer
 
 fn onion() -> endpoint.Endpoint {
   let assert Ok(address) =
@@ -105,11 +107,12 @@ pub fn a_run_of_sends_is_limited_and_ends_at_its_deadline_test() {
   let config =
     scheduler.Config(
       dialer: hanging_dialer(dials),
-      engine: process.new_name("workers_test_engine"),
-      status: process.new_name("workers_test_status"),
+      engine: mail.direct(process.new_name("workers_test_engine")),
+      status: mail.direct(process.new_name("workers_test_status")),
       clock: fn() { Instant(0) },
       sha256: primitives.sha256,
       send_deadline_ms: 400,
+      timer: timer.WallClock,
     )
   let rows = list.map([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], outbox_row)
   let sink = process.new_subject()
@@ -148,7 +151,7 @@ fn open_inbox() -> #(api.Daemon, Inbox) {
   let mailbox = support.start_mailbox()
   let #(daemon, _) = support.start_daemon(mailbox)
   let assert Ok(_) = api.invite(daemon, "inbox", offer.AutoApprove, 5)
-  let assert Ok([inbox]) = engine.live_inboxes(api.engine_name(daemon))
+  let assert Ok([inbox]) = engine.live_inboxes(api.engine_handle(daemon))
 
   #(daemon, Inbox(..inbox, endpoint: onion()))
 }
@@ -161,11 +164,12 @@ fn fetcher_config(
 ) -> fetcher.Config {
   fetcher.Config(
     dialer:,
-    engine: api.engine_name(daemon),
-    status: process.new_name("workers_test_status"),
+    engine: api.engine_handle(daemon),
+    status: mail.direct(process.new_name("workers_test_status")),
     inbox:,
     ack_deadline_ms: 5000,
     poll_deadline_ms:,
+    timer: timer.WallClock,
   )
 }
 
@@ -203,7 +207,7 @@ pub fn an_acknowledgement_that_hangs_is_abandoned_and_retried_test() {
 
   // B finishes acknowledging the `Accept` it processed during pairing, goes
   // down, and misses a message, which then waits in its queue.
-  let assert Ok([before]) = engine.live_inboxes(api.engine_name(b))
+  let assert Ok([before]) = engine.live_inboxes(api.engine_handle(b))
   support.eventually(15_000, fn() {
     support.when(support.stored_in(before) == [])
   })
@@ -216,10 +220,10 @@ pub fn an_acknowledgement_that_hangs_is_abandoned_and_retried_test() {
   // B comes back without workers and commits the envelope by hand, so it
   // owes the mailbox an acknowledgement.
   let assert Ok(offline) = node.start_offline(settings_b)
-  let assert Ok([inbox]) = engine.live_inboxes(api.engine_name(offline))
+  let assert Ok([inbox]) = engine.live_inboxes(api.engine_handle(offline))
   let assert [stored] = support.stored_in(inbox)
   assert engine.process(
-      api.engine_name(offline),
+      api.engine_handle(offline),
       inbox.queue,
       stored.envelope,
       stored.ciphertext,
@@ -321,14 +325,14 @@ fn active_contact(daemon: api.Daemon) {
   })
 }
 
-fn status_cell(tor: status.TorStatus) -> process.Name(status.Message) {
+fn status_cell(tor: status.TorStatus) -> mail.Handle(status.Message) {
   let name = process.new_name("workers_test_status_cell")
   let assert Ok(_) = status.start(name, tor)
 
-  name
+  mail.direct(name)
 }
 
-fn tor_of(cell: process.Name(status.Message)) -> status.TorStatus {
+fn tor_of(cell: mail.Handle(status.Message)) -> status.TorStatus {
   status.read(cell).tor
 }
 
@@ -430,7 +434,7 @@ fn scripted(
 
 fn carrier_with(
   script: List(Attempt),
-) -> #(process.Name(status.Message), Subject(Nil), Subject(tor.Event)) {
+) -> #(mail.Handle(status.Message), Subject(Nil), Subject(tor.Event)) {
   let cell = status_cell(status.TorStarting)
   let calls = process.new_subject()
   let handoff = process.new_subject()

@@ -28,7 +28,7 @@
 //// (`docs/weft.md`, "When not to"). The registry also does no first work
 //// before serving, so there is nothing for `continuing` to order.
 
-import daemon/mail
+import daemon/mail.{type Handle}
 import gleam/erlang/process.{type Name, type Subject}
 import gleam/list
 import gleam/otp/supervision
@@ -79,10 +79,10 @@ pub fn supervised(
 /// // -> Nil
 /// ```
 pub fn subscribe(
-  name: Name(Message(event)),
+  name: Handle(Message(event)),
   subscriber: Subject(event),
 ) -> Nil {
-  mail.tell(name, Subscribe(subscriber))
+  mail.tell(name, "subscribe", Subscribe(subscriber))
 }
 
 /// Sends `event` to every subscriber.
@@ -93,8 +93,8 @@ pub fn subscribe(
 /// events.publish(name, api.MessagesReady(contact))
 /// // -> Nil
 /// ```
-pub fn publish(name: Name(Message(event)), event: event) -> Nil {
-  mail.tell(name, Publish(event))
+pub fn publish(name: Handle(Message(event)), event: event) -> Nil {
+  mail.tell(name, "publish", Publish(event))
 }
 
 /// Adds a subscriber or forwards an event to all of them.

@@ -132,10 +132,10 @@ this before changing any of them.
   mailbox cell) and `daemon/events` (the subscriber list) are plain
   `weft/actor`s: the subscribers are all alike and hold no state, so the
   list stays a list and is not a `weft/event_manager`.
-- `daemon/mail` (soft `tell` and `ask` to named actors) stays hand-written
-  because weft has no monitored, non-panicking call against a pre-existing
-  pid, and moving to `weft/registry` addresses would change every worker's
-  handle. Known weft gap.
+- `daemon/mail` (soft `tell` and `ask` to named actors, through a `Handle`
+  that carries the `Name` and, in a simulation only, an interceptor) stays
+  hand-written because weft has no monitored, non-panicking call against a
+  pre-existing pid. Known weft gap.
 - `daemon/config`, `daemon/log` and `daemon/internal/ffi_runtime_clock`.
 
 Traffic: the engine tells the shell through `notify` after each commit
@@ -186,6 +186,50 @@ Invariants:
   binary first; the TorOnly path with the real sidecar is behind
   `REEDWIRE_TOR_NETWORK=1` and is not run by default; no queue rotation at
   accept; no metrics.
+
+## Simulation seams
+
+Nil-by-default hooks a deterministic simulation (`docs/dst/plan.md`) uses to
+run the real tree. `config.new` sets every one to production, and no `src`
+module builds anything else: a `timer.Injected`, a fault hook, a dialer
+override, a database override or an interceptor is constructed only under
+`test/`. `test/daemon/seams_test.gleam` runs an exchange with every seam
+written out at its default and checks each set seam reaches its boundary.
+
+- **Timers** (`Config.timer`, default `timer.WallClock`): threaded by
+  `node.launch` into `scheduler` and `fetch_manager`
+  (`actor.with_timer_source`), `fetcher`, `provisioner` and `carrier`
+  (`sm.with_timer_source`), and into every weft run deadline:
+  `scheduler.send_batch`, `fetcher.start_run` and the carrier's bootstrap
+  `run` (`weft.with_timer_source`, from the sibling weft checkout).
+  `carrier.start_with_bootstrap` (tests only) stays on the wall clock.
+- **Poll clock** (`Config.poll_clock`, default `poll.monotonic()`): kept in
+  `api.Daemon`; `api.await_file` (invite) and `node.wait_for_lock` (stop)
+  use `poll.until_on`.
+- **Network** (`Config.dialer`, default `None` = `carrier.dialer`).
+- **Database** (`Config.database`, default `None` = `daemon.db` in the state
+  directory, created `0600`). An override, such as a shared-cache in-memory
+  URI, is opened as given; `lock.db` stays a file.
+- **Store faults** (`Config.store_faults`, `store.open_with`): consulted once
+  per `store.transaction` after the migrations. `Down` fails before
+  `BEGIN`, `AckLost` commits and then fails; both return an `Ioerr`.
+- **Engine faults** (`Config.engine_faults: Option(fn(JobKind) -> JobFate)`):
+  every engine job carries a `JobKind`; `handle` asks the hook and `run`
+  applies the fate: `FailBeforeApply` answers `Unavailable` unrun,
+  `ApplyThenFail` runs the job (commit and notices) and answers
+  `Unavailable`.
+- **Mail interception** (`Config.interceptor`): every cross-actor `tell` and
+  `ask` (`engine`, `status`, `events`, `scheduler`, `provisioner`,
+  `fetch_manager`, `carrier.GetTor`) goes through a `mail.Handle`. Without an
+  interceptor it is a direct send, no extra hop. With one, the send becomes a
+  `Parcel(from, to, label, deliver)` handed to the runner; `from` and `to` are
+  roles (`fetcher/<queue hex>` per fetcher), `label` a fixed word (the
+  engine's `kind_label`). Not intercepted: ask replies, self-sends, weft
+  timers and run outcomes, the event registry's fan-out to subscribers, Tor
+  port events, exits and monitors, and the network (the dialer's seam).
+- **Randomness**: every id and capability draw in the runtime goes through
+  `config.suite`; `credential` (the local API front door) uses
+  `primitives.random_bytes` and is outside the simulated tree.
 
 ## Local API and CLI
 
