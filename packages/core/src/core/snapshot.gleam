@@ -182,22 +182,26 @@ fn version_field() -> tlv.Field(Int) {
 
 // ------------------------------------------------------------- identity
 
-/// Both secret keys and the public identity, each in its own record.
+/// The three secret keys and the public identity, each in its own record:
+/// 0 the Ed25519 secret, 2 the ML-DSA-65 secret, 4 the X25519 secret, 6
+/// the public identity.
 fn encode_identity(owner: Identity) -> BitArray {
   tlv.new()
   |> tlv.put(0, keys.expose_ed25519_secret(owner.signing))
-  |> tlv.put(2, keys.expose_x25519_secret(owner.agreement))
-  |> tlv.put(4, identity.encode_public(owner.public))
+  |> tlv.put(2, keys.expose_mldsa_secret(owner.pq_signing))
+  |> tlv.put(4, keys.expose_x25519_secret(owner.agreement))
+  |> tlv.put(6, identity.encode_public(owner.public))
   |> tlv.encode
 }
 
-/// The two secret keys and the verified public identity.
+/// The three secret keys and the verified public identity.
 fn identity_decoder(suite: Suite) -> tlv.Decoder(Identity) {
   use signing <- tlv.required(0, key_field(keys.ed25519_secret))
-  use agreement <- tlv.required(2, key_field(keys.x25519_secret))
-  use public <- tlv.required(4, public_identity_field(suite))
+  use pq_signing <- tlv.required(2, key_field(keys.mldsa_secret))
+  use agreement <- tlv.required(4, key_field(keys.x25519_secret))
+  use public <- tlv.required(6, public_identity_field(suite))
 
-  tlv.success(Identity(signing:, agreement:, public:))
+  tlv.success(Identity(signing:, pq_signing:, agreement:, public:))
 }
 
 /// A key rebuilt through its smart constructor, which checks the size and

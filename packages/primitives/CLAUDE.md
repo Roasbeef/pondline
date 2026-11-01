@@ -53,6 +53,10 @@ None. Pure function calls into OpenSSL; no processes, no messages.
   protocols over real crypto.
 - ML-KEM decapsulation of a forged ciphertext returns an unrelated secret,
   not an error. Authentication comes from what that secret later keys.
+- `test/primitives/hybrid_auth_test.gleam` holds the tests that fail if any
+  hybrid signature check verifies only its classical half: identity
+  binding, both prekey signatures and the joiner's transcript, each with
+  exactly one valid half, in both directions.
 
 ## Deep Docs
 

@@ -17,7 +17,7 @@
 //// ## Layout
 ////
 //// A TLV stream: 0 the format version (1), 2 the invitation identifier, 4
-//// the bundle (`pqxdh.encode_bundle`, 1857 bytes), 6 the inviter's route, 8
+//// the bundle (`pqxdh.encode_bundle`, 13 736 bytes), 6 the inviter's route, 8
 //// the acceptance deadline, 10 the description. A different version is an
 //// unknown value in tag 0 and the file is refused whole.
 

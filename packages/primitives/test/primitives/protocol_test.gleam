@@ -349,15 +349,33 @@ pub fn a_state_claiming_too_many_skipped_keys_is_refused_test() {
   assert ratchet.decode_state(hostile) == Error(error.SkippedKeyStoreFull)
 }
 
+/// Where the bundle's fields start: the version byte, the identity, the
+/// SPK and its hybrid signature, the PQSPK and its hybrid signature.
+const spk_at = 5390
+
+const spk_signature_at = 5422
+
+const pqspk_at = 8795
+
+const pqspk_signature_at = 10_363
+
+pub fn the_bundle_layout_offsets_hold_test() {
+  assert spk_at == 1 + identity.public_identity_bytes
+  assert spk_signature_at == spk_at + keys.x25519_bytes
+  assert pqspk_at == spk_signature_at + keys.hybrid_signature_size
+  assert pqspk_signature_at == pqspk_at + keys.kem_public_size
+  assert pqxdh.bundle_bytes == pqspk_signature_at + keys.hybrid_signature_size
+}
+
 pub fn a_bad_signed_prekey_signature_is_rejected_test() {
   let s = suite.suite()
   let prekeys = handshake().prekeys
   let encoded = pqxdh.encode_bundle(prekeys.bundle)
 
-  // Layout: version, identity (128), SPK (32), SPK signature (64), PQSPK.
-  assert pqxdh.decode_bundle(s, flip_byte(encoded, 129))
+  // The prekey itself, then the first byte of its signature.
+  assert pqxdh.decode_bundle(s, flip_byte(encoded, spk_at))
     == Error(BadSignature("signed prekey"))
-  assert pqxdh.decode_bundle(s, flip_byte(encoded, 161))
+  assert pqxdh.decode_bundle(s, flip_byte(encoded, spk_signature_at))
     == Error(BadSignature("signed prekey"))
 }
 
@@ -366,9 +384,9 @@ pub fn a_bad_post_quantum_prekey_signature_is_rejected_test() {
   let prekeys = handshake().prekeys
   let encoded = pqxdh.encode_bundle(prekeys.bundle)
 
-  assert pqxdh.decode_bundle(s, flip_byte(encoded, 225))
+  assert pqxdh.decode_bundle(s, flip_byte(encoded, pqspk_at + 1))
     == Error(BadSignature("post-quantum prekey"))
-  assert pqxdh.decode_bundle(s, flip_byte(encoded, 1856))
+  assert pqxdh.decode_bundle(s, flip_byte(encoded, pqxdh.bundle_bytes - 1))
     == Error(BadSignature("post-quantum prekey"))
 }
 
@@ -376,6 +394,7 @@ pub fn a_broken_identity_binding_is_rejected_test() {
   let s = suite.suite()
   let encoded = pqxdh.encode_bundle(handshake().prekeys.bundle)
 
+  // Inside the ML-DSA public key, which both halves of the binding sign.
   assert pqxdh.decode_bundle(s, flip_byte(encoded, 100))
     == Error(BadSignature("identity binding"))
 }
@@ -387,16 +406,18 @@ pub fn a_bundle_with_a_substituted_prekey_is_rejected_test() {
 
   // The attacker's prekeys grafted under the honest identity: everything
   // from the SPK on comes from another inviter.
-  let assert Ok(identity_part) = bit_array.slice(honest, 0, 129)
-  let assert Ok(prekey_part) = bit_array.slice(attacker, 129, 1857 - 129)
+  let assert Ok(identity_part) = bit_array.slice(honest, 0, spk_at)
+  let assert Ok(prekey_part) =
+    bit_array.slice(attacker, spk_at, pqxdh.bundle_bytes - spk_at)
 
   assert result.is_error(
     pqxdh.decode_bundle(s, <<identity_part:bits, prekey_part:bits>>),
   )
 
   // And the attacker's whole identity swapped in under the honest prekeys.
-  let assert Ok(attacker_identity) = bit_array.slice(attacker, 0, 129)
-  let assert Ok(honest_prekeys) = bit_array.slice(honest, 129, 1857 - 129)
+  let assert Ok(attacker_identity) = bit_array.slice(attacker, 0, spk_at)
+  let assert Ok(honest_prekeys) =
+    bit_array.slice(honest, spk_at, pqxdh.bundle_bytes - spk_at)
 
   assert result.is_error(
     pqxdh.decode_bundle(s, <<attacker_identity:bits, honest_prekeys:bits>>),
@@ -409,9 +430,24 @@ pub fn a_swapped_initiator_identity_fails_test() {
   let mallory = fresh_identity()
   let swapped = pqxdh.InitialMessage(..pair.initial, identity: mallory.public)
 
-  // The responder's agreement and associated data both use the identity the
-  // message names, so the first message no longer authenticates.
+  // The transcript signature was made by the joiner, not by the identity
+  // the message now names, so it is refused before any agreement.
   assert pqxdh.respond(s, pair.inviter_identity, pair.prekeys, swapped)
+    == Error(BadSignature("initiator transcript"))
+
+  // Mallory re-signing the transcript under her own identity gets past the
+  // signature and still fails: she holds the identity, but the agreement
+  // and the associated data were the joiner's.
+  let assert Ok(signature) =
+    identity.sign(
+      s,
+      mallory,
+      pqxdh.initial_transcript(swapped, pair.inviter_identity.public),
+    )
+  let resigned =
+    pqxdh.InitialMessage(..swapped, transcript_signature: signature)
+
+  assert pqxdh.respond(s, pair.inviter_identity, pair.prekeys, resigned)
     == Error(AuthenticationFailed)
 }
 
@@ -422,8 +458,23 @@ pub fn a_forged_kem_ciphertext_fails_test() {
   let assert Ok(forged) = keys.kem_ciphertext(flip_byte(ciphertext, 7))
   let initial = pqxdh.InitialMessage(..pair.initial, kem_ciphertext: forged)
 
-  // ML-KEM rejects implicitly, so this surfaces as a failed authentication.
+  // Anyone but the joiner changing the ciphertext breaks the transcript
+  // signature, which covers it.
   assert pqxdh.respond(s, pair.inviter_identity, pair.prekeys, initial)
+    == Error(BadSignature("initiator transcript"))
+
+  // A joiner who signs over a mangled ciphertext of its own still gets
+  // nowhere: ML-KEM rejects implicitly, so this surfaces as a failed
+  // authentication of the first ratchet message, not as a KEM error.
+  let assert Ok(signature) =
+    identity.sign(
+      s,
+      pair.joiner_identity,
+      pqxdh.initial_transcript(initial, pair.inviter_identity.public),
+    )
+  let signed = pqxdh.InitialMessage(..initial, transcript_signature: signature)
+
+  assert pqxdh.respond(s, pair.inviter_identity, pair.prekeys, signed)
     == Error(AuthenticationFailed)
 }
 
@@ -477,6 +528,11 @@ pub fn key_sizes_match_the_primitives_test() {
   assert keys.kem_secret_size == primitives.mlkem1024_secret_bytes
   assert keys.kem_ciphertext_size == primitives.mlkem1024_ciphertext_bytes
   assert keys.kem_shared_secret_bytes == primitives.mlkem_shared_secret_bytes
+  assert keys.mldsa_public_size == primitives.mldsa65_public_bytes
+  assert keys.mldsa_secret_size == primitives.mldsa65_secret_bytes
+  assert keys.mldsa_signature_size == primitives.mldsa65_signature_bytes
+  assert keys.hybrid_signature_size
+    == primitives.ed25519_signature_bytes + primitives.mldsa65_signature_bytes
 }
 
 fn state_with_skipped_count(count: Int) -> BitArray {
