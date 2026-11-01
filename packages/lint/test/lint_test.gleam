@@ -2266,6 +2266,7 @@ pub fn undocumented(x) { x }
 
   should.equal(policy.literate_packages(), [
     "core",
+    "daemon",
     "lint",
     "mailbox",
     "primitives",

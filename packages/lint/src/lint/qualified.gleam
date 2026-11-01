@@ -40,7 +40,7 @@ import lint/source.{type Lines}
 /// // -> True
 /// ```
 pub fn project_roots() -> List(String) {
-  ["core", "lint", "mailbox", "primitives"]
+  ["core", "daemon", "lint", "mailbox", "primitives"]
 }
 
 /// Unqualified value imports from Reedwire modules that are idiomatic, as
