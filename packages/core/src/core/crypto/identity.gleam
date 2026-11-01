@@ -206,8 +206,8 @@ pub fn pq_signing_key(public: PublicIdentity) -> MldsaPublic {
 /// The canonical encoding of a public identity, 5389 bytes with no framing:
 /// the Ed25519 public key (32), the ML-DSA-65 public key (1952), the X25519
 /// public key (32), then the hybrid binding signature (64 + 3309). This is
-/// the encoding that is fingerprinted and that goes into the handshake's
-/// associated data.
+/// the encoding that is fingerprinted (the session's associated data holds
+/// the two fingerprints) and that the initiator's transcript signs.
 ///
 /// ## Examples
 ///

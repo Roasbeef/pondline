@@ -136,3 +136,34 @@ session binds and was not asked for; it is left open.
   is where classical PQXDH already was), if a bundle-size budget (QR
   invitations) forces the single-signature form, or when the sparse
   post-quantum ratchet is designed.
+
+## Addendum (2026-11-01): the session AD is the two fingerprints
+
+The open question above is closed. The session associated data, stored in
+every ratchet state and authenticated with every message, is now
+`fingerprint(IK_init) || fingerprint(IK_resp)` (SHA-256 of each full
+public identity encoding, 64 bytes) instead of the two encodings (10778
+bytes). SHA-256's collision resistance binds the identities as tightly:
+two different identities that give the same `AD` are a SHA-256 collision,
+and the protocol already rests on SHA-256 for the bundle commitment and
+the fingerprint users compare. It saves 10714 bytes in every stored
+ratchet state (a fresh state is now 211 bytes for the initiator and 279
+for the responder, against 10925 and 10993) and in the associated data of
+every message (104 bytes with the header, against 10818). The wire size
+of a ratchet message does not change, since `AD` is never sent. There is
+no domain label on `AD`: it is only ever associated data under keys
+derived from this handshake's `SK`.
+
+The transcript the initiator signs keeps both identities in full, now
+written as `encode(IK_init) || encode(IK_resp)` rather than as `AD`.
+Nothing else in the transcript carries them (the bundle commitment names
+the responder's identity only through a hash, the initiator's not at
+all), the signature is made once per relationship, and signing the full
+encodings binds the keys themselves rather than through SHA-256. The
+"session AD" line under Consequences is superseded by this addendum; the
+transcript bytes are unchanged.
+
+A test pins the layout (both ends' stored `AD` is exactly the two
+fingerprints, initiator first), and the mutations that use only one
+fingerprint, swap their order, or drop the ML-DSA-65 key from the binding
+message each fail it or another test.

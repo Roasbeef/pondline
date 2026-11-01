@@ -108,8 +108,19 @@ SK = HKDF-SHA-256(salt = 0x00 x 32,
                   ikm  = 0xFF x 32 || DH1 || DH2 || DH3 || SS,
                   info = "Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1",
                   L    = 32)
-AD = PublicIdentity(IK_init) || PublicIdentity(IK_resp)              10778 bytes
+AD = SHA-256(PublicIdentity(IK_init)) || SHA-256(PublicIdentity(IK_resp))   64 bytes
+   = fingerprint(IK_init) || fingerprint(IK_resp)
 ```
+
+Signal's `AD` is the two identity encodings themselves. A hybrid identity
+is 5389 bytes, and `AD` is stored in every ratchet state and authenticated
+with every message, so here it is the two fingerprints (§2) instead.
+SHA-256's collision resistance binds the identities as tightly: two
+distinct identities with equal fingerprints are a SHA-256 collision. The
+fingerprints save 10714 bytes in every stored ratchet state and in the
+associated data of every message. `AD` carries no domain label; it is only
+ever associated data under keys derived from this handshake's `SK`, so it
+cannot be confused with any other use of the same bytes.
 
 The prefix is 32 bytes of `0xFF`, Signal's `F`. For DH1 = `0x01` x 32,
 DH2 = `0x02` x 32, DH3 = `0x03` x 32 and SS = `0x04` x 32, `SK` is
@@ -124,14 +135,19 @@ transcript with both of its signing keys:
 
 ```text
 transcript = "Reedwire_InitiatorTranscript_v1" || version (1)
-             || AD                                      (encode(IK_init) || encode(IK_resp), 10778)
+             || PublicIdentity(IK_init) (5389) || PublicIdentity(IK_resp) (5389)
              || bundle_commitment (32) || EK_public (32) || CT (1568)
              || ratchet_message (rest)
 transcript_signature = HybridSign(IK_init, transcript)                3373 bytes
 ```
 
 The transcript is every field of the initial message except the signature
-itself, plus the responder's identity. Every field before the ratchet
+itself, plus the responder's identity. It signs both identities in full,
+not by fingerprint as `AD` does: nothing else in the transcript carries
+them (the commitment names the responder's identity only through a hash,
+and the initiator's not at all), the signature is made once per
+relationship so the bytes cost nothing that recurs, and the signature then
+binds the keys themselves rather than through SHA-256. Every field before the ratchet
 message has a fixed size, so the concatenation needs no length prefixes.
 The initiator signs after encrypting the first ratchet message, so the
 signature covers it.
@@ -235,12 +251,15 @@ public key matches its secret.
 | `InitialMessage`, fixed part | 10 395 |
 | Initial frame before padding (length prefix, tag, fixed part, ratchet header, AEAD tag, `Hello` of 0 to 1024 bytes) | 10 456 to 11 480 |
 | Padded initial frame | 16 384, always (the 4 KiB bucket is too small) |
-| Session AD (ratchet state, every message's associated data) | 10 778 |
+| Session AD (in every ratchet state and every message's associated data) | 64 |
+| Ratchet state after the handshake (initiator, responder) | 211, 279 |
+| Ratchet state with a full skipped-key store | about 136 300 |
+| Associated data authenticated per message (`AD` and the header) | 104 |
 
 The invitation bound moved from 4 KiB to 16 KiB with hybrid
 authentication; no other bound moved. A `Hello` carries no identity, so
 `limits.max_hello_bytes` stands, and the largest snapshot (a full
-skipped-key store, about 147 KB with the larger AD) stays far under
+skipped-key store, about 136 KB) stays far under
 `limits.max_snapshot_bytes`.
 
 A header claiming a gap over `max_skip_per_message` is refused, since the gap

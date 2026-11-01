@@ -20,11 +20,16 @@
 //// (SS, CT) = ML-KEM-1024.Encaps(PQSPK)
 //// SK = HKDF(salt = 0^32, ikm = 0xFF^32 || DH1 || DH2 || DH3 || SS,
 ////           info = "Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1", L = 32)
-//// AD = encode(IK_init) || encode(IK_resp)
+//// AD = fingerprint(IK_init) || fingerprint(IK_resp)
 //// ```
 ////
 //// The ratchet starts from `SK` and `AD`, and the responder's first ratchet
-//// key pair is the signed prekey, as in Signal's hand-off from X3DH.
+//// key pair is the signed prekey, as in Signal's hand-off from X3DH. Signal
+//// puts the identity encodings themselves in `AD`; a hybrid identity is
+//// 5389 bytes, and `AD` is stored in every ratchet state and authenticated
+//// with every message, so Reedwire uses the identities' fingerprints
+//// (SHA-256 of each encoding) instead. SHA-256's collision resistance binds
+//// the identities as tightly, for 64 bytes rather than 10778.
 ////
 //// ## What authenticates what
 ////
@@ -378,7 +383,7 @@ pub fn initiate(
   ))
   use shared <- result.try(derive_shared(suite, dh1, dh2, dh3, kem_secret))
 
-  let ad = associated_data(initiator.public, bundle.identity)
+  let ad = associated_data(suite, initiator.public, bundle.identity)
 
   use state <- result.try(ratchet.init_sender(suite, shared, ad, bundle.spk))
   use #(state, message) <- result.try(ratchet.encrypt(suite, state, plaintext))
@@ -390,7 +395,14 @@ pub fn initiate(
   use transcript_signature <- result.try(identity.sign(
     suite,
     initiator,
-    transcript(ad, bundle_commitment, ek_public, kem_ciphertext, message),
+    transcript(
+      initiator.public,
+      bundle.identity,
+      bundle_commitment,
+      ek_public,
+      kem_ciphertext,
+      message,
+    ),
   ))
 
   Ok(#(
@@ -411,13 +423,18 @@ pub fn initiate(
 ///
 /// ```text
 /// transcript_label || version (1)
-///   || AD = encode(IK_init) || encode(IK_resp)
+///   || encode(IK_init) (5389) || encode(IK_resp) (5389)
 ///   || bundle_commitment (32) || EK (32) || CT (1568) || ratchet_message
 /// ```
 ///
 /// That is every field of the initial message except the signature itself,
 /// plus the responder's identity, so a signature made for one bundle, one
-/// ephemeral key or one ciphertext verifies for no other. Every field
+/// ephemeral key or one ciphertext verifies for no other. The identities
+/// are signed in full rather than by fingerprint, unlike the session `AD`:
+/// nothing else in the transcript carries them (the commitment names the
+/// responder's only through a hash, the initiator's not at all), the
+/// signature is made once per relationship so their size costs nothing
+/// that recurs, and the signature then binds the keys themselves. Every field
 /// before the ratchet message has a fixed size, so the concatenation is
 /// unambiguous without length prefixes. Public so tests can sign a
 /// transcript of their own; protocol code reaches it only through
@@ -433,7 +450,8 @@ pub fn initial_transcript(
   responder: PublicIdentity,
 ) -> BitArray {
   transcript(
-    associated_data(initial.identity, responder),
+    initial.identity,
+    responder,
     initial.bundle_commitment,
     initial.ephemeral,
     initial.kem_ciphertext,
@@ -445,7 +463,8 @@ pub fn initial_transcript(
 /// before the `InitialMessage` exists) and `initial_transcript` (which
 /// rebuilds it from one), so the two can never lay it out differently.
 fn transcript(
-  ad: BitArray,
+  initiator: PublicIdentity,
+  responder: PublicIdentity,
   bundle_commitment: BitArray,
   ephemeral: X25519Public,
   kem_ciphertext: KemCiphertext,
@@ -454,7 +473,8 @@ fn transcript(
   <<
     transcript_label:bits,
     wire_version:size(8),
-    ad:bits,
+    identity.encode_public(initiator):bits,
+    identity.encode_public(responder):bits,
     bundle_commitment:bits,
     keys.x25519_public_bytes(ephemeral):bits,
     keys.kem_ciphertext_bytes(kem_ciphertext):bits,
@@ -511,7 +531,7 @@ pub fn respond(
   ))
   use shared <- result.try(derive_shared(suite, dh1, dh2, dh3, kem_secret))
 
-  let ad = associated_data(initial.identity, responder.public)
+  let ad = associated_data(suite, initial.identity, responder.public)
   let state =
     ratchet.init_receiver(shared, ad, prekeys.spk_secret, prekeys.bundle.spk)
 
@@ -601,15 +621,28 @@ pub fn derive_shared(
   |> result.map(secret.new)
 }
 
-/// The session's associated data: the initiator's identity encoding followed
-/// by the responder's, so every message is bound to both parties.
-fn associated_data(
+/// The session's associated data: the initiator's identity fingerprint
+/// followed by the responder's, 64 bytes, so every message is bound to both
+/// parties. There is no label: `AD` is only ever associated data under
+/// keys derived from this handshake's `SK`, so no other use of the same
+/// bytes can be confused with it, and a label would cost every message.
+/// Public so a test can pin the layout; protocol code reaches it only
+/// through `initiate` and `respond`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// pqxdh.associated_data(suite, joiner.public, inviter.public)
+/// // -> <<_:512>>
+/// ```
+pub fn associated_data(
+  suite: Suite,
   initiator: PublicIdentity,
   responder: PublicIdentity,
 ) -> BitArray {
   <<
-    identity.encode_public(initiator):bits,
-    identity.encode_public(responder):bits,
+    identity.fingerprint(suite, initiator):bits,
+    identity.fingerprint(suite, responder):bits,
   >>
 }
 

@@ -294,6 +294,35 @@ pub fn the_transcript_layout_test() {
     >>
 }
 
+/// The session's associated data is the two identity fingerprints, the
+/// initiator's first, 64 bytes, and both ends store exactly that in their
+/// ratchet state: the version byte, a 32-bit length, then `AD`.
+pub fn the_session_associated_data_is_the_two_fingerprints_test() {
+  let s = suite.suite()
+  let inviter = fresh_identity()
+  let joiner = fresh_identity()
+  let assert Ok(prekeys) = pqxdh.generate_prekeys(s, inviter)
+  let assert Ok(#(joiner_state, initial)) =
+    pqxdh.initiate(s, joiner, prekeys.bundle, <<"hello inviter">>)
+  let assert Ok(response) = pqxdh.respond(s, inviter, prekeys, initial)
+  let expected = <<
+    identity.fingerprint(s, joiner.public):bits,
+    identity.fingerprint(s, inviter.public):bits,
+  >>
+
+  assert pqxdh.associated_data(s, joiner.public, inviter.public) == expected
+  assert bit_array.byte_size(expected) == 64
+
+  let stored = fn(state) {
+    let assert <<1, size:size(32), ad:bytes-size(size), _:bytes>> =
+      secret.expose(ratchet.encode_state(state))
+    ad
+  }
+
+  assert stored(joiner_state) == expected
+  assert stored(response.state) == expected
+}
+
 pub fn a_transcript_signature_with_one_valid_half_is_refused_test() {
   let s = suite.suite()
   let handshake = start(fresh_identity(), fresh_identity())
