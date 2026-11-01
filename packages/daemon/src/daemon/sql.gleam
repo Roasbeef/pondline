@@ -289,6 +289,104 @@ VALUES (?, ?, ?, ?, ?, ?)"
   ])
 }
 
+pub type DeliveryOf {
+  DeliveryOf(seq: Int)
+}
+
+pub fn delivery_of(contact contact: BitArray, message_id message_id: BitArray) {
+  let sql =
+    "
+SELECT seq FROM deliveries WHERE contact = ? AND message_id = ?"
+  #(
+    sql,
+    [dev.ParamBitArray(contact), dev.ParamBitArray(message_id)],
+    delivery_of_decoder(),
+  )
+}
+
+pub fn delivery_of_decoder() -> decode.Decoder(DeliveryOf) {
+  use seq <- decode.field(0, decode.int)
+  decode.success(DeliveryOf(seq:))
+}
+
+pub fn insert_incident(
+  kind kind: String,
+  queue queue: BitArray,
+  envelope envelope: BitArray,
+  contact contact: Option(BitArray),
+  message_id message_id: Option(BitArray),
+  attempts attempts: Option(Int),
+  at at: Int,
+) {
+  let sql =
+    "
+INSERT INTO incidents
+  (kind, queue, envelope, contact, message_id, attempts, at)
+VALUES (?, ?, ?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamString(kind),
+    dev.ParamBitArray(queue),
+    dev.ParamBitArray(envelope),
+    dev.ParamNullable(option.map(contact, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(option.map(message_id, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(option.map(attempts, fn(v) { dev.ParamInt(v) })),
+    dev.ParamInt(at),
+  ])
+}
+
+pub type Incidents {
+  Incidents(
+    kind: String,
+    queue: BitArray,
+    envelope: BitArray,
+    contact: Option(BitArray),
+    message_id: Option(BitArray),
+    attempts: Option(Int),
+    at: Int,
+  )
+}
+
+pub fn incidents(max max: Int) {
+  let sql =
+    "SELECT kind, queue, envelope, contact, message_id, attempts, at
+FROM incidents
+ORDER BY seq DESC LIMIT ?1"
+  #(sql, [dev.ParamInt(max)], incidents_decoder())
+}
+
+pub fn incidents_decoder() -> decode.Decoder(Incidents) {
+  use kind <- decode.field(0, decode.string)
+  use queue <- decode.field(1, decode.bit_array)
+  use envelope <- decode.field(2, decode.bit_array)
+  use contact <- decode.field(3, decode.optional(decode.bit_array))
+  use message_id <- decode.field(4, decode.optional(decode.bit_array))
+  use attempts <- decode.field(5, decode.optional(decode.int))
+  use at <- decode.field(6, decode.int)
+  decode.success(Incidents(
+    kind:,
+    queue:,
+    envelope:,
+    contact:,
+    message_id:,
+    attempts:,
+    at:,
+  ))
+}
+
+pub type IncidentCount {
+  IncidentCount(total: Int)
+}
+
+pub fn incident_count() {
+  let sql = "SELECT CAST(COUNT(*) AS INTEGER) AS total FROM incidents"
+  #(sql, [], incident_count_decoder())
+}
+
+pub fn incident_count_decoder() -> decode.Decoder(IncidentCount) {
+  use total <- decode.field(0, decode.int)
+  decode.success(IncidentCount(total:))
+}
+
 pub type MetaGet {
   MetaGet(value: BitArray)
 }

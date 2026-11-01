@@ -333,6 +333,36 @@ pub type AuditRecord {
   )
 }
 
+/// Why the daemon set an inbound envelope aside without delivering it
+/// (ADR-010). Both are written for the operator, never for the agent.
+pub type IncidentKind {
+  /// An authenticated peer sent an application message under an identifier
+  /// it had already used on the relationship. The session advanced past
+  /// it; nothing was delivered.
+  RepeatedMessageId
+}
+
+/// One incident as the operator reads it: identifiers, a count and a time,
+/// never a payload.
+pub type IncidentRecord {
+  IncidentRecord(
+    /// What happened.
+    kind: IncidentKind,
+    /// The queue the envelope came from.
+    queue: Id(Queue),
+    /// The envelope.
+    envelope: Id(Envelope),
+    /// The relationship that owns the queue, when one does.
+    contact: Option(Id(Contact)),
+    /// The repeated message identifier, for a `RepeatedMessageId`.
+    message: Option(Id(MessageKind)),
+    /// How many times the envelope was handed to the core, when counted.
+    attempts: Option(Int),
+    /// When it was recorded.
+    at: Instant,
+  )
+}
+
 /// What `invitation_file` found.
 pub type InvitationFile {
   /// The offer is open: the file may be handed out.
@@ -916,6 +946,21 @@ fn put_record(
         ),
       )
 
+    // The core ignored a repeated identifier; the operator hears of it.
+    plan.RepeatedMessage(contact:, message:, queue:, envelope:), _ ->
+      write(
+        store,
+        sql.insert_incident(
+          kind: incident_kind_name(RepeatedMessageId),
+          queue: id.to_bytes(queue),
+          envelope: id.to_bytes(envelope),
+          contact: Some(id.to_bytes(contact)),
+          message_id: Some(id.to_bytes(message)),
+          attempts: None,
+          at: now.unix_seconds,
+        ),
+      )
+
     plan.Outbound(..), None ->
       Error(Corrupt("an outbox row needs the relationship that owns it"))
   }
@@ -1405,6 +1450,37 @@ pub fn fingerprint(
   }
 }
 
+/// Whether a relationship already stored a message under `message`, held,
+/// ready, consumed or recorded expired: the `IdHistory` the core's
+/// `relationship.receive` is told (ADR-010). `UNIQUE (contact, message_id)`
+/// admits one row at most.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.message_history(store, contact, message)
+/// // -> Ok(relationship.FreshId)
+/// ```
+pub fn message_history(
+  store: Store,
+  contact: Id(Contact),
+  message: Id(MessageKind),
+) -> Result(relationship.IdHistory, Error) {
+  use rows <- result.try(query(
+    store,
+    sql.delivery_of(
+      contact: id.to_bytes(contact),
+      message_id: id.to_bytes(message),
+    ),
+  ))
+
+  // Any row at all means the identifier was used.
+  case rows {
+    [] -> Ok(relationship.FreshId)
+    [_, ..] -> Ok(relationship.UsedId)
+  }
+}
+
 /// The envelopes of `queue` that are processed and committed but not yet
 /// acknowledged to the mailbox. This is the only list a fetcher acknowledges
 /// from.
@@ -1559,6 +1635,37 @@ pub fn audit(
   list.try_map(rows, audit_record)
 }
 
+/// The most recent incidents, newest first (ADR-010).
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.incidents(store, 20)
+/// // -> Ok([IncidentRecord(..)])
+/// ```
+pub fn incidents(
+  store: Store,
+  limit: Int,
+) -> Result(List(IncidentRecord), Error) {
+  use rows <- result.try(query(store, sql.incidents(max: limit)))
+
+  list.try_map(rows, incident_record)
+}
+
+/// How many incidents were ever recorded, for the daemon's health.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.incident_count(store)
+/// // -> Ok(0)
+/// ```
+pub fn incident_count(store: Store) -> Result(Int, Error) {
+  use rows <- result.try(query(store, sql.incident_count()))
+
+  Ok(first_or(list.map(rows, fn(row) { row.total }), 0))
+}
+
 // ------------------------------------------------------------------ meta
 
 /// A stored daemon-wide value, such as the agent identifier.
@@ -1656,7 +1763,7 @@ fn delivery_record(row: sql.ReadyDeliveries) -> Result(DeliveryRecord, Error) {
     id.from_bytes(row.contact)
     |> result.map_error(fn(_) { corrupt("deliveries") }),
   )
-  use in_reply_to <- result.try(optional_id(row.in_reply_to))
+  use in_reply_to <- result.try(optional_id(row.in_reply_to, "deliveries"))
 
   Ok(DeliveryRecord(
     message:,
@@ -1668,16 +1775,21 @@ fn delivery_record(row: sql.ReadyDeliveries) -> Result(DeliveryRecord, Error) {
   ))
 }
 
-/// An optional identifier column: absent is fine, present must decode.
-fn optional_id(bytes: Option(BitArray)) -> Result(Option(Id(kind)), Error) {
-  // A reply target is optional, but a stored one must decode.
+/// An optional identifier column of `table`: absent is fine, present must
+/// decode.
+fn optional_id(
+  bytes: Option(BitArray),
+  table: String,
+) -> Result(Option(Id(kind)), Error) {
+  // A reply target or an incident's contact is optional, but a stored one
+  // must decode.
   case bytes {
     None -> Ok(None)
 
     Some(raw) ->
       id.from_bytes(raw)
       |> result.map(Some)
-      |> result.map_error(fn(_) { corrupt("deliveries") })
+      |> result.map_error(fn(_) { corrupt(table) })
   }
 }
 
@@ -1711,6 +1823,47 @@ fn audit_record(row: sql.AuditEntries) -> Result(AuditRecord, Error) {
     payload: secret.new(row.payload),
     at: Instant(row.at),
   ))
+}
+
+/// Builds an incident record from its row.
+fn incident_record(row: sql.Incidents) -> Result(IncidentRecord, Error) {
+  use kind <- result.try(parse_incident_kind(row.kind))
+  use queue <- result.try(
+    id.from_bytes(row.queue) |> result.map_error(fn(_) { corrupt("incidents") }),
+  )
+  use envelope <- result.try(
+    id.from_bytes(row.envelope)
+    |> result.map_error(fn(_) { corrupt("incidents") }),
+  )
+  use contact <- result.try(optional_id(row.contact, "incidents"))
+  use message <- result.try(optional_id(row.message_id, "incidents"))
+
+  Ok(IncidentRecord(
+    kind:,
+    queue:,
+    envelope:,
+    contact:,
+    message:,
+    attempts: row.attempts,
+    at: Instant(row.at),
+  ))
+}
+
+/// The `kind` column of an incident.
+fn incident_kind_name(kind: IncidentKind) -> String {
+  case kind {
+    RepeatedMessageId -> "repeated_message"
+  }
+}
+
+/// The incident kind a `kind` column names; only the writer's names are
+/// valid.
+fn parse_incident_kind(name: String) -> Result(IncidentKind, Error) {
+  // Any other text is a damaged row.
+  case name {
+    "repeated_message" -> Ok(RepeatedMessageId)
+    _ -> Error(corrupt("incidents"))
+  }
 }
 
 fn corrupt(table: String) -> Error {

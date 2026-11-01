@@ -61,6 +61,15 @@
 //// `relationship.resend_receipt`, which queues the same logical receipt
 //// again and delivers nothing (ADR-006, spec §7.3).
 ////
+//// Any other ratchet message is received in two steps (ADR-010):
+//// `relationship.open` decrypts it, the engine reads whether the
+//// relationship already stored a message under its identifier
+//// (`store.message_history`), and `relationship.receive` decides with that
+//// answer. A repeated identifier is ignored by the core and recorded as an
+//// incident for the operator, so a forging peer cannot make the commit fail
+//// on the deliveries' uniqueness and wedge its queue. A history that
+//// cannot be read is `Unavailable`, never a guess.
+////
 //// ## Retransmitting
 ////
 //// `retransmit` is the sending half of ADR-006, run by the scheduler on
@@ -218,6 +227,8 @@ pub type JobKind {
   MarkAcked
   OutboxPending
   Retransmit
+  Incidents
+  IncidentCount
 }
 
 /// What the fault hook makes of one job. Only a simulation sets a hook; a
@@ -765,6 +776,7 @@ fn sent_message(
         | plan.Released(..)
         | plan.PeerReceived(..)
         | plan.Remembered(..)
+        | plan.RepeatedMessage(..)
         | plan.Audit(..) -> Error(Nil)
       }
     })
@@ -981,19 +993,18 @@ fn receive(
       // A ciphertext a message was already stored from is answered with its
       // receipt again and never decrypted; anything else goes through the
       // session.
-      let outcome = case known {
+      use outcome <- result.try(case known {
         Some(fingerprint) ->
-          relationship.resend_receipt(
+          Ok(relationship.resend_receipt(
             state.suite,
             current,
             state.clock(),
             ref,
             fingerprint,
-          )
+          ))
 
-        None ->
-          relationship.receive(state.suite, current, state.clock(), ref, bytes)
-      }
+        None -> open_and_receive(state, current, ref, bytes)
+      })
 
       // A plan commits with the relationship's new state; a refusal is
       // committed as a drop so the mailbox can still be acknowledged.
@@ -1004,6 +1015,38 @@ fn receive(
 
         Error(_) -> drop(state, ref)
       }
+    }
+  }
+}
+
+/// Opens a ratchet message and receives it with its identifier's history
+/// read from the deliveries (ADR-010). The outer `Result` is the store's:
+/// a history that cannot be read is `Unavailable` and commits nothing,
+/// because guessing it either way could deliver a message twice or lose
+/// one. The inner one is the core's, where a refusal becomes a drop.
+fn open_and_receive(
+  state: State,
+  current: Relationship,
+  ref: EnvelopeRef,
+  bytes: BitArray,
+) -> Result(Result(Plan(Relationship), relationship.Refusal), Failure) {
+  let opened =
+    relationship.open(state.suite, current, state.clock(), ref, bytes)
+
+  // Only a message the session opened has an identifier to look up.
+  case opened {
+    Error(refusal) -> Ok(Error(refusal))
+
+    Ok(opened) -> {
+      use history <- result.try(
+        fault(store.message_history(
+          state.store,
+          current.contact,
+          relationship.opened_message(opened),
+        )),
+      )
+
+      Ok(relationship.receive(opened, history))
     }
   }
 }
@@ -1074,6 +1117,36 @@ pub fn audit(
   limit: Int,
 ) -> Result(List(store.AuditRecord), Failure) {
   run(name, Audit, fn(state) { fault(store.audit(state.store, contact, limit)) })
+}
+
+/// The most recent incidents, newest first: envelopes the daemon set aside
+/// without delivering them (ADR-010).
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.incidents(name, 20)
+/// // -> Ok([record])
+/// ```
+pub fn incidents(
+  name: Handle(Message),
+  limit: Int,
+) -> Result(List(store.IncidentRecord), Failure) {
+  run(name, Incidents, fn(state) { fault(store.incidents(state.store, limit)) })
+}
+
+/// How many incidents were ever recorded.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.incident_count(name)
+/// // -> Ok(0)
+/// ```
+pub fn incident_count(name: Handle(Message)) -> Result(Int, Failure) {
+  run(name, IncidentCount, fn(state) {
+    fault(store.incident_count(state.store))
+  })
 }
 
 /// The inboxes to fetch from.
@@ -1394,5 +1467,7 @@ pub fn kind_label(kind: JobKind) -> String {
     MarkAcked -> "mark_acked"
     OutboxPending -> "outbox_pending"
     Retransmit -> "retransmit"
+    Incidents -> "incidents"
+    IncidentCount -> "incident_count"
   }
 }

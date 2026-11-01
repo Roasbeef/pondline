@@ -65,6 +65,10 @@ const shipped = [
     "002_retransmit.sql",
     "3DA8D149D8BFD9368A787E4A087303585DB80286F14E0EB3DC9DDA6CE9444084",
   ),
+  #(
+    "003_incidents.sql",
+    "DCFB7E1B4DC3CE3E804545125BC5BCDC931E8B515A3BC4D0FDD265EC9AFADC77",
+  ),
 ]
 
 pub fn shipped_migrations_never_change_test() {
