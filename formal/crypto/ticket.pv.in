@@ -1,0 +1,136 @@
+(* Reedwire invitation tickets (ADR-009, docs/crypto-profile-v1.md section
+ * 11), modelled as packages/core/src/core/ticket.gleam seals and opens them.
+ *
+ * A ticket is a mailbox endpoint and a 32-byte secret K that reaches the
+ * joiner out of band. Every key comes from K by HKDF under its own label:
+ * the locator (the blob's name at the mailbox), the retrieve capability, the
+ * AEAD key and nonce, and the commitment key. The inviter seals the
+ * invitation file as
+ *
+ *   blob = version || HMAC(commit_key, invitation)
+ *          || AEAD(key, aad = label || locator, invitation)
+ *
+ * and stores it at its mailbox with PutBlob, which carries the locator and
+ * the retrieve capability in the clear. The joiner fetches it with GetBlob
+ * and opens it: the AEAD first, then the commitment, and nothing leaves open
+ * unless both pass. The mailbox is the attacker here, so it sees every
+ * stored blob, every locator and every retrieve capability, and answers a
+ * fetch with whatever it likes.
+ *
+ * The invitation file inside is the bundle of pairing.pv.in; this model stops
+ * where that one starts, at a joiner holding a bundle it believes was
+ * sealed for its ticket. The HKDF extract-then-expand pair is one keyed
+ * derivation per label, and the AEAD key and nonce, which are derived
+ * together and used once, are one symbol.
+ *
+ * Scenario macros:
+ *   LEAK_TICKET         every ticket secret reaches the attacker.
+ *   NONCOMMITTING_AEAD  the AEAD is not key-committing: a party holding two
+ *                       keys can build one ciphertext that opens to a
+ *                       different plaintext under each. ChaCha20-Poly1305
+ *                       has this property; the symbolic AEAD does not,
+ *                       unless this macro gives it to the attacker.
+ *
+ * Mutation macros:
+ *   NO_COMMITMENT       open does not check the commitment.
+ *)
+
+set attacker = active.
+set ignoreTypes = false.
+
+free c: channel.
+
+(* The ticket travels out of band, as the invitation file does in
+ * pairing.pv.in; a table captures a text that any number of joiners may
+ * read and lets ProVerif reconstruct traces. *)
+table tickets(bitstring).
+
+const version: bitstring.
+const label_locator: bitstring.     (* Reedwire_TicketLocator_v1 *)
+const label_capability: bitstring.  (* Reedwire_TicketCapability_v1 *)
+const label_key: bitstring.         (* Reedwire_TicketKey_v1 *)
+const label_commitment: bitstring.  (* Reedwire_TicketCommitment_v1 *)
+const label_blob: bitstring.        (* Reedwire_TicketBlob_v1 *)
+
+(* HKDF-Extract under the ticket salt followed by HKDF-Expand under one
+ * label, as one keyed one-way function of K and the label. *)
+fun kdf(bitstring, bitstring): bitstring.
+fun h(bitstring): bitstring.
+fun hmac(bitstring, bitstring): bitstring.
+
+fun aead(bitstring, bitstring, bitstring): bitstring.   (* key, aad, plaintext *)
+
+#ifdef NONCOMMITTING_AEAD
+(* One ciphertext that opens under (k1, ad1) to m1 and under (k2, ad2) to
+ * m2, built by whoever holds both keys. This is the capability the ADR
+ * names when it says ChaCha20-Poly1305 is not key-committing; the
+ * associated data may differ on the two sides, as it does for two tickets
+ * whose locators differ, because the Poly1305 equation that the forger
+ * solves takes the associated data as a known constant. *)
+fun dual(bitstring, bitstring, bitstring, bitstring, bitstring, bitstring): bitstring.
+#endif
+
+fun adec(bitstring, bitstring, bitstring): bitstring
+reduc forall k: bitstring, ad: bitstring, m: bitstring; adec(k, ad, aead(k, ad, m)) = m
+#ifdef NONCOMMITTING_AEAD
+otherwise forall k1: bitstring, m1: bitstring, ad1: bitstring, k2: bitstring, m2: bitstring, ad2: bitstring;
+  adec(k1, ad1, dual(k1, m1, ad1, k2, m2, ad2)) = m1
+otherwise forall k1: bitstring, m1: bitstring, ad1: bitstring, k2: bitstring, m2: bitstring, ad2: bitstring;
+  adec(k2, ad2, dual(k1, m1, ad1, k2, m2, ad2)) = m2
+#endif
+.
+
+(* ticket secret, invitation *)
+event Sealed(bitstring, bitstring).
+(* ticket secret, invitation, the blob bytes it was opened from *)
+event Opened(bitstring, bitstring, bitstring).
+
+(* T1 the mailbox learns nothing of the invitation it stores. *)
+query k: bitstring, inv: bitstring;
+  event(Sealed(k, inv)) && attacker(inv).
+
+(* T2 a joiner opens, under its ticket, only the invitation the inviter
+ * sealed for that ticket: the mailbox cannot substitute one. *)
+query k: bitstring, inv: bitstring, b: bitstring;
+  event(Opened(k, inv, b)) ==> event(Sealed(k, inv)).
+
+(* T3 one blob opens to one invitation, whoever opens it under whatever
+ * ticket: the key-committing property the commitment is there for. *)
+query k: bitstring, k2: bitstring, inv: bitstring, inv2: bitstring, b: bitstring;
+  event(Opened(k, inv, b)) && event(Opened(k2, inv2, b)) ==> inv = inv2.
+
+let inviter() =
+  new secret_k: bitstring;
+  new invitation: bitstring;
+  insert tickets(secret_k);
+#ifdef LEAK_TICKET
+  out(c, secret_k);
+#endif
+  let locator = kdf(secret_k, label_locator) in
+  let retrieve = kdf(secret_k, label_capability) in
+  let key = kdf(secret_k, label_key) in
+  let commit_key = kdf(secret_k, label_commitment) in
+  let blob = (version, hmac(commit_key, invitation), aead(key, (label_blob, locator), invitation)) in
+  event Sealed(secret_k, invitation);
+  (* PutBlob: the mailbox receives the locator, the retrieve capability
+   * (it stores its hash) and the sealed bytes. *)
+  out(c, (locator, retrieve, blob)).
+
+let joiner() =
+  get tickets(secret_k) in
+  let locator = kdf(secret_k, label_locator) in
+  let retrieve = kdf(secret_k, label_capability) in
+  let key = kdf(secret_k, label_key) in
+  let commit_key = kdf(secret_k, label_commitment) in
+  (* GetBlob, then whatever the mailbox answers. *)
+  out(c, (locator, retrieve));
+  in(c, blob: bitstring);
+  let (=version, commitment: bitstring, sealed: bitstring) = blob in
+  let invitation = adec(key, (label_blob, locator), sealed) in
+#ifndef NO_COMMITMENT
+  if hmac(commit_key, invitation) = commitment then
+#endif
+  event Opened(secret_k, invitation, blob).
+
+process
+  (!inviter()) | (!joiner())
