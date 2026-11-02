@@ -137,7 +137,8 @@ fn delivered_and_acknowledged() -> Delivered {
     |> list.reverse
     |> list.map(fn(n) {
       let payload = <<"zombie ":utf8, int.to_string(n):utf8>>
-      let assert Ok(sent) = api.send(a, contact, "text/plain", payload, None)
+      let assert Ok(sent) =
+        api.send(a, contact, "text/plain", secret.new(payload), None)
       sent
     })
   support.eventually(15_000, fn() {
@@ -169,7 +170,13 @@ fn delivered_and_acknowledged() -> Delivered {
 /// the queue drains, and the agent sees each of the seventeen once.
 fn the_queue_moves_on(world: Delivered) -> Nil {
   let assert Ok(behind) =
-    api.send(world.a, world.contact, "text/plain", <<"behind":utf8>>, None)
+    api.send(
+      world.a,
+      world.contact,
+      "text/plain",
+      secret.new(<<"behind":utf8>>),
+      None,
+    )
 
   // The seventeenth sits behind sixteen envelopes the mailbox serves first;
   // it arrives only once they are acknowledged again.

@@ -30,6 +30,7 @@
 import core/id
 import core/limits
 import core/offer
+import core/secret
 import daemon/api
 import gleam/bit_array
 import gleam/int
@@ -270,7 +271,7 @@ fn send_tags(
                   to,
                   tag,
                   "text/plain",
-                  payload(tag, size),
+                  secret.new(payload(tag, size)),
                   None,
                 )
                 |> result.map(fn(message) {
@@ -543,7 +544,14 @@ fn one_send(
           env,
           party,
           fn(daemon) {
-            api.send_with_key(daemon, to, tag, content_type, body, None)
+            api.send_with_key(
+              daemon,
+              to,
+              tag,
+              content_type,
+              secret.new(body),
+              None,
+            )
           },
           attempts,
           0,

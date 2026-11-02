@@ -49,6 +49,9 @@ import mailbox/service
 import mailbox/store
 import primitives
 import simplifile
+import telemetry/field
+import telemetry/handler
+import telemetry/log
 import tor
 import tor/address
 import weft/timer
@@ -91,7 +94,14 @@ pub type Command {
 
 /// The entry point for `gleam run -m mailbox`.
 pub fn main() -> Nil {
+  // The handler goes in before anything can crash, so every report this
+  // VM writes, from the argument parser on, is the scrubbed one on
+  // standard error (ADR-012). A VM that cannot install it does not run.
   let outcome = {
+    use _ <- result.try(
+      handler.install_from_env()
+      |> result.replace_error("the log handler could not be installed"),
+    )
     use command <- result.try(parse(argv.load().arguments))
     run(command)
   }
@@ -270,6 +280,7 @@ fn serve(
   )
 
   io.println("listening " <> loopback <> ":" <> int.to_string(server.port))
+  log.info("mailbox", "serving", [field.count("port", server.port)])
 
   // The onion line follows the listening line, so a reader that stops at
   // the first line still gets the port it needs.

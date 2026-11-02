@@ -2271,6 +2271,7 @@ pub fn undocumented(x) { x }
     "mailbox",
     "primitives",
     "sim",
+    "telemetry",
     "tor",
   ])
 }

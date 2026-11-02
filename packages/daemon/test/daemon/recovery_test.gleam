@@ -3,6 +3,7 @@
 //// acknowledging only what it committed (spec §12.2, §13.1).
 
 import core/offer
+import core/secret
 import daemon/api
 import daemon/engine
 import daemon/node
@@ -49,7 +50,7 @@ pub fn a_committed_send_is_delivered_once_after_a_restart_test() {
   node.stop(a)
   let assert Ok(offline) = node.start_offline(settings_a)
   let assert Ok(sent) =
-    api.send(offline, at_a, "text/plain", <<"once":utf8>>, None)
+    api.send(offline, at_a, "text/plain", secret.new(<<"once":utf8>>), None)
 
   assert api.status(offline, sent) == Ok(api.LocallyQueued)
   assert api.health(offline).outbox_pending == 1
@@ -95,7 +96,8 @@ pub fn a_processed_envelope_is_acknowledged_after_a_restart_test() {
     support.when(support.stored_in(before) == [])
   })
   node.stop(b)
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hi":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"hi":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
   })
@@ -140,7 +142,7 @@ pub fn nothing_is_sent_when_the_commit_fails_test() {
 
   // With the database locked from outside, the commit cannot happen.
   let held = support.hold_database(settings_a.state_dir)
-  assert api.send(a, at_a, "text/plain", <<"never":utf8>>, None)
+  assert api.send(a, at_a, "text/plain", secret.new(<<"never":utf8>>), None)
     == Error(api.Unavailable)
 
   // The ciphertext for that failed commit must not have reached B.
@@ -149,7 +151,8 @@ pub fn nothing_is_sent_when_the_commit_fails_test() {
   let assert Ok([]) = api.receive(b, None, 10)
 
   // The ratchet did not advance, so the next send works and arrives once.
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"later":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"later":utf8>>), None)
   let delivered =
     support.eventually(15_000, fn() {
       let assert Ok(found) = api.receive(b, None, 10)
@@ -170,7 +173,8 @@ pub fn an_envelope_stays_in_the_mailbox_until_its_commit_test() {
 
   // B cannot commit while its database is held.
   let held = support.hold_database(settings_b.state_dir)
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hold":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"hold":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
   })

@@ -79,7 +79,13 @@ pub fn every_seam_defaults_to_production_test() {
   let _ = active(b)
 
   let assert Ok(sent) =
-    api.send(a, at_a, "text/plain", <<"through the seams":utf8>>, None)
+    api.send(
+      a,
+      at_a,
+      "text/plain",
+      secret.new(<<"through the seams":utf8>>),
+      None,
+    )
   let delivered =
     support.eventually(15_000, fn() {
       let assert Ok(found) = api.receive(b, None, 10)

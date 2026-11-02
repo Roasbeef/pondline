@@ -29,7 +29,7 @@ packages = [
   { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gramps", source = "hex", outer_checksum = "D55636072DEE173F6586A5679D3C02EC7A0DE3F8646B78C351B72908FF223DF7" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
-  { name = "mailbox", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "mist", "parrot", "primitives", "simplifile", "sqlight", "tor", "weft"], source = "local", path = "../mailbox" },
+  { name = "mailbox", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "mist", "primitives", "simplifile", "sqlight", "telemetry", "tor", "weft"], source = "local", path = "../mailbox" },
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "1B07F321D5FA0CB162D81496F2DE96AEB6EF8980F4F38230A4CC3F849497E020" },
   { name = "mug", version = "3.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "mug", source = "hex", outer_checksum = "C01279D98E40371DA23461774B63F0E3581B8F1396049D881B0C7EB32799D93F" },
   { name = "parrot", version = "2.3.0", build_tools = ["gleam"], requirements = ["argv", "envoy", "filepath", "gleam_crypto", "gleam_httpc", "gleam_json", "gleam_stdlib", "gleam_time", "glearray", "repeatedly", "simplifile", "tom"], otp_app = "parrot", source = "hex", outer_checksum = "236C3B20EF03468AFD665C3107C5E7D9128344D06A5950F55822FC5B3B35FBC3" },
@@ -40,6 +40,7 @@ packages = [
   { name = "simplifile", version = "2.7.0", build_tools = ["gleam"], requirements = ["filepath", "gleam_stdlib"], otp_app = "simplifile", source = "hex", outer_checksum = "A2727627B063E87351934C7F7F008F2D1FDB16F6DE0B8C79F9E46459CFC9C164" },
   { name = "splitter", version = "1.3.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "splitter", source = "hex", outer_checksum = "8F1485306E0D59168A39E12ED8844F9F616EC59C3C63AFCFDAE04DBD68690CBC" },
   { name = "sqlight", version = "1.2.0", build_tools = ["gleam"], requirements = ["esqlite", "gleam_stdlib"], otp_app = "sqlight", source = "hex", outer_checksum = "841768D0A81107EE2DB46B949354F284A68B2E8098315C28A1FE3C07D206C17A" },
+  { name = "telemetry", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../telemetry" },
   { name = "tom", version = "2.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib", "gleam_time"], otp_app = "tom", source = "hex", outer_checksum = "DCF04CB7AB35D58CFC598C66EA2E1816D160759802C89B2BA6238780D59BC256" },
   { name = "tor", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib", "weft"], source = "local", path = "../tor" },
   { name = "weft", version = "0.4.7", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_otp", "gleam_stdlib"], source = "git", repo = "https://github.com/Roasbeef/weft.git", commit = "d90b192573fea90ea86b319627c49705fe8897b3" },
@@ -61,5 +62,6 @@ primitives = { path = "../primitives" }
 qcheck = { version = ">= 1.0.5 and < 2.0.0" }
 simplifile = { version = ">= 2.0.0 and < 3.0.0" }
 sqlight = { version = ">= 1.2.0 and < 2.0.0" }
+telemetry = { path = "../telemetry" }
 tor = { path = "../tor" }
 weft = { git = "https://github.com/Roasbeef/weft.git", ref = "d90b192573fea90ea86b319627c49705fe8897b3" }

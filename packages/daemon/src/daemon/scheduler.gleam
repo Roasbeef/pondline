@@ -108,7 +108,6 @@ import core/mailbox/protocol
 import core/retention
 import core/time
 import daemon/engine
-import daemon/log
 import daemon/mail.{type Handle}
 import daemon/mailbox_client
 import daemon/status
@@ -120,6 +119,8 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor as otp_actor
 import gleam/otp/supervision
+import telemetry/field
+import telemetry/log
 import weft
 import weft/actor
 import weft/timer
@@ -414,8 +415,10 @@ fn retransmit_due(state: State) -> State {
   case engine.retransmit(state.config.engine) {
     Ok(_) -> state
 
-    Error(_) -> {
-      log.line("scheduler", "could not send stored messages again")
+    Error(failure) -> {
+      log.warning("scheduler", "retransmit_failed", [
+        field.tag("reason", failure),
+      ])
       state
     }
   }
@@ -731,8 +734,11 @@ fn finish(state: State, row: store.OutboxRow, verdict: Verdict) -> State {
   {
     Ok(Nil) -> dict.delete(state.in_flight, envelope_key(row))
 
-    Error(_) -> {
-      log.line("scheduler", "could not record a send outcome")
+    Error(failure) -> {
+      log.warning("scheduler", "record_failed", [
+        field.id("envelope", row.envelope),
+        field.tag("reason", failure),
+      ])
       dict.insert(state.in_flight, envelope_key(row), Held)
     }
   }
