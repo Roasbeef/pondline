@@ -1,9 +1,9 @@
 # Implementation handoff: Pondline
 ## Design intent, architectural context, and implementation guidance
 
-**Working name:** Pondline. The name is provisional; no domain, package, or trademark clearance has been established.
+**Name:** Pondline ([ADR-014](adr/014-the-name-is-pondline.md)). No domain or trademark clearance has been established.
 
-**Project status:** Architecture and specification stage. This discussion has not established a working implementation, completed security review, production deployment, or measured performance.
+**Project status:** This document was written at the architecture and specification stage, and reads that way. An implementation now exists and is pre-1.0; [the README](../README.md) describes it. There has been no independent security review and no production deployment.
 
 **Companion document:** *Pondline: Core System Specification, Version 0.1.* That document describes the proposed protocol and state transitions. This handoff explains the motivations, decisions, tradeoffs, and implementation priorities behind them.
 
