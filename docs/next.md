@@ -108,7 +108,7 @@ In order. The first is the in-flight work above; the rest can interleave.
    tools. *Cut:* the nightly CI job (blocked, see "Deliberately open").
    Run these campaigns alone on the machine: concurrent test suites made
    the daemon's timing tests flaky before.
-3. **Resolve the `join_secret` divergence.** `docs/spec.md` §4.2 still
+3. **Resolved by ADR-013: the `join_secret` divergence.** `docs/spec.md` §4.2 still
    requires the inviter to check a `join_secret`; `core/invitation.gleam`
    says there is none. The research note and the crypto model both found
    it; no ADR records the drop. Either amend the spec through an ADR
