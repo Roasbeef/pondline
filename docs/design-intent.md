@@ -286,6 +286,8 @@ The joiner fetches that material and establishes encryption while the inviter ma
 
 ### Two different secrets serve two different purposes
 
+*Superseded by ADR-013.* The invitation embeds the prekey bundle and carries no join secret, so no mailbox can run the handshake. What follows is the original reasoning.
+
 The invitation contains a mailbox enrollment capability and a separate high-entropy **join secret**.
 
 The enrollment capability lets the mailbox authorize a fetch or claim.
@@ -298,7 +300,7 @@ Do not collapse them. A server-known token must not become the sole proof that t
 
 The joiner persists its pairing attempt before network operations.
 
-It sends an encrypted `Hello` containing the invitation binding, its identity, the join secret, and a return route.
+It sends an encrypted `Hello` containing the invitation binding and a return route, under a handshake that authenticates its identity.
 
 The inviter validates the cryptographic message and invitation before consuming the invitation or accepting the peer.
 
@@ -665,8 +667,8 @@ The implementation should eventually demonstrate the following scenarios:
 | Scenario | Expected outcome |
 |---|---|
 | Inviter goes offline after creating an invitation | Joiner can submit a valid initial message using published material. |
-| Mailbox substitutes a public bundle | Identity or bundle commitment validation fails. |
-| Mailbox knows enrollment credentials but not the join secret | It cannot use that knowledge alone to establish an authorized peer identity. |
+| Mailbox tries to substitute a public bundle | Impossible: the bundle travels in the invitation, not through the mailbox (ADR-013). |
+| Mailbox holds a sealed invitation from a ticket | It sees ciphertext and cannot establish an authorized peer identity (ADR-009, ADR-013). |
 | Sender crashes after commit but before transmission | Restart sends the committed ciphertext. |
 | Mailbox stores a message but its response is lost | Retry returns the existing result without another stored copy or quota charge. |
 | Receiver crashes before its local transaction commits | Mailbox still has the message. |

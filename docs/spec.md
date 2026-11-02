@@ -190,11 +190,7 @@ Invitation {
 }
 ```
 
-The `join_secret` is a high-entropy secret known to the inviter and invitation holder. It MUST NOT be uploaded to the mailbox in plaintext.
-
-This secret is distinct from the mailbox’s enrollment capability.
-
-That distinction matters: **the mailbox may know who can fetch a bundle, but it must not thereby gain the ability to impersonate the invited peer.**
+*Amended by ADR-013.* The structure above is the original design. The implemented invitation embeds the inviter's public prekey bundle in place of `prekey_bundle_commitment`, and has no `enrollment_capability` and no `join_secret`. A mailbox never holds the bundle, so it cannot run the handshake, and **it cannot impersonate the invited peer**. The handshake itself proves possession of the invitation. `core/invitation` holds the fields.
 
 An invitation is a bearer credential. Whoever obtains it may attempt to redeem it. The trusted channel used to share it establishes whom the operator intended to invite.
 
@@ -208,7 +204,7 @@ The human-readable description is informational, not independently verified iden
 
 Daemon A creates its relationship-specific identity, private prekey material, and inbound queue.
 
-It uploads only the public bundle, records the invitation locally, and exports the invitation file.
+*Amended by ADR-013.* It records the invitation locally and exports the invitation file, which holds the public bundle. Nothing is uploaded to the mailbox for the bundle.
 
 *Added by ADR-009.* With a ticket, A also stores the sealed invitation at its own mailbox with `PutBlob`, under the invitation's deadline and charged to the inbound queue's quota, and exports the ticket only after the mailbox has stored it.
 
@@ -220,11 +216,10 @@ Daemon B validates the invitation format, deadline, transport policy, and suppor
 
 It persists its own pairing attempt, identity material, and request identifiers **before** making retriable network operations.
 
-B then creates its return queue and fetches the public bundle.
+B then creates its return queue. *Amended by ADR-013:* the bundle comes from the invitation, and decoding verifies it under the inviter's identity key.
 
 *Added by ADR-009.* Given a ticket, B first fetches the sealed invitation with `GetBlob` and opens and checks it before anything is persisted; from there the flow is the file's. Fetching does not consume the blob, as fetching a bundle does not consume the invitation.
 
-The bundle MUST match the identity and bundle commitments in the invitation.
 
 ### Step 3: Joiner sends `Hello`
 
@@ -241,17 +236,17 @@ Hello {
 }
 ```
 
-The initiator identity in the payload must agree with the identity authenticated by the cryptographic protocol.
+*Amended by ADR-013.* The structure above is the original design. The implemented `Hello` holds the invitation id, the reply route and an informational description; the identity is the one the handshake authenticates. It carries no `join_secret`. `core/message` holds the fields.
 
 The same committed ciphertext is reused on transport retries.
 
 ### Step 4: Inviter validates
 
-A decrypts the initial message and checks the invitation commitment, join secret, deadline, peer identity binding, and supported parameters.
+A decrypts the initial message and checks the invitation, deadline, peer identity binding, and supported parameters (*amended by ADR-013*).
 
 Only a valid authenticated `Hello` may consume the invitation.
 
-**Fetching a prekey bundle does not consume the invitation locally.** A mailbox can interfere with availability, but it cannot cause an invalid claimant to become an accepted contact.
+A mailbox can interfere with availability, but it cannot cause an invalid claimant to become an accepted contact.
 
 The valid claim and resulting session state MUST commit atomically.
 
@@ -353,7 +348,6 @@ Unknown required features fail closed. Unknown optional fields must not grant au
 | Operation | Purpose |
 |---|---|
 | `CreateQueue` | Allocate a queue within a provisioning allowance. |
-| `PublishBundle` / `ClaimBundle` | Publish and idempotently claim invitation-specific handshake material. |
 | `Append` | Submit immutable ciphertext with an envelope ID and retention request. |
 | `Fetch` | Retrieve a bounded batch; optionally wait for activity. |
 | `Ack` | Acknowledge specific envelopes after local durable processing. |
