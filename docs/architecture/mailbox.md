@@ -3,18 +3,21 @@
 The mailbox stores padded ciphertext for recipients who are offline and
 hands it back when they ask (`docs/spec.md` §2.2, §6). It never sees
 plaintext, sender identity or agent names: it keeps queues, envelopes,
-the capability hashes that authorize each operation, and tombstones that
-stop an acknowledged envelope from coming back. This document describes
+the capability hashes that authorize each operation, tombstones that
+stop an acknowledged envelope from coming back, and the sealed
+invitation blobs that tickets point at ([ADR-009](../adr/009-invitation-tickets.md)). This document describes
 the processes that do that work, who owns which state, and how a request
 moves from an HTTP connection to a committed SQLite row. It reflects the
-code at `bf7d597`, with the move of its processes onto
-[weft](../weft.md) at `7782850`.
+code at `632db2f`. Its actors and state machines are
+[weft](../weft.md) processes. The package is described in
+[packages/mailbox/README.md](../../packages/mailbox/README.md).
 
 The wire format of each request is in `packages/core/src/core/mailbox/codec.gleam`
 (type tables in its module doc), and the request and response types are in
 `packages/core/src/core/mailbox/protocol.gleam`. The Tor side, which
 forwards an onion service's streams to the mailbox's loopback port, is in
-[ADR-001](../adr/001-tor-sidecar.md).
+[ADR-001](../adr/001-tor-sidecar.md). The daemon side of the same exchange
+is in [system.md](system.md).
 
 ## Components
 
@@ -61,19 +64,25 @@ SQLite, and the notifier never touches SQLite.
 
 | Module or process | Owns | Does not own |
 | --- | --- | --- |
-| `mailbox/http` (mist connection) | HTTP framing, the 413/404/405/400 decisions, the per-request log line | Any durable state; protocol semantics |
+| `mailbox/http` (mist connection) | HTTP framing, the 413/404/405/400 decisions, the per-request `telemetry/log` line ([ADR-012](../adr/012-logging-and-crash-reports.md)) | Any durable state; protocol semantics |
 | `mailbox/node` | The long-poll sequence for one `Fetch`, run in the caller's process | Waiter bookkeeping (notifier); storage (coordinator) |
 | `mailbox/coordinator` actor | The only `Store` (one `sqlight.Connection`), and the order in which commands run | Request semantics (`mailbox/service`); the waiter table |
-| `mailbox/service` | What each `Request` means: authorization, idempotency, quota, deadlines | The connection and SQL text (`mailbox/store`); time (passed in as `now`) |
-| `mailbox/store` | The schema, every SQL statement, pragmas, migrations, `transaction` | Protocol rules; which process calls it |
+| `mailbox/service` | What each `Request` means, including `PutBlob` and `GetBlob`: authorization, idempotency, quota, deadlines | The connection and SQL text (`mailbox/store`); time (passed in as `now`) |
+| `mailbox/store` | The schema version, the pragmas, migrations, `transaction`, and the bridge (`query`, `write`) that runs the statements in the generated `mailbox/sql` | Protocol rules; which process calls it; the SQL text, which lives in `src/mailbox/sql/*.sql` ([ADR-007](../adr/007-parrot-sql-codegen.md)) |
+| `mailbox/mail` | Soft `tell` and `ask` to a named actor, and the interceptor seam for simulation | The actors themselves; any state |
 | `mailbox/notifier` actor | `Dict(BitArray, List(Subject(Nil)))`: queue id to waiting wake subjects | Envelopes; timers |
 | `mailbox/sweeper` actor | Its own next-tick timer | The sweep itself, which runs in the coordinator |
 
 ## Startup
 
-`mailbox serve --db <path> --port <n>` starts the supervised node first and
-the HTTP listener second, so no request can arrive before the database is
-open and migrated.
+`mailbox serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>]`
+installs the log handler first, then starts the supervised node, then the
+HTTP listener, then the optional onion service. No request can arrive
+before the database is open and migrated, and the `onion` line follows the
+`listening` line. `sweep_period_ms` is 60_000 (`mailbox.gleam`). `serve`
+passes `timer.WallClock`, `None` and `None` for `timer`, `interceptor` and
+`store_faults`, which only a simulation changes. The Tor options must be
+given both or neither, and the sidecar is linked to the serving process.
 
 ```mermaid
 sequenceDiagram
@@ -84,9 +93,10 @@ sequenceDiagram
     participant C as coordinator
     participant S as sweeper
     participant M as mist
+    participant T as tor (sidecar)
 
-    Main->>Main: parse argv (--db, --port 0..65_535)
-    Main->>Sup: node.start(Config(path, 60_000, clock, new_names()))
+    Main->>Main: handler.install_from_env, then parse argv
+    Main->>Sup: node.start(Config(path, sweep_period_ms, clock,<br/>names, timer, interceptor, store_faults))
     Sup->>N: start, register mailbox_notifier
     Sup->>C: start, register mailbox_coordinator
     C->>C: store.open: pragmas, migrate (5000 ms init timeout)
@@ -94,10 +104,16 @@ sequenceDiagram
         C-->>Sup: init error
         Sup-->>Main: Error, print "the node could not start", halt(1)
     end
-    Sup->>S: start, weft actor.periodic(60_000, Tick)
-    Main->>M: mist.start on 127.0.0.1:port
+    Sup->>S: start, weft actor.periodic(sweep_period_ms, Tick)
+    Main->>M: http.start: mist.start on 127.0.0.1:port
     M-->>Main: after_start sends bound port (5000 ms)
-    Main->>Main: print "listening 127.0.0.1:<port>", sleep_forever
+    Main->>Main: print "listening 127.0.0.1:<port>"
+    opt --tor-bin and --tor-state given
+        Main->>T: host_onion: tor.start, tor.bootstrap (180_000 ms)
+        Main->>T: tor.host_onion "mailbox" (120_000 ms)
+        Main->>Main: print "onion <host>.onion:80"
+    end
+    Main->>Main: sleep_forever
 ```
 
 The children start in the order notifier, coordinator, sweeper, which is
@@ -212,6 +228,26 @@ queue, in insertion order, whose padded sizes sum to at most
 `limits.fetch_batch_bytes` (1_048_576). It never deletes; only `Ack`,
 expiry and `DeleteQueue` remove rows.
 
+## Pipeline: a ticket blob
+
+`PutBlob` and `GetBlob` (ADR-009) hold the sealed invitation that a ticket
+points at. They are ordinary coordinator commands and add no process.
+
+1. **Store.** `service.store_blob` authorizes with the queue's admin
+   capability, inside one transaction. `place_blob` answers first from an
+   existing row for the locator: the same queue, retrieve hash and digest
+   is `BlobStored` again, anything else is `Conflict`.
+2. **Admit.** `insert_blob` checks the size against
+   `limits.max_ticket_blob_bytes` (`TooLarge`), then the deadline window
+   as for an envelope (`BadDeadline`), then the queue's quota
+   (`QuotaExceeded`), and only then calls `store.put_blob`.
+3. **Fetch.** `service.fetch_blob` opens no transaction and deletes
+   nothing. A missing, expired or wrongly authorized blob is the same
+   `Refused(Unauthorized)`.
+4. **Expire.** `store.sweep` returns each queue the bytes of its expired
+   blobs, then deletes them, in the same transaction as the envelope and
+   tombstone sweep. `DeleteQueue` removes blobs by cascade.
+
 ## State machines
 
 An envelope moves between a live row, a tombstone, and nothing.
@@ -242,7 +278,12 @@ churn against one grant.
 
 ## Storage
 
-The store is one SQLite file opened by `store.open`, which sets
+The store is one SQLite file. The migrations are `sql/001_initial.sql` and
+`sql/002_blobs.sql`, embedded into `mailbox/schema` by
+`dev/embed_schema.gleam`, and every other statement is a named query in
+`src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`, `blobs`) that
+parrot generates into `mailbox/sql` ([ADR-007](../adr/007-parrot-sql-codegen.md)).
+Neither generated module is edited by hand. `store.open` sets
 `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`,
 `checkpoint_fullfsync=ON`, `foreign_keys=ON` and `busy_timeout=5000` on
 every connection. `fullfsync` matters on macOS, where `synchronous=FULL`
@@ -280,12 +321,24 @@ erDiagram
         BLOB digest
         INTEGER deadline
     }
+    blobs {
+        BLOB blob_id PK "the ticket locator"
+        BLOB queue_id FK "ON DELETE CASCADE, the paying queue"
+        BLOB retrieve_hash "sha256 of the retrieve capability"
+        BLOB digest
+        INTEGER deadline
+        INTEGER size
+        BLOB sealed
+    }
     queues ||--o{ envelopes : holds
+    queues ||--o{ blobs : "pays for"
     queues ||--o{ tombstones : remembers
 ```
 
-All four tables are `STRICT`. There is no foreign key from `queues` to
-`grants`: the grant that created a queue is not recorded, because nothing
+All five tables are `STRICT`. A `blobs` row is charged to the storing
+queue's `bytes_used`, goes with the queue through the same cascade, and has
+an index on `deadline`, as `envelopes` and `tombstones` do. There is no
+foreign key from `queues` to `grants`: the grant that created a queue is not recorded, because nothing
 needs to trace a queue back to it. `bytes_used` is a counter kept in step
 by `put_envelope`, `remove_envelope` and `sweep` inside their transactions.
 Capabilities are stored only as SHA-256 hashes and compared with
@@ -296,15 +349,16 @@ Every write command runs in `store.transaction`, which issues
 an `Ok` value and commits an empty transaction. Migrations are an
 append-only list applied by `migrate` through `PRAGMA user_version`, each
 in its own transaction together with its version bump. A file whose
-`user_version` is above `schema_version` (1) is refused with
+`user_version` is above `schema_version` (2, from the generated
+`mailbox/schema`) is refused with
 `FutureSchema`.
 
 ## Concurrency
 
 | Process | Owns | Reached by |
 | --- | --- | --- |
-| coordinator | the `Store` and its connection | `coordinator.handle`, `sweep`, `create_grant`: a send to the registered `mailbox_coordinator` name, then a timed receive |
-| notifier | the waiter table | casts `Wait`, `Notify`; `Forget` with a 1000 ms reply |
+| coordinator | the `Store` and its connection | `coordinator.handle`, `sweep`, `create_grant`: `mail.ask` on the `mailbox_coordinator` name, which looks the name up, sends, and waits on a per-call subject |
+| notifier | the waiter table | `mail.tell` for `Wait` and `Notify`; `Forget` is an `ask` with a 1000 ms reply |
 | sweeper | its `Tick` timer | nothing; it only sends |
 | mist connection | one request, and the `wake` subject of a long poll | mist |
 | `main` | nothing after startup | `sleep_forever` |
@@ -345,8 +399,9 @@ Sweeps run inside the coordinator, serialized with requests.
 - If the node supervisor exhausts its restart budget, `main` keeps sleeping
   and mist keeps answering, every request `Refused(Unavailable)`; this was
   not tested.
-- `mailbox grant` writes the grant row before the capability file. If the
-  file write then fails, the grant stays in the database with no surviving
-  capability.
+- `mailbox grant` checks that the output path is not a file, then writes
+  the grant row, then creates the capability file exclusively. If the file
+  create fails (for example a race on the path), the grant stays in the
+  database with no surviving capability.
 - No rate limit, no per-operation quota beyond bytes, and no bound on
   concurrent connections.
