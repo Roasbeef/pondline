@@ -8,12 +8,12 @@
 # the script.
 #
 # Usage: formal/tla/check.sh [config ...]
-# TLA2TOOLS names the jar (default /Users/roasbeef/tools/tla2tools.jar) and
+# TLA2TOOLS names the jar (default ~/tools/tla2tools.jar) and
 # TLC_WORKERS the worker count (default 2).
 
 set -u
 
-jar=${TLA2TOOLS:-/Users/roasbeef/tools/tla2tools.jar}
+jar=${TLA2TOOLS:-$HOME/tools/tla2tools.jar}
 workers=${TLC_WORKERS:-2}
 here=$(cd "$(dirname "$0")" && pwd)
 meta=$(mktemp -d "${TMPDIR:-/tmp}/pondline-tla.XXXXXX")

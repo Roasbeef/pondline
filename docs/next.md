@@ -119,6 +119,8 @@ idempotency key** (ADR-011).
 shape; the formatter must not raise** (ADR-012).
 **The invitation embeds the bundle and there is no join secret** (ADR-013).
 **The project is Pondline, on the wire as well as in the docs** (ADR-014).
+**The license is MIT, and security reports go through GitHub's private reporting**
+(`LICENSE`, `SECURITY.md`).
 **One agent per daemon, a per-pairing message budget, a plaintext audit log, HTTP
 for the demo** (`docs/review/2026-10-31-design-review.md`).
 **DST policy: exact replay, dedup and quarantine, sender slack and retry**
@@ -131,8 +133,6 @@ admission control, and PQ schemes aren't practical or standardised
 
 None of these is unfinished work somebody forgot.
 
-- **License and security contact.** The repository has neither. The owner's call,
-  and needed before it is an open source project in any legal sense.
 - **CI.** Undecided: Ubuntu's OTP links OpenSSL 3.0 (no ML-KEM), and macOS minutes
   cost more. Needs the owner's call before a nightly swarm or a `make check` job.
 - **Weft on Hex.** Weft 0.4.7 is on GitHub; `gleam publish` needs the owner. Until

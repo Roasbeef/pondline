@@ -34,7 +34,7 @@ invariant or on liveness, and anything else (an unexpected violation, a
 deadlock, a TLC error) exits non-zero. Each line it prints gives the
 distinct states, the search depth and, for a violation, the length of
 TLC's trace. `TLA2TOOLS` names the jar (default
-`/Users/roasbeef/tools/tla2tools.jar`, TLC 2.19) and `TLC_WORKERS` the
+`~/tools/tla2tools.jar`, TLC 2.19) and `TLC_WORKERS` the
 worker count; it was run on Java 1.8. A full run takes about 23 minutes on
 two workers, nearly all of it in `Scheduler` and `SchedulerLive`. TLC's
 working files go to a temporary directory the script removes, so a run

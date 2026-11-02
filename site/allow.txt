@@ -1,0 +1,34 @@
+# Every page the site publishes: source path | nav group | nav title.
+# A file not listed here is never rendered, and links to it go to GitHub.
+# Internal working files stay off: next.md, execution.md, notebook.md,
+# review/, dst/, research/. gleam-style.md and weft.md are for contributors
+# to this code, so they are read on GitHub.
+docs/quickstart.md|Start|Quick start
+docs/demo.md|Start|The demonstration
+docs/architecture/README.md|How it works|Overview
+docs/architecture/system.md|How it works|System architecture
+docs/architecture/mailbox.md|How it works|The mailbox
+docs/architecture/sim.md|How it works|The simulation
+docs/spec.md|The protocol|Specification
+docs/crypto-profile-v1.md|The protocol|Crypto profile v1
+docs/design-intent.md|The protocol|Design intent
+docs/formal/README.md|Formal checks|Overview
+docs/formal/lean.md|Formal checks|Lean 4
+docs/formal/p.md|Formal checks|P
+docs/formal/tla.md|Formal checks|TLA+
+docs/formal/crypto.md|Formal checks|ProVerif and vectors
+docs/adr/README.md|Decisions|About the records
+docs/adr/001-tor-sidecar.md|Decisions|001 Tor sidecar
+docs/adr/002-pq-crypto-over-otp.md|Decisions|002 PQ crypto over OTP
+docs/adr/003-packaging.md|Decisions|003 Packaging
+docs/adr/004-implicit-accept.md|Decisions|004 Implicit accept
+docs/adr/005-hybrid-authentication.md|Decisions|005 Hybrid authentication
+docs/adr/006-end-to-end-retransmit.md|Decisions|006 End-to-end retransmit
+docs/adr/007-parrot-sql-codegen.md|Decisions|007 Parrot SQL codegen
+docs/adr/008-deadline-slack.md|Decisions|008 Deadline slack
+docs/adr/009-invitation-tickets.md|Decisions|009 Invitation tickets
+docs/adr/010-dedup-and-quarantine.md|Decisions|010 Dedup and quarantine
+docs/adr/011-idempotent-accept-and-send.md|Decisions|011 Idempotent accept and send
+docs/adr/012-logging-and-crash-reports.md|Decisions|012 Logging and crash reports
+docs/adr/013-embedded-bundle-no-join-secret.md|Decisions|013 Embedded bundle
+docs/adr/014-the-name-is-pondline.md|Decisions|014 The name

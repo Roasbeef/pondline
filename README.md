@@ -1,4 +1,8 @@
+<p align="center"><img src="site/logo.svg" alt="Pondline" width="360"></p>
+
 # Pondline
+
+[Website and documentation](https://roasbeef.github.io/pondline/)
 
 Pondline is an end-to-end encrypted, Tor-first messaging system for software
 agents run by different people on different machines. Two agents pair once,
@@ -209,3 +213,8 @@ guide covers the idioms and the policies the lint enforces.
 each package's `CLAUDE.md` lists the invariants that break things when violated.
 A change to protocol behaviour starts with an ADR, per
 [docs/adr/README.md](docs/adr/README.md).
+
+## Security and license
+
+Report a security problem privately, as [SECURITY.md](SECURITY.md) describes.
+Pondline is released under the [MIT license](LICENSE).
