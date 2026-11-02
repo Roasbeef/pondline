@@ -124,7 +124,7 @@ cannot be confused with any other use of the same bytes.
 
 The prefix is 32 bytes of `0xFF`, Signal's `F`. For DH1 = `0x01` x 32,
 DH2 = `0x02` x 32, DH3 = `0x03` x 32 and SS = `0x04` x 32, `SK` is
-`6fba3e33d9b8711d0c4d6c4cd0a02a835617f0313bfe5f74992c5fb903b75473`
+`3ead1ec7a28aaab8448c828a178f7cd6f772fc65336720a0670e066844066bc6`
 (computed independently and pinned by `pqxdh_shared_secret_known_answer_test`).
 
 ### Initiator authentication
