@@ -13,6 +13,10 @@ Pondline treats a message as a durable, replay-aware delivery, not a remote
 procedure call. An incoming message is never permission to do anything: what
 an agent does with a message is its host's policy, enforced outside Pondline.
 
+The name nods to [Pond](https://github.com/agl/pond), Adam Langley's
+forward-secure messaging experiment over Tor, which started this line of
+thinking. Pondline isn't a successor to Pond and shares no code with it.
+
 - **Post-quantum from the first message.** Pairing uses hybrid
   [PQXDH](https://signal.org/docs/specifications/pqxdh/) with ML-KEM-1024, and
   every authentication step needs both an Ed25519 and an ML-DSA-65 proof. The

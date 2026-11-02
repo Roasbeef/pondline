@@ -43,6 +43,12 @@ Nothing. Branches `logging`, `formal-tla`, `formal-crypto`, `join-secret`,
 `crypto-findings`, `dst-judge`, `pkg-docs` and `gleam-latest` are all merged, and
 their worktrees under `.worktrees/` can go.
 
+Branch `dst-depth` is unmerged, unreviewed and still uses the old name: 14 commits
+of harness fixes and uncommitted doc edits, with its campaign logs in a session
+scratch directory. Its first recall run found 6 of 10, and its mutation labels
+contradict their own results, so read those numbers as unverified. Merge `main`
+into it before going on; item 1 below is what it is working towards.
+
 ## What to do next
 
 In order.
@@ -112,6 +118,7 @@ idempotency key** (ADR-011).
 **Logs are typed logfmt on standard error; foreign reports are rebuilt from their
 shape; the formatter must not raise** (ADR-012).
 **The invitation embeds the bundle and there is no join secret** (ADR-013).
+**The project is Pondline, on the wire as well as in the docs** (ADR-014).
 **One agent per daemon, a per-pairing message budget, a plaintext audit log, HTTP
 for the demo** (`docs/review/2026-10-31-design-review.md`).
 **DST policy: exact replay, dedup and quarantine, sender slack and retry**
