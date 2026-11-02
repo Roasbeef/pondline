@@ -124,7 +124,7 @@ fn frame_status(status: Int, body: BitArray) -> BitArray {
   let head =
     "HTTP/1.1 "
     <> int.to_string(status)
-    <> " OK\r\nContent-Type: application/vnd.reedwire.mailbox+tlv\r\nContent-Length: "
+    <> " OK\r\nContent-Type: application/vnd.pondline.mailbox+tlv\r\nContent-Length: "
     <> int.to_string(bit_array.byte_size(body))
     <> "\r\nConnection: close\r\n\r\n"
 

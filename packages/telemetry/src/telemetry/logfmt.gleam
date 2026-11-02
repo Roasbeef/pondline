@@ -1,6 +1,6 @@
 //// The two token rules of a logfmt line, in one place.
 ////
-//// Every line Reedwire writes is `key=value` pairs separated by single
+//// Every line Pondline writes is `key=value` pairs separated by single
 //// spaces: logfmt, which a person reads in a terminal and which Loki,
 //// Vector and `grep key=value` all parse. Two rules keep it parseable
 //// whatever a value holds. A key is one bare word (`word`), and a value

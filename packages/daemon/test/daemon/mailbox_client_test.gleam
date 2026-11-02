@@ -133,7 +133,7 @@ pub fn the_request_is_framed_as_the_binding_says_test() {
   assert string.contains(seen.head, "\r\nHost: 127.0.0.1\r\n")
   assert string.contains(
     seen.head,
-    "\r\nContent-Type: application/vnd.reedwire.mailbox+tlv\r\n",
+    "\r\nContent-Type: application/vnd.pondline.mailbox+tlv\r\n",
   )
   assert string.contains(seen.head, "\r\nConnection: close")
 }

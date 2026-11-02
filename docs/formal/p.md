@@ -1,6 +1,6 @@
 # A P model of end-to-end delivery
 
-This is a model of Reedwire's message delivery protocol in the P language
+This is a model of Pondline's message delivery protocol in the P language
 (P 3.0.4), checked with P's systematic tester. It covers one relationship
 between two daemons and one mailbox: commit-then-send outboxes, the
 mailbox's idempotent append, tombstones, fetch and ack, the processed rule,
@@ -45,7 +45,7 @@ P is a .NET tool: `dotnet tool install --global p --version 3.0.4`, with
 the .NET 8 SDK. The scripts add `~/.dotnet/tools` to `PATH` and set
 `DOTNET_ROOT` to `~/.dotnet` when it is unset.
 
-To read a bug, open `out/<script>/<case>/BugFinding/Reedwire_0_0.txt`.
+To read a bug, open `out/<script>/<case>/BugFinding/Pondline_0_0.txt`.
 `p check <dll> -tc <case> --replay <file>.schedule` replays it.
 
 ## What is modelled

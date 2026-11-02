@@ -10,7 +10,7 @@
 ////
 //// ## Text form
 ////
-//// `rw1` followed by the data and a fifteen-character checksum, all in the
+//// `pl1` followed by the data and a fifteen-character checksum, all in the
 //// bech32 alphabet (`core/codex32`). The first data symbol is the format:
 //// 0 for an onion mailbox, 1 for a loopback one (tests and the demo). The
 //// rest is the payload regrouped as 5-bit symbols, its padding bits zero:
@@ -29,11 +29,11 @@
 //// ## Derivations
 ////
 //// ```text
-//// PRK        = HKDF-Extract(salt = "Reedwire_Ticket_v1", ikm = K)
-//// locator    = HKDF-Expand(PRK, "Reedwire_TicketLocator_v1", 16)
-//// retrieve   = HKDF-Expand(PRK, "Reedwire_TicketCapability_v1", 32)
-//// key, nonce = HKDF-Expand(PRK, "Reedwire_TicketKey_v1", 44)   32 then 12
-//// commit_key = HKDF-Expand(PRK, "Reedwire_TicketCommitment_v1", 32)
+//// PRK        = HKDF-Extract(salt = "Pondline_Ticket_v1", ikm = K)
+//// locator    = HKDF-Expand(PRK, "Pondline_TicketLocator_v1", 16)
+//// retrieve   = HKDF-Expand(PRK, "Pondline_TicketCapability_v1", 32)
+//// key, nonce = HKDF-Expand(PRK, "Pondline_TicketKey_v1", 44)   32 then 12
+//// commit_key = HKDF-Expand(PRK, "Pondline_TicketCommitment_v1", 32)
 //// ```
 ////
 //// The mailbox sees the locator (the blob's name), the hash of the retrieve
@@ -45,7 +45,7 @@
 ////
 //// ```text
 //// blob       = 0x01 || commitment (32) || ChaCha20-Poly1305(key, nonce,
-////                aad = "Reedwire_TicketBlob_v1" || locator, invitation)
+////                aad = "Pondline_TicketBlob_v1" || locator, invitation)
 //// commitment = HMAC-SHA-256(commit_key, invitation)
 //// ```
 ////
@@ -76,7 +76,7 @@ import gleam/result
 import gleam/string
 
 /// The human-readable part of every ticket.
-pub const prefix = "rw"
+pub const prefix = "pl"
 
 /// The size of a ticket's secret `K`, in bytes.
 pub const secret_bytes = 32
@@ -112,7 +112,7 @@ pub type Keys {
 
 /// Why text is not a ticket. No variant carries any of the text.
 pub type TicketError {
-  /// Not `rw1` and bech32 characters, or longer than
+  /// Not `pl1` and bech32 characters, or longer than
   /// `limits.max_ticket_bytes`.
   NotATicket
 
@@ -188,7 +188,7 @@ pub fn endpoint(ticket: Ticket) -> Endpoint {
 ///
 /// ```gleam
 /// secret.expose(ticket.encode(ticket))
-/// // -> <<"rw1qq...":utf8>>
+/// // -> <<"pl1qq...":utf8>>
 /// ```
 pub fn encode(ticket: Ticket) -> Secret {
   // The secret is exposed only to be spelled into the ticket's own text,
@@ -222,7 +222,7 @@ pub fn encode(ticket: Ticket) -> Secret {
 /// ## Examples
 ///
 /// ```gleam
-/// ticket.decode("rw1qq")
+/// ticket.decode("pl1qq")
 /// // -> Error(BadChecksum)
 /// ```
 pub fn decode(text: String) -> Result(Ticket, TicketError) {
@@ -435,11 +435,11 @@ fn payload_bytes(
   }
 }
 
-/// The text after the `rw1` prefix.
+/// The text after the `pl1` prefix.
 fn after_prefix(text: String) -> Result(String, TicketError) {
   // Any other prefix, a codex32 seed's included, is not a ticket.
   case text {
-    "rw1" <> body -> Ok(body)
+    "pl1" <> body -> Ok(body)
     _ -> Error(NotATicket)
   }
 }
@@ -459,17 +459,17 @@ fn blob_fields(blob: BitArray) -> Result(#(BitArray, BitArray), OpenError) {
 
 // ------------------------------------------------------------- derivation
 
-const extract_salt = "Reedwire_Ticket_v1"
+const extract_salt = "Pondline_Ticket_v1"
 
-const locator_label = "Reedwire_TicketLocator_v1"
+const locator_label = "Pondline_TicketLocator_v1"
 
-const capability_label = "Reedwire_TicketCapability_v1"
+const capability_label = "Pondline_TicketCapability_v1"
 
-const key_label = "Reedwire_TicketKey_v1"
+const key_label = "Pondline_TicketKey_v1"
 
-const commitment_label = "Reedwire_TicketCommitment_v1"
+const commitment_label = "Pondline_TicketCommitment_v1"
 
-const blob_label = "Reedwire_TicketBlob_v1"
+const blob_label = "Pondline_TicketBlob_v1"
 
 const aead_key_bytes = 32
 

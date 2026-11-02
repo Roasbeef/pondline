@@ -18,14 +18,14 @@
 # acknowledgement re-delivers the task and answers it twice, which is safe
 # for a pure function; the other order could lose a task.
 #
-# Environment: REEDWIRE_RUNTIME, API_SOCK and AGENT_DIR (see reedwire.sh).
+# Environment: PONDLINE_RUNTIME, API_SOCK and AGENT_DIR (see pondline.sh).
 # It runs until it is killed, and appends one line per answered task to
 # $AGENT_DIR/responder.log.
 
 set -u
 
 here=$(dirname "$0")
-rw="$here/reedwire.sh"
+rw="$here/pondline.sh"
 log="$AGENT_DIR/responder.log"
 payload="$AGENT_DIR/task.json"
 meta="$AGENT_DIR/task.meta"

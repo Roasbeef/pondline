@@ -57,7 +57,7 @@ pub type LockError {
 /// ## Examples
 ///
 /// ```gleam
-/// lock.supervised("/var/lib/reedwire/lock.db")
+/// lock.supervised("/var/lib/pondline/lock.db")
 /// ```
 pub fn supervised(
   path: String,
@@ -115,7 +115,7 @@ fn acquire(path: String) -> Result(sqlight.Connection, LockError) {
 /// ## Examples
 ///
 /// ```gleam
-/// lock.is_free("/var/lib/reedwire/lock.db")
+/// lock.is_free("/var/lib/pondline/lock.db")
 /// // -> True
 /// ```
 pub fn is_free(path: String) -> Bool {

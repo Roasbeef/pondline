@@ -1,9 +1,9 @@
 # Hybrid PAKE for human-typable pairing codes
 
 **Status**: research note · **Date**: 2026-11-01 · **Tracks**: issue #1 ·
-**Depends on**: the short invitation ticket (`rw1…`), being built in parallel
+**Depends on**: the short invitation ticket (`pl1…`), being built in parallel
 
-This note works out how Reedwire could pair two daemons from a code an
+This note works out how Pondline could pair two daemons from a code an
 operator can read over the phone, in the magic-wormhole style
 (`7-guitarist-revenge`), without weakening the post-quantum posture of
 `docs/crypto-profile-v1.md`. It surveys the published constructions,
@@ -35,7 +35,7 @@ aloud. A spoken code carries far less:
 | magic-wormhole default: nameplate plus two words from a 256-word even/odd list (PGP word list) | 16 bits in the words; the nameplate is public | `4-purple-sausages` |
 | Three words from the same list | 24 bits | `4-purple-sausages-anvil` |
 | Four words | 32 bits | `4-purple-sausages-anvil-quota` |
-| Ticket (for comparison) | 256 bits | `rw1…` (about 110 characters) |
+| Ticket (for comparison) | 256 bits | `pl1…` (about 110 characters) |
 
 magic-wormhole's own attack notes state the consequence plainly: with 16
 bits, a network or server attacker has one chance in 65 536 per attempt,
@@ -77,7 +77,7 @@ solves the finding with a nameplate: a short handle, allocated at a
 rendezvous server that both sides already know, which points at a
 mailbox the two sides share for the duration of the exchange.
 
-Reedwire has no server both sides already know. A mailbox is an onion
+Pondline has no server both sides already know. A mailbox is an onion
 address, 56 base32 characters, which is no more speakable than the ticket.
 So the code must imply the rendezvous mailbox rather than name it:
 
@@ -112,7 +112,7 @@ magic-wormhole's rules, which this note keeps:
 
 magic-wormhole's documented weak point is denial of service: anyone can
 claim nameplates. Its author lists hashcash, per-IP limits and
-rate-limiting tickets as unimplemented mitigations. Reedwire's mailboxes
+rate-limiting tickets as unimplemented mitigations. Pondline's mailboxes
 already require a credential to create a queue (`docs/spec.md` §3.2), so
 nameplate allocation can be bound to the inviter's provisioning allowance,
 and a claim can be bound to the nameplate alone; §5.3 sets the limits.
@@ -250,7 +250,7 @@ password protection rests on MLWE alone, like §3.3, while its key secrecy
 is hybrid. It also needs the ideal cipher of §3.3 and inverse Elligator 2,
 and the slides put its communication at about 7.5 times a three-round
 PAKE's. It is the right construction when the transcript must look random
-from the first byte, which is BIP 324's requirement and not Reedwire's
+from the first byte, which is BIP 324's requirement and not Pondline's
 (§6).
 
 ### 3.5 CPaceOQUAKE: sequential composition (the recommendation)
@@ -266,7 +266,7 @@ CPace and OQUAKE, a KEM-based PAKE in the CHIC/NoIC/Tempo line, and the
 CFRG draft `draft-vos-cfrg-pqpake-03` (Vos, Jarecki, Wood, October 2026)
 specifies it with test vectors. The draft's primary subject is the
 asymmetric `CPaceOQUAKE+` for client-server logins; the symmetric
-`CPaceOQUAKE` it is built from is the balanced PAKE Reedwire needs.
+`CPaceOQUAKE` it is built from is the balanced PAKE Pondline needs.
 
 The construction:
 
@@ -319,7 +319,7 @@ The "ideal cipher" rows are the decisive implementation risk for the CAKE
 line: there is no agreed instantiation, and the papers that fix it
 (CHIC, NoIC, Tempo) converge on the Feistel that OQUAKE already uses.
 
-## 4. Security argument for the recommendation, in Reedwire's terms
+## 4. Security argument for the recommendation, in Pondline's terms
 
 - **One guess per code.** An attacker who claims a nameplate and runs the
   protocol learns whether one `PRS` guess was right. The nameplate burns
@@ -334,7 +334,7 @@ line: there is no agreed instantiation, and the papers that fix it
   needs a classical and a post-quantum proof, read for a password.
 - **Hand-off.** The derived `k` encrypts the full invitation file (bundle,
   route, deadline, description) with ChaCha20-Poly1305 under a key
-  expanded from `session_key` with a Reedwire label. The invitation is
+  expanded from `session_key` with a Pondline label. The invitation is
   then decoded exactly as a file would be: identity binding and both
   prekey signatures verified, PQXDH run, transcript signed, ratchet
   started. The PAKE replaces the trusted channel the file travels over,
@@ -362,7 +362,7 @@ RendezvousPair   two directional queues, I->J and J->I, with append and read
                  capabilities for each side, created with the nameplate
 Code             [alias "-"] nameplate "-" word1 "-" word2 "-" word3
 PRS              word1 "-" word2 "-" word3              (24 bits)
-CI               "Reedwire_Rendezvous_v1" || rendezvous_onion || nameplate
+CI               "Pondline_Rendezvous_v1" || rendezvous_onion || nameplate
 sid              16 random bytes chosen by the mailbox at claim time and
                  given to both sides; freshness is all CPace needs of it
 ```

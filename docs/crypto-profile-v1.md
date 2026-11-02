@@ -1,6 +1,6 @@
 # CryptoProfileV1
 
-This document fixes the cryptography of Reedwire v1: the algorithms, every
+This document fixes the cryptography of Pondline v1: the algorithms, every
 byte layout, every domain-separation string, the limits, what a mailbox can
 see, and what the construction does and does not guarantee. It is the
 statement `docs/spec.md` §5.2 asks for, and the code in `core/crypto` is
@@ -50,7 +50,7 @@ an X25519 agreement key. The three are tied by a hybrid binding signature,
 in place of Signal's XEdDSA use of one key for both jobs.
 
 ```text
-binding_message = "Reedwire_IdentityBinding_v1" || ed25519_public (32)
+binding_message = "Pondline_IdentityBinding_v1" || ed25519_public (32)
                   || mldsa65_public (1952) || x25519_public (32)
 binding         = Ed25519.Sign(ed25519_secret, binding_message)
                   || ML-DSA-65.Sign(mldsa65_secret, binding_message)          3373 bytes
@@ -78,8 +78,8 @@ publication and no claim step, and no one-time prekeys, because an
 invitation's bundle is single-use by construction.
 
 ```text
-spk_signature   = HybridSign(identity, "Reedwire_SignedPrekey_v1"   || spk)      3373 bytes
-pqspk_signature = HybridSign(identity, "Reedwire_PQSignedPrekey_v1" || pqspk)    3373 bytes
+spk_signature   = HybridSign(identity, "Pondline_SignedPrekey_v1"   || spk)      3373 bytes
+pqspk_signature = HybridSign(identity, "Pondline_PQSignedPrekey_v1" || pqspk)    3373 bytes
 
 Bundle = version (1) || PublicIdentity (5389) || spk (32) || spk_signature (3373)
          || pqspk (1568) || pqspk_signature (3373)                   13736 bytes
@@ -106,7 +106,7 @@ DH3 = X25519(EK_secret,             SPK)
 
 SK = HKDF-SHA-256(salt = 0x00 x 32,
                   ikm  = 0xFF x 32 || DH1 || DH2 || DH3 || SS,
-                  info = "Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1",
+                  info = "Pondline_PQXDH_X25519_SHA-256_ML-KEM-1024_v1",
                   L    = 32)
 AD = SHA-256(PublicIdentity(IK_init)) || SHA-256(PublicIdentity(IK_resp))   64 bytes
    = fingerprint(IK_init) || fingerprint(IK_resp)
@@ -124,7 +124,7 @@ cannot be confused with any other use of the same bytes.
 
 The prefix is 32 bytes of `0xFF`, Signal's `F`. For DH1 = `0x01` x 32,
 DH2 = `0x02` x 32, DH3 = `0x03` x 32 and SS = `0x04` x 32, `SK` is
-`6fba3e33d9b8711d0c4d6c4cd0a02a835617f0313bfe5f74992c5fb903b75473`
+`3ead1ec7a28aaab8448c828a178f7cd6f772fc65336720a0670e066844066bc6`
 (computed independently and pinned by `pqxdh_shared_secret_known_answer_test`).
 
 ### Initiator authentication
@@ -134,7 +134,7 @@ an X25519 agreement. Here the initiator also signs the handshake
 transcript with both of its signing keys:
 
 ```text
-transcript = "Reedwire_InitiatorTranscript_v1" || version (1)
+transcript = "Pondline_InitiatorTranscript_v1" || version (1)
              || PublicIdentity(IK_init) (5389) || PublicIdentity(IK_resp) (5389)
              || bundle_commitment (32) || EK_public (32) || CT (1568)
              || ratchet_message (rest)
@@ -194,12 +194,12 @@ recover from the ML-KEM-1024 public key.
 
 ```text
 KDF_RK(rk, dh_out)   = HKDF-SHA-256(salt = rk, ikm = dh_out,
-                                    info = "Reedwire_Ratchet_v1", L = 64)
+                                    info = "Pondline_Ratchet_v1", L = 64)
                        -> (rk', chain_key)       first 32 bytes, last 32 bytes
 KDF_CK(ck)           : message_key = HMAC-SHA-256(ck, 0x01)
                        ck'         = HMAC-SHA-256(ck, 0x02)
 message keys         = HKDF-SHA-256(salt = 0x00 x 32, ikm = message_key,
-                                    info = "Reedwire_MessageKeys_v1", L = 44)
+                                    info = "Pondline_MessageKeys_v1", L = 44)
                        -> AEAD key (32) || AEAD nonce (12)
 Header               = ratchet_public (32) || PN (u32) || N (u32)               40 bytes
 ratchet_message      = Header || ChaCha20-Poly1305(key, nonce, aad = AD || Header, plaintext)
@@ -348,19 +348,19 @@ What v1 does not provide:
 
 | String | Used for |
 | --- | --- |
-| `Reedwire_IdentityBinding_v1` | identity binding signature (both halves) |
-| `Reedwire_SignedPrekey_v1` | signed X25519 prekey signature (both halves) |
-| `Reedwire_PQSignedPrekey_v1` | signed ML-KEM prekey signature (both halves) |
-| `Reedwire_InitiatorTranscript_v1` | initiator's transcript signature (both halves) |
-| `Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1` | handshake HKDF info |
-| `Reedwire_Ratchet_v1` | root-key HKDF info |
-| `Reedwire_MessageKeys_v1` | message-key HKDF info |
-| `Reedwire_Ticket_v1` | ticket HKDF-Extract salt (§11) |
-| `Reedwire_TicketLocator_v1` | ticket blob locator HKDF info (§11) |
-| `Reedwire_TicketCapability_v1` | ticket retrieve capability HKDF info (§11) |
-| `Reedwire_TicketKey_v1` | ticket AEAD key and nonce HKDF info (§11) |
-| `Reedwire_TicketCommitment_v1` | ticket commitment key HKDF info (§11) |
-| `Reedwire_TicketBlob_v1` | prefix of the sealed invitation's associated data (§11) |
+| `Pondline_IdentityBinding_v1` | identity binding signature (both halves) |
+| `Pondline_SignedPrekey_v1` | signed X25519 prekey signature (both halves) |
+| `Pondline_PQSignedPrekey_v1` | signed ML-KEM prekey signature (both halves) |
+| `Pondline_InitiatorTranscript_v1` | initiator's transcript signature (both halves) |
+| `Pondline_PQXDH_X25519_SHA-256_ML-KEM-1024_v1` | handshake HKDF info |
+| `Pondline_Ratchet_v1` | root-key HKDF info |
+| `Pondline_MessageKeys_v1` | message-key HKDF info |
+| `Pondline_Ticket_v1` | ticket HKDF-Extract salt (§11) |
+| `Pondline_TicketLocator_v1` | ticket blob locator HKDF info (§11) |
+| `Pondline_TicketCapability_v1` | ticket retrieve capability HKDF info (§11) |
+| `Pondline_TicketKey_v1` | ticket AEAD key and nonce HKDF info (§11) |
+| `Pondline_TicketCommitment_v1` | ticket commitment key HKDF info (§11) |
+| `Pondline_TicketBlob_v1` | prefix of the sealed invitation's associated data (§11) |
 
 All are ASCII, with no terminator or length prefix. Each signature input is
 the string followed immediately by fixed-size fields; only the transcript
@@ -403,14 +403,14 @@ secret `K` from the CSPRNG; its text form is in
 `docs/adr/009-invitation-tickets.md`. Everything else comes from `K`:
 
 ```text
-PRK        = HKDF-Extract(salt = "Reedwire_Ticket_v1", ikm = K)
-locator    = HKDF-Expand(PRK, "Reedwire_TicketLocator_v1", 16)
-retrieve   = HKDF-Expand(PRK, "Reedwire_TicketCapability_v1", 32)
-key, nonce = HKDF-Expand(PRK, "Reedwire_TicketKey_v1", 44)        32 then 12
-commit_key = HKDF-Expand(PRK, "Reedwire_TicketCommitment_v1", 32)
+PRK        = HKDF-Extract(salt = "Pondline_Ticket_v1", ikm = K)
+locator    = HKDF-Expand(PRK, "Pondline_TicketLocator_v1", 16)
+retrieve   = HKDF-Expand(PRK, "Pondline_TicketCapability_v1", 32)
+key, nonce = HKDF-Expand(PRK, "Pondline_TicketKey_v1", 44)        32 then 12
+commit_key = HKDF-Expand(PRK, "Pondline_TicketCommitment_v1", 32)
 
 blob       = 0x01 || commitment (32) || ChaCha20-Poly1305(key, nonce,
-               aad = "Reedwire_TicketBlob_v1" || locator, invitation file)
+               aad = "Pondline_TicketBlob_v1" || locator, invitation file)
 commitment = HMAC-SHA-256(commit_key, invitation file)
 ```
 

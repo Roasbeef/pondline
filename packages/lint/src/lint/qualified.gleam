@@ -1,4 +1,4 @@
-//// R16, unqualified imports of functions from Reedwire's own modules (issue loom#593, 3).
+//// R16, unqualified imports of functions from Pondline's own modules (issue loom#593, 3).
 ////
 //// In a large module the qualifier is the closest thing Gleam has to a method
 //// receiver. `approval.project(view)` says which domain the call belongs to
@@ -7,11 +7,11 @@
 //// import list to find out. Types and constructors are exempt, since they
 //// read as nouns and a qualifier on every `Ok`-like constructor is noise.
 ////
-//// The rule is decidable from the import list alone. An import is Reedwire's own
+//// The rule is decidable from the import list alone. An import is Pondline's own
 //// when its first path segment is one of `project_roots`; each lowercase name in
 //// its `{...}` list is a function or constant and is a finding unless
 //// `allowed` lists the pair. Standard-library and third-party modules are
-//// outside the rule because their qualifiers are not Reedwire's domains.
+//// outside the rule because their qualifiers are not Pondline's domains.
 
 import glance
 import gleam/list
@@ -41,12 +41,12 @@ import lint/source.{type Lines}
 /// ```
 pub fn project_roots() -> List(String) {
   [
-    "core", "daemon", "lint", "mailbox", "primitives", "reedwire", "sim",
+    "core", "daemon", "lint", "mailbox", "primitives", "pondline", "sim",
     "telemetry", "tor",
   ]
 }
 
-/// Unqualified value imports from Reedwire modules that are idiomatic, as
+/// Unqualified value imports from Pondline modules that are idiomatic, as
 /// `#(module, name)` with the reason beside each. Add a pair only when the
 /// bare name reads better than any qualifier would, such as a `use`
 /// continuation combinator (`use <- or_fault(...)`).
@@ -101,7 +101,7 @@ pub fn findings_allowing(
   })
 }
 
-/// The findings for one import: nothing unless it is Reedwire's own, then one per
+/// The findings for one import: nothing unless it is Pondline's own, then one per
 /// bare function or constant name that is not on the allow list.
 fn import_findings(
   import_: glance.Import,

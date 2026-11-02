@@ -124,4 +124,4 @@ One SQLite file, opened by `store.open_with` with WAL, `synchronous=FULL`, `full
 
 - `docs/architecture/mailbox.md` is stale against this commit. It states commit `bf7d597`, says the schema version is 1 (the code has `schema.version = 2`), describes four tables and no `blobs`, lists the requests without `PutBlob` and `GetBlob`, and its `Config` and startup text omit `timer`, `interceptor` and `store_faults`. Its Components table has no `mailbox/mail`. Another writer owns it; this README does not repeat its numbers.
 - Nothing here was confirmed by running code. Restart behaviour under `RestForOne`, and whether mist stops a handler when a client disconnects mid long poll, are not checked.
-- The onion path is exercised only with `REEDWIRE_TOR_NETWORK=1` (see `CLAUDE.md`); it is not described step by step here.
+- The onion path is exercised only with `PONDLINE_TOR_NETWORK=1` (see `CLAUDE.md`); it is not described step by step here.

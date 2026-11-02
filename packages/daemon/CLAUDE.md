@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The client side of Reedwire: what an agent's machine runs to talk to
+The client side of Pondline: what an agent's machine runs to talk to
 mailboxes. It holds the mailbox HTTP client of spec §6.1, a carrier-neutral
 transport, and the client daemon's runtime of spec §10.2: the durable store,
 the single-writer engine that drives the pure `core` state machines, the
@@ -300,7 +300,7 @@ Invariants:
   transaction, released by the OS when the process dies. The directory is
   `0700`, the database and lock `0600`.
 - No log line or crash report carries a secret (ADR-012). Our lines take
-  only `telemetry/field`'s typed kinds; `reedwire.main` installs the
+  only `telemetry/field`'s typed kinds; `pondline.main` installs the
   `telemetry` handler before anything runs, for every command, so OTP's
   reports reach standard error rebuilt from their shape.
   `test/daemon/secrets_test.gleam` searches a whole exchange's stderr, and a
@@ -327,7 +327,7 @@ Invariants:
   offer opens later unexported; a supervisor that fails to start takes its
   starter with it, so `node.start` probes the lock, the database and the Tor
   binary first; the TorOnly path with the real sidecar is behind
-  `REEDWIRE_TOR_NETWORK=1` and is not run by default; no queue rotation at
+  `PONDLINE_TOR_NETWORK=1` and is not run by default; no queue rotation at
   accept; no metrics.
 
 ## Simulation seams
@@ -377,7 +377,7 @@ written out at its default and checks each set seam reaches its boundary.
 ## Local API and CLI
 
 The daemon's front door (spec §9): a Unix socket for an agent adapter and
-the operator, and the `reedwire` command that speaks to it.
+the operator, and the `pondline` command that speaks to it.
 
 - `daemon/credential`: two scopes, `Operator` and `Agent`. At start,
   `ensure` creates `operator.cred` and `agent.cred` in the 0700 state dir
@@ -407,13 +407,13 @@ the operator, and the `reedwire` command that speaks to it.
 - `daemon/local_api_client`: one request over the socket; used by the CLI
   and the tests.
 - `daemon/cli` (pure parse and request building, exit codes), `cli_render`
-  (human output), `cli_run` (effects), and the top-level `reedwire` module
-  (`gleam run -m reedwire -- <command>`).
+  (human output), `cli_run` (effects), and the top-level `pondline` module
+  (`gleam run -m pondline -- <command>`).
 - `daemon/build`: the running build's identity (`Identity(version,
-  commit)`), read from `REEDWIRE_BUILD_VERSION` and `REEDWIRE_BUILD_COMMIT`,
+  commit)`), read from `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`,
   which the release launcher exports (`scripts/release.sh`, ADR-003
   addendum); a build run from source reports `dev` and `unknown`. It is
-  printed by `reedwire --version` and is the `version` and `commit` fields
+  printed by `pondline --version` and is the `version` and `commit` fields
   of `health` (added in `local_api_backend`, so a test backend has none).
 - `daemon/internal/ffi_local_socket` and `ffi_local_system` over
   `src/daemon_local_ffi.erl`: Unix sockets, the monotonic clock, private
@@ -428,10 +428,10 @@ Invariants:
   health only. Invite, accept, approve, decline, close, raise_budget, audit
   and incidents are operator-only (`required_scope`).
 - `send` takes an optional `idempotency_key` (CLI `--idempotency-key`),
-  sent only when given; `incidents` (CLI `reedwire incidents [--limit N]`)
+  sent only when given; `incidents` (CLI `pondline incidents [--limit N]`)
   lists identifiers, counts and times and never a payload.
 - A credential is a `Secret`, appears in no log or error text, and never in
-  argv: the CLI reads it from `--credential-file`, `REEDWIRE_CREDENTIAL_FILE`
+  argv: the CLI reads it from `--credential-file`, `PONDLINE_CREDENTIAL_FILE`
   or `<state-dir>/operator.cred`. A payload comes from `--file` or `--stdin`
   only. No option named for either exists, which `cli_test` checks for every
   command.

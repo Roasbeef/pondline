@@ -1,11 +1,11 @@
-import Reedwire.TlvProofs
+import Pondline.TlvProofs
 
 /-
 Theorems about reading a parsed stream (`required`, `optional`, `run`) and
 about building one (`put`, `encode`).
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-! ## Unknown even types fail closed -/
 
@@ -331,4 +331,4 @@ theorem builder_overflow_rejected (maxBytes : Int) :
   · rfl
   · rw [parseRecords_repeat maxU64 [] [] (-1) (Nat.le_refl _) (by simp [maxU64]) (by simp [maxU64])]
 
-end Reedwire
+end Pondline

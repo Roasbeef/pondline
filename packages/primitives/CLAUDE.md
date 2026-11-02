@@ -2,7 +2,7 @@
 
 ## Purpose
 
-The cryptographic primitives Reedwire's protocols are built from: X25519,
+The cryptographic primitives Pondline's protocols are built from: X25519,
 Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256
 and the OS CSPRNG, all taken from OTP's `crypto` application over OpenSSL
 (3.5 or newer, for ML-KEM and ML-DSA). No Rust and no NIF of our own.

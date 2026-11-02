@@ -1,4 +1,4 @@
-import Reedwire
+import Pondline
 
 /-
 Prints the axioms every main theorem depends on. `check.sh` runs this file
@@ -7,7 +7,7 @@ and fails unless each line names only Lean's standard axioms (`propext`,
 mean a proof was skipped or trusted to the compiler.
 -/
 
-open Reedwire
+open Pondline
 
 -- TLV and BigSize.
 #print axioms decodeBigSize_encode

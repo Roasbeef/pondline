@@ -1,14 +1,14 @@
-//// Which build of `reedwire` is running: its version and source commit.
+//// Which build of `pondline` is running: its version and source commit.
 ////
 //// A release is unpacked on machines with no git and no checkout, so the
 //// identity cannot be discovered at run time. `scripts/release.sh` writes
 //// both values into the release's launcher, which exports them as
-//// `REEDWIRE_BUILD_VERSION` and `REEDWIRE_BUILD_COMMIT` before the VM
+//// `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT` before the VM
 //// starts; this module reads them back. A build run from source
-//// (`gleam run -m reedwire`) has neither variable and says so, as `dev` and
+//// (`gleam run -m pondline`) has neither variable and says so, as `dev` and
 //// `unknown`, rather than guessing.
 ////
-//// The identity is reported by `reedwire --version` and as the `version`
+//// The identity is reported by `pondline --version` and as the `version`
 //// and `commit` fields of the local API's `health`. It stays out of `core`,
 //// which reads no environment.
 
@@ -56,8 +56,8 @@ pub fn current() -> Identity {
 /// ```
 pub fn from_lookup(lookup: fn(String) -> Result(String, Nil)) -> Identity {
   Identity(
-    version: read(lookup, "REEDWIRE_BUILD_VERSION", dev_version),
-    commit: read(lookup, "REEDWIRE_BUILD_COMMIT", unknown_commit),
+    version: read(lookup, "PONDLINE_BUILD_VERSION", dev_version),
+    commit: read(lookup, "PONDLINE_BUILD_COMMIT", unknown_commit),
   )
 }
 
@@ -75,14 +75,14 @@ fn read(
   }
 }
 
-/// The one line `reedwire --version` prints.
+/// The one line `pondline --version` prints.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// build.describe(Identity("0.1.0", "15b927e"))
-/// // -> "reedwire 0.1.0 (commit 15b927e)"
+/// // -> "pondline 0.1.0 (commit 15b927e)"
 /// ```
 pub fn describe(identity: Identity) -> String {
-  "reedwire " <> identity.version <> " (commit " <> identity.commit <> ")"
+  "pondline " <> identity.version <> " (commit " <> identity.commit <> ")"
 }

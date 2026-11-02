@@ -79,7 +79,7 @@ pub type Config {
     mailbox: Mailbox,
     /// Which carriers the daemon may dial.
     carrier: CarrierPolicy,
-    /// The path of the `reedwire-tor` binary, or `None` for no Tor.
+    /// The path of the `pondline-tor` binary, or `None` for no Tor.
     tor: Option(String),
     /// The current time.
     clock: fn() -> Instant,
@@ -118,7 +118,7 @@ pub type Config {
 /// ## Examples
 ///
 /// ```gleam
-/// config.new("/var/lib/reedwire", mailbox, endpoint.TorOnly)
+/// config.new("/var/lib/pondline", mailbox, endpoint.TorOnly)
 /// // -> Config(..)
 /// ```
 pub fn new(

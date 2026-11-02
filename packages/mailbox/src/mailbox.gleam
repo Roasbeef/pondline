@@ -7,7 +7,7 @@
 ////   `127.0.0.1`, prints `listening 127.0.0.1:<port>` on stdout, and runs
 ////   until the VM is stopped. Port 0 asks the system for a free port, and
 ////   the line names the one it chose. With the two Tor options it then
-////   starts the `reedwire-tor` sidecar, bootstraps it, hosts an onion
+////   starts the `pondline-tor` sidecar, bootstraps it, hosts an onion
 ////   service that forwards to that port, and prints one more line,
 ////   `onion <host>.onion:80`, which is the address a daemon dials. The Tor
 ////   state directory holds the service's key, and its path must be short
@@ -76,7 +76,7 @@ const host_timeout_ms = 120_000
 /// Where the Tor sidecar lives and keeps its state.
 pub type TorHosting {
   TorHosting(
-    /// The `reedwire-tor` binary.
+    /// The `pondline-tor` binary.
     binary: String,
     /// The sidecar's state directory, which holds the service key.
     state_dir: String,
@@ -311,7 +311,7 @@ fn serve(
 /// ## Examples
 ///
 /// ```gleam
-/// mailbox.host_onion(TorHosting("./reedwire-tor", "/tmp/mb-tor"), 8080)
+/// mailbox.host_onion(TorHosting("./pondline-tor", "/tmp/mb-tor"), 8080)
 /// // -> Ok("abc...xyz.onion:80")
 /// ```
 pub fn host_onion(

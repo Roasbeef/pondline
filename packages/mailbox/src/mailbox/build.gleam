@@ -3,7 +3,7 @@
 //// A release is unpacked on machines with no git and no checkout, so the
 //// identity cannot be discovered at run time. `scripts/release.sh` writes
 //// both values into the release's launcher, which exports them as
-//// `REEDWIRE_BUILD_VERSION` and `REEDWIRE_BUILD_COMMIT` before the VM
+//// `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT` before the VM
 //// starts; this module reads them back. A build run from source
 //// (`gleam run -m mailbox`) has neither variable and says so, as `dev` and
 //// `unknown`, rather than guessing.
@@ -57,8 +57,8 @@ pub fn current() -> Identity {
 /// ```
 pub fn from_lookup(lookup: fn(String) -> Result(String, Nil)) -> Identity {
   Identity(
-    version: read(lookup, "REEDWIRE_BUILD_VERSION", dev_version),
-    commit: read(lookup, "REEDWIRE_BUILD_COMMIT", unknown_commit),
+    version: read(lookup, "PONDLINE_BUILD_VERSION", dev_version),
+    commit: read(lookup, "PONDLINE_BUILD_COMMIT", unknown_commit),
   )
 }
 

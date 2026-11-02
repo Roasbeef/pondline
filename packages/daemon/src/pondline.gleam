@@ -1,9 +1,9 @@
-//// The `reedwire` command: the client daemon and its command line.
+//// The `pondline` command: the client daemon and its command line.
 ////
-//// Run it with `gleam run -m reedwire -- <command> ...`. `daemon/cli`
+//// Run it with `gleam run -m pondline -- <command> ...`. `daemon/cli`
 //// documents the commands and the exit codes. This module only wires the
 //// pieces: it reads the arguments and the one environment variable
-//// `REEDWIRE_CREDENTIAL_FILE`, parses them, runs the command and turns the
+//// `PONDLINE_CREDENTIAL_FILE`, parses them, runs the command and turns the
 //// result into output and an exit status.
 
 import argv
@@ -15,10 +15,10 @@ import gleam/option
 import gleam/result
 import telemetry/handler
 
-/// The entry point for `gleam run -m reedwire`.
+/// The entry point for `gleam run -m pondline`.
 pub fn main() -> Nil {
   let environment =
-    ffi_local_system.getenv("REEDWIRE_CREDENTIAL_FILE")
+    ffi_local_system.getenv("PONDLINE_CREDENTIAL_FILE")
     |> result.try(fn(path) {
       case path {
         "" -> Error(Nil)
@@ -40,7 +40,7 @@ pub fn main() -> Nil {
       emit(cli_run.Outcome(
         cli.exit_local,
         <<>>,
-        "reedwire: the log handler could not be installed",
+        "pondline: the log handler could not be installed",
       ))
 
     Ok(_), Ok(command) -> emit(cli_run.run(command))
@@ -49,7 +49,7 @@ pub fn main() -> Nil {
       emit(cli_run.Outcome(
         cli.exit_usage,
         <<>>,
-        "reedwire: " <> message <> "\n" <> cli.usage,
+        "pondline: " <> message <> "\n" <> cli.usage,
       ))
   }
 }

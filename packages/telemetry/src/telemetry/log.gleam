@@ -1,4 +1,4 @@
-//// The four calls every Reedwire log line goes through.
+//// The four calls every Pondline log line goes through.
 ////
 //// `debug`, `info`, `warning` and `error` each take a component, an event
 //// and a list of `telemetry/field` values. The component (`engine`,
@@ -7,7 +7,7 @@
 //// `telemetry/field` admits no free-form string or bytes. The level is
 //// chosen by the policy in `telemetry/level`.
 ////
-//// A call is a global, not an injected logger: Reedwire's processes are
+//// A call is a global, not an injected logger: Pondline's processes are
 //// few, each call site names its own component, and Erlang `logger` is
 //// already the process-wide sink every OTP library writes to. A line below
 //// the threshold is not rendered at all (`logger:allow/2`). A program that

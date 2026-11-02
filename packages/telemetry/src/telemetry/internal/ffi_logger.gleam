@@ -30,7 +30,7 @@ pub fn install(threshold: Level) -> Result(Nil, Nil)
 @external(erlang, "telemetry_ffi", "enabled")
 pub fn enabled(level: Level) -> Bool
 
-/// Logs one rendered line at `level`, as the report `#{reedwire => Line}`
+/// Logs one rendered line at `level`, as the report `#{pondline => Line}`
 /// the formatter recognises as ours.
 ///
 /// Binds `logger:log/3`.

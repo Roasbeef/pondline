@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Prove a built (or installed) Reedwire release runs on its own: one
+# Prove a built (or installed) Pondline release runs on its own: one
 # mailbox and two daemons on loopback, paired, one message sent and
 # received, everything through the release's launchers in an environment
 # with no Erlang, Gleam, Rust or Homebrew reachable.
 #
-#   scripts/release-smoke.sh                  # build/release/<platform>/reedwire
+#   scripts/release-smoke.sh                  # build/release/<platform>/pondline
 #   scripts/release-smoke.sh --release DIR    # another release tree
 #   scripts/release-smoke.sh --installed PREFIX
 #                                             # the launchers make install put
@@ -15,12 +15,12 @@
 #
 #   1. the tree: BUILD names a version and commit, and no build-time
 #      package (parrot, gleam_httpc, inets) shipped (ADR-007);
-#   2. `reedwire --version` and `mailbox --version` report exactly BUILD's
+#   2. `pondline --version` and `mailbox --version` report exactly BUILD's
 #      identity, and the sidecar starts;
 #   3. the bundled VM loads the bundled OpenSSL, which is >= 3.5 and runs an
 #      ML-KEM-1024 round trip (the reason it is bundled, ADR-002/003);
 #   4. `mailbox grant` twice and `mailbox serve` on loopback;
-#   5. two `reedwire daemon --carrier loopback` against it, and `health`
+#   5. two `pondline daemon --carrier loopback` against it, and `health`
 #      reporting the build identity;
 #   6. pairing: A invites with a ticket (and writes the file), B redeems
 #      the ticket from standard input (ADR-009), A approves, both become
@@ -38,8 +38,8 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-REL="$ROOT/build/release/$PLATFORM/reedwire"
-REEDWIRE=""
+REL="$ROOT/build/release/$PLATFORM/pondline"
+PONDLINE=""
 MAILBOX=""
 TIMEOUT=${SMOKE_TIMEOUT:-180}
 
@@ -49,9 +49,9 @@ while [ $# -gt 0 ]; do
     --installed)
       shift
       PREFIX=${1:?--installed needs a prefix}
-      REL="$PREFIX/lib/reedwire/current"
-      REEDWIRE="$PREFIX/bin/reedwire"
-      MAILBOX="$PREFIX/bin/reedwire-mailbox"
+      REL="$PREFIX/lib/pondline/current"
+      PONDLINE="$PREFIX/bin/pondline"
+      MAILBOX="$PREFIX/bin/pondline-mailbox"
       ;;
     *) echo "release-smoke: unknown option $1" >&2; exit 2 ;;
   esac
@@ -60,7 +60,7 @@ done
 
 [ -d "$REL" ] || { echo "release-smoke: no release at $REL (run make release)" >&2; exit 1; }
 REL=$(cd "$REL" && pwd -P)
-REEDWIRE=${REEDWIRE:-$REL/bin/reedwire}
+PONDLINE=${PONDLINE:-$REL/bin/pondline}
 MAILBOX=${MAILBOX:-$REL/bin/mailbox}
 
 # ------------------------------------------------------------------ output
@@ -141,7 +141,7 @@ wait_for() {
   done
 }
 
-reedwire() { scrubbed "$REEDWIRE" "$@"; }
+pondline() { scrubbed "$PONDLINE" "$@"; }
 mailbox() { scrubbed "$MAILBOX" "$@"; }
 
 # --------------------------------------------------------------- 1. tree
@@ -168,9 +168,9 @@ step "ok   tree: $VERSION $COMMIT, no parrot, gleam_httpc or inets"
 
 # ------------------------------------------------------------ 2. identity
 
-want="reedwire $VERSION (commit $COMMIT)"
-got=$(reedwire --version) || die "reedwire --version failed"
-[ "$got" = "$want" ] || die "reedwire --version said '$got', want '$want'"
+want="pondline $VERSION (commit $COMMIT)"
+got=$(pondline --version) || die "pondline --version failed"
+[ "$got" = "$want" ] || die "pondline --version said '$got', want '$want'"
 
 want="mailbox $VERSION (commit $COMMIT)"
 got=$(mailbox --version) || die "mailbox --version failed"
@@ -179,7 +179,7 @@ got=$(mailbox --version) || die "mailbox --version failed"
 # The sidecar serves its owner over standard input and exits cleanly when
 # that closes, so an empty stdin is a full start and stop, which also
 # proves its bundled libraries resolve.
-scrubbed "$REL/bin/reedwire-tor" --state-dir "$T/tor" </dev/null >/dev/null 2>&1 \
+scrubbed "$REL/bin/pondline-tor" --state-dir "$T/tor" </dev/null >/dev/null 2>&1 \
   || die "the sidecar does not start"
 step "ok   --version of both launchers is the BUILD identity; the sidecar starts"
 
@@ -214,14 +214,14 @@ step "ok   mailbox: two grants, listening on $ADDR"
 
 for side in a b; do
   mkdir -m 700 "$T/$side"
-  spawn "daemon-$side.log" "$REEDWIRE" daemon --state-dir "$T/$side" \
+  spawn "daemon-$side.log" "$PONDLINE" daemon --state-dir "$T/$side" \
     --mailbox "$ADDR" --provision-file "$T/$side.cap" --carrier loopback
 done
 for side in a b; do
   wait_for 30 grep -q '^ready ' "$T/daemon-$side.log" || die "daemon $side did not start"
 done
 
-health=$(reedwire health --state-dir "$T/a") || die "health failed"
+health=$(pondline health --state-dir "$T/a") || die "health failed"
 echo "$health" | grep -qx "version=$VERSION" || die "health lacks version=$VERSION: $health"
 echo "$health" | grep -qx "commit=$COMMIT" || die "health lacks commit=$COMMIT: $health"
 step "ok   two daemons ready; health reports version=$VERSION commit=$COMMIT"
@@ -230,25 +230,25 @@ step "ok   two daemons ready; health reports version=$VERSION commit=$COMMIT"
 
 # The ticket is a bearer secret: it goes from A's standard output to B's
 # standard input and is never printed or put in argv.
-TICKET=$(reedwire invite create --state-dir "$T/a" --description responder \
+TICKET=$(pondline invite create --state-dir "$T/a" --description responder \
   --budget 10 --out "$T/invite.bin" --ticket 2>/dev/null) || die "invite create --ticket"
 case "$TICKET" in
-  rw1*) ;;
+  pl1*) ;;
   *) die "invite create --ticket printed no ticket" ;;
 esac
 [ -s "$T/invite.bin" ] || die "invite create --ticket --out wrote no file"
-printf '%s\n' "$TICKET" | reedwire invite accept --state-dir "$T/b" --ticket \
+printf '%s\n' "$TICKET" | pondline invite accept --state-dir "$T/b" --ticket \
   --stdin --description asker >/dev/null || die "invite accept --ticket"
 unset TICKET
 
 contact_on() {
-  reedwire contacts list --state-dir "$1" | awk -v phase="$2" '$2 == phase {print $1; exit}'
+  pondline contacts list --state-dir "$1" | awk -v phase="$2" '$2 == phase {print $1; exit}'
 }
 pending() { [ -n "$(contact_on "$T/a" pending_approval)" ]; }
 active() { [ -n "$(contact_on "$T/a" active)" ] && [ -n "$(contact_on "$T/b" active)" ]; }
 
 wait_for 60 pending || die "A never saw B's accept"
-reedwire contact approve --state-dir "$T/a" --contact "$(contact_on "$T/a" pending_approval)" \
+pondline contact approve --state-dir "$T/a" --contact "$(contact_on "$T/a" pending_approval)" \
   >/dev/null || die "approve"
 wait_for 60 active || die "the pairing did not become active on both sides"
 A_SEES_B=$(contact_on "$T/a" active)
@@ -258,9 +258,9 @@ step "ok   paired: A sees B as $A_SEES_B, B sees A as $B_SEES_A"
 # ------------------------------------------------------------- 7. message
 
 PAYLOAD="smoke $VERSION $COMMIT $$"
-printf '%s' "$PAYLOAD" | reedwire send --state-dir "$T/b" --contact "$B_SEES_A" --stdin \
+printf '%s' "$PAYLOAD" | pondline send --state-dir "$T/b" --contact "$B_SEES_A" --stdin \
   >/dev/null || die "send"
-got=$(reedwire receive --state-dir "$T/a" --contact "$A_SEES_B" --raw --wait 30 2>"$T/receive.err") \
+got=$(pondline receive --state-dir "$T/a" --contact "$A_SEES_B" --raw --wait 30 2>"$T/receive.err") \
   || die "receive"
 [ "$got" = "$PAYLOAD" ] || die "A received '$got', B sent '$PAYLOAD'"
 step "ok   B sent ${#PAYLOAD} bytes from stdin; A received the same bytes"

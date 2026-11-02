@@ -14,13 +14,13 @@ Gleam changes need the Lean side updated.
 
 | Path | What it holds |
 | --- | --- |
-| `formal/lean/Reedwire/Bytes.lean` | Byte strings as `List Nat`, big-endian reads and writes, and their lemmas. |
-| `formal/lean/Reedwire/Tlv.lean` | The transcription of `core/tlv.gleam`. |
-| `formal/lean/Reedwire/TlvProofs.lean` | BigSize and stream round trips, canonicality, the input bound. |
-| `formal/lean/Reedwire/TlvDecode.lean` | Unknown even and odd types, and the `Builder`. |
-| `formal/lean/Reedwire/Padding.lean` | `limits.padded_size` and `envelope.pad`, `unpad`, `from_wire`. |
-| `formal/lean/Reedwire/Retention.lean` | `retention.offers` and the ADR-008 and ADR-006 addendum claims. |
-| `formal/lean/Reedwire/Retransmit.lean` | `retransmit.due_at` and the ADR-006 schedule claims. |
+| `formal/lean/Pondline/Bytes.lean` | Byte strings as `List Nat`, big-endian reads and writes, and their lemmas. |
+| `formal/lean/Pondline/Tlv.lean` | The transcription of `core/tlv.gleam`. |
+| `formal/lean/Pondline/TlvProofs.lean` | BigSize and stream round trips, canonicality, the input bound. |
+| `formal/lean/Pondline/TlvDecode.lean` | Unknown even and odd types, and the `Builder`. |
+| `formal/lean/Pondline/Padding.lean` | `limits.padded_size` and `envelope.pad`, `unpad`, `from_wire`. |
+| `formal/lean/Pondline/Retention.lean` | `retention.offers` and the ADR-008 and ADR-006 addendum claims. |
+| `formal/lean/Pondline/Retransmit.lean` | `retransmit.due_at` and the ADR-006 schedule claims. |
 | `formal/lean/GenVectors.lean` | The vector generator; its header documents the line format. |
 | `formal/lean/Axioms.lean` | `#print axioms` for every main theorem. |
 | `formal/lean/check.sh` | The gate. |

@@ -1,4 +1,4 @@
-import Reedwire.Retention
+import Pondline.Retention
 
 /-
 A transcription of `retransmit.due_at` (`packages/core/src/core/retransmit.gleam`)
@@ -10,7 +10,7 @@ stored no earlier than copy `k` came due. `chain` models that chain with no
 latency between a copy coming due and being stored.
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-- `plan.OutboundKind`, without its payloads. -/
 inductive Kind where
@@ -203,4 +203,4 @@ theorem day_outage_five_copies (kind : Kind) (t d : Int) (hkind : kind.retransmi
 theorem span_inside_retention : 31 * receiptWindowSeconds < messageRetentionSeconds := by
   decide
 
-end Reedwire
+end Pondline

@@ -283,7 +283,7 @@ pub fn the_transcript_layout_test() {
 
   assert pqxdh.initial_transcript(initial, handshake.inviter.public)
     == <<
-      "Reedwire_InitiatorTranscript_v1":utf8,
+      "Pondline_InitiatorTranscript_v1":utf8,
       1,
       identity.encode_public(handshake.joiner.public):bits,
       identity.encode_public(handshake.inviter.public):bits,

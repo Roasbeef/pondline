@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# The Reedwire demonstration: two daemons, two sandboxed agents, one mailbox,
+# The Pondline demonstration: two daemons, two sandboxed agents, one mailbox,
 # end to end (docs/demo.md).
 #
 #   scripts/demo.sh --carrier=loopback|tor [--pairing=ticket|file]
 #                   [--messages N] [--skip-build] [--keep] [--release DIR]
 #
 # --release runs every program from a release tree instead of the Gleam
-# shipments: build/release/<platform>/reedwire, an unpacked tarball, or an
-# installed one ($PREFIX/lib/reedwire/current). Nothing is built, the Tor
+# shipments: build/release/<platform>/pondline, an unpacked tarball, or an
+# installed one ($PREFIX/lib/pondline/current). Nothing is built, the Tor
 # sidecar is the tree's own, and the agents' sandbox is given the tree in
 # place of the host's Erlang (docs/demo.md).
 #
@@ -23,7 +23,7 @@
 #             nothing else: no state directory, no network except its
 #             daemon's one Unix socket.
 #
-# Pairing goes by ticket by default (ADR-009): A prints a short rw1 string
+# Pairing goes by ticket by default (ADR-009): A prints a short pl1 string
 # and B redeems it from standard input, fetching the sealed invitation from
 # the mailbox. --pairing=file moves the 14.6 KB invitation file instead.
 #
@@ -221,16 +221,16 @@ if [ -n "$RELEASE" ]; then
   # A release tree carries the VM, both programs and the sidecar, so it
   # stands in for the shipments and for the host's Erlang alike. Seatbelt
   # matches real paths, so the symlinks of an installed tree are resolved.
-  [ -x "$RELEASE/bin/reedwire" ] || die "no release at $RELEASE (make release)"
+  [ -x "$RELEASE/bin/pondline" ] || die "no release at $RELEASE (make release)"
   RELEASE=$(cd "$RELEASE" && pwd -P)
   DAEMON_SHIP=$RELEASE
   OTP_ROOT=$RELEASE
-  SIDECAR="$RELEASE/bin/reedwire-tor"
+  SIDECAR="$RELEASE/bin/pondline-tor"
   step "running from the release $RELEASE ($(sed -n 's/^commit=//p' "$RELEASE/BUILD"))"
 else
   DAEMON_SHIP="$ROOT/packages/daemon/build/erlang-shipment"
   MAILBOX_SHIP="$ROOT/packages/mailbox/build/erlang-shipment"
-  SIDECAR="$ROOT/native/reedwire-tor/target/release/reedwire-tor"
+  SIDECAR="$ROOT/native/pondline-tor/target/release/pondline-tor"
 
   [ -d "$DAEMON_SHIP" ] || die "no daemon shipment (run without --skip-build)"
   [ -d "$MAILBOX_SHIP" ] || die "no mailbox shipment (run without --skip-build)"
@@ -256,14 +256,14 @@ mailbox() {
   fi
 }
 
-# The operator's `reedwire`: it uses <state-dir>/operator.cred by default, so
+# The operator's `pondline`: it uses <state-dir>/operator.cred by default, so
 # the credential variable must not leak in from the caller's environment.
-reedwire() {
+pondline() {
   if [ -n "$RELEASE" ]; then
-    env -u REEDWIRE_CREDENTIAL_FILE "$RELEASE/bin/reedwire" "$@"
+    env -u PONDLINE_CREDENTIAL_FILE "$RELEASE/bin/pondline" "$@"
   else
-    env -u REEDWIRE_CREDENTIAL_FILE \
-      erl -pa "$DAEMON_SHIP"/*/ebin -eval 'reedwire:main(), erlang:halt(0)' \
+    env -u PONDLINE_CREDENTIAL_FILE \
+      erl -pa "$DAEMON_SHIP"/*/ebin -eval 'pondline:main(), erlang:halt(0)' \
       -noshell -extra "$@"
   fi
 }
@@ -290,7 +290,7 @@ sandboxed() {
       PATH=/usr/bin:/bin:/opt/homebrew/bin \
       HOME="$agent_dir" TMPDIR="$agent_dir/tmp" \
       AGENT_DIR="$agent_dir" API_SOCK="$state_dir/api.sock" \
-      STATE_DIR="$state_dir" REEDWIRE_RUNTIME="$DAEMON_SHIP" \
+      STATE_DIR="$state_dir" PONDLINE_RUNTIME="$DAEMON_SHIP" \
       ASK_TIMEOUT="${ASK_TIMEOUT:-$((PATIENCE * 2))}" \
       PACE_SENDS="$PACE_SENDS" \
       "$@"
@@ -355,11 +355,11 @@ start_daemon() {
   mkdir -p "$dir"
   chmod 700 "$dir"
   if [ "$CARRIER" = tor ]; then
-    spawn "$LOGS/daemon-$name.log" reedwire daemon --state-dir "$dir" \
+    spawn "$LOGS/daemon-$name.log" pondline daemon --state-dir "$dir" \
       --mailbox "$MAILBOX_ADDR" --provision-file "$cap" \
       --carrier tor --tor-bin "$SIDECAR"
   else
-    spawn "$LOGS/daemon-$name.log" reedwire daemon --state-dir "$dir" \
+    spawn "$LOGS/daemon-$name.log" pondline daemon --state-dir "$dir" \
       --mailbox "$MAILBOX_ADDR" --provision-file "$cap" --carrier loopback
   fi
 }
@@ -376,7 +376,7 @@ pass "both daemons are up and serving their local APIs"
 
 if [ "$CARRIER" = tor ]; then
   step "waiting for both daemons' Tor clients to bootstrap"
-  tor_ready() { reedwire health --state-dir "$1" | grep -q '^tor=bootstrapped$'; }
+  tor_ready() { pondline health --state-dir "$1" | grep -q '^tor=bootstrapped$'; }
   for dir in "$A" "$B"; do
     wait_for "Tor in $dir" "$PATIENCE" tor_ready "$dir" \
       || die "Tor did not bootstrap in $dir"
@@ -391,25 +391,25 @@ if [ "$PAIRING" = ticket ]; then
   # The ticket is the only thing that crosses between the operators. It is
   # a bearer secret, so the demo prints its length and prefix, never all of
   # it, and hands it to B on standard input, never in argv.
-  TICKET=$(reedwire invite create --state-dir "$A" --description "responder" \
+  TICKET=$(pondline invite create --state-dir "$A" --description "responder" \
     --budget "$BUDGET" --ticket 2>/dev/null) || die "invite create --ticket failed"
   case "$TICKET" in
-    rw1*) ;;
+    pl1*) ;;
     *) die "invite create --ticket printed no ticket" ;;
   esac
   pass "ticket issued: ${#TICKET} characters, ${TICKET:0:4}...; the sealed invitation waits at the mailbox"
 
-  printf '%s\n' "$TICKET" | reedwire invite accept --state-dir "$B" --ticket \
+  printf '%s\n' "$TICKET" | pondline invite accept --state-dir "$B" --ticket \
     --stdin --description "asker" >/dev/null || die "invite accept --ticket failed"
   unset TICKET
   pass "B fetched, opened and imported the invitation the ticket names"
 else
-  reedwire invite create --state-dir "$A" --description "responder" \
+  pondline invite create --state-dir "$A" --description "responder" \
     --budget "$BUDGET" --out "$TMP/invite.bin" >/dev/null \
     || die "invite create failed"
   note "invitation written ($(wc -c <"$TMP/invite.bin" | tr -d ' ') bytes, carries the post-quantum key bundle)"
 
-  reedwire invite accept --state-dir "$B" --file "$TMP/invite.bin" \
+  pondline invite accept --state-dir "$B" --file "$TMP/invite.bin" \
     --description "asker" >/dev/null || die "invite accept failed"
 fi
 
@@ -417,14 +417,14 @@ fi
 # contact once the message has crossed (and, over Tor, once the onion
 # service is reachable).
 contact_on() {
-  reedwire contacts list --state-dir "$1" | awk -v phase="$2" '$2==phase{print $1; exit}'
+  pondline contacts list --state-dir "$1" | awk -v phase="$2" '$2==phase{print $1; exit}'
 }
 awaiting_approval() { [ -n "$(contact_on "$A" pending_approval)" ]; }
 
 wait_for "A to see B's accept" "$PATIENCE" awaiting_approval \
   || die "A never saw B's accept"
 A_CONTACT=$(contact_on "$A" pending_approval)
-reedwire contact approve --state-dir "$A" --contact "$A_CONTACT" >/dev/null \
+pondline contact approve --state-dir "$A" --contact "$A_CONTACT" >/dev/null \
   || die "approve failed"
 
 both_active() {
@@ -434,8 +434,8 @@ wait_for "both sides active" "$PATIENCE" both_active \
   || die "the pairing did not become active on both sides"
 B_CONTACT=$(contact_on "$B" active)
 pass "paired: both sides are active (A sees B as $A_CONTACT, B sees A as $B_CONTACT)"
-note "A: $(reedwire contacts list --state-dir "$A")"
-note "B: $(reedwire contacts list --state-dir "$B")"
+note "A: $(pondline contacts list --state-dir "$A")"
+note "B: $(pondline contacts list --state-dir "$B")"
 
 # ------------------------------------------------------------------- agents
 
@@ -447,7 +447,7 @@ prepare_agent() {
   local dir=$1 state=$2
   mkdir -p "$dir/bin" "$dir/tmp"
   chmod 700 "$dir"
-  cp "$AGENTS/reedwire.sh" "$AGENTS/asker.sh" "$AGENTS/responder.sh" \
+  cp "$AGENTS/pondline.sh" "$AGENTS/asker.sh" "$AGENTS/responder.sh" \
     "$AGENTS/probe.sh" "$dir/bin/"
   cp "$state/agent.cred" "$dir/agent.cred"
   chmod 600 "$dir/agent.cred"
@@ -526,7 +526,7 @@ note "e.g. $(head -n 1 "$AGENT_B/answers.log")"
 all_received() {
   local input id state
   while read -r input id; do
-    state=$(reedwire status --state-dir "$B" --message "$id")
+    state=$(pondline status --state-dir "$B" --message "$id")
     [ "$state" = received_by_peer ] || return 1
   done <"$AGENT_B/sent.log"
 }
@@ -538,10 +538,10 @@ else
   fail "some task never reached received_by_peer"
 fi
 first_id=$(head -n 1 "$AGENT_B/sent.log" | cut -d' ' -f2)
-note "status of the first task: $(reedwire status --state-dir "$B" --message "$first_id")"
+note "status of the first task: $(pondline status --state-dir "$B" --message "$first_id")"
 
 step "A's audit log (plaintext, outside the agent's reach), newest first"
-reedwire audit --state-dir "$A" --limit 6 | cut -c1-150 | while IFS= read -r line; do
+pondline audit --state-dir "$A" --limit 6 | cut -c1-150 | while IFS= read -r line; do
   note "$line"
 done
 
@@ -556,14 +556,14 @@ spawn "$LOGS/asker-2.log" sandboxed "$AGENT_B" "$B" sh "$AGENT_B/bin/asker.sh" \
 BURST_PID=$LAST_PID
 
 held_two() {
-  reedwire contacts list --state-dir "$A" | grep -q " held=2 "
+  pondline contacts list --state-dir "$A" | grep -q " held=2 "
 }
 if wait_for "two held messages" "$PATIENCE" held_two; then
   pass "A holds exactly 2 messages over budget"
 else
-  fail "A never showed 2 held messages: $(reedwire contacts list --state-dir "$A")"
+  fail "A never showed 2 held messages: $(pondline contacts list --state-dir "$A")"
 fi
-note "A: $(reedwire contacts list --state-dir "$A")"
+note "A: $(pondline contacts list --state-dir "$A")"
 
 # The responder answers what fit, and only that. Give it time to settle
 # before counting, so a held message that leaked through would show up.
@@ -580,7 +580,7 @@ else
 fi
 
 step "the operator raises A's budget for B by 5"
-reedwire contact budget --state-dir "$A" --contact "$A_CONTACT" --add 5 >/dev/null \
+pondline contact budget --state-dir "$A" --contact "$A_CONTACT" --add 5 >/dev/null \
   || die "contact budget failed"
 
 if wait "$BURST_PID" 2>/dev/null; then
@@ -589,7 +589,7 @@ else
   fail "the asker did not finish after the raise: $(tail -n 3 "$LOGS/asker-2.log")"
 fi
 verify_answers $((MESSAGES + BURST))
-note "A: $(reedwire contacts list --state-dir "$A")"
+note "A: $(pondline contacts list --state-dir "$A")"
 
 # --------------------------------------------------------------------- done
 

@@ -101,7 +101,7 @@ pub fn logs_and_errors_carry_no_secret_test() {
   // Errors of every kind, each rendered.
   let errors = [
     string.inspect(api.accept(b, <<"junk":utf8>>, "x")),
-    string.inspect(api.accept_ticket(b, secret.new(<<"rw1junk":utf8>>), "x")),
+    string.inspect(api.accept_ticket(b, secret.new(<<"pl1junk":utf8>>), "x")),
     string.inspect(issued),
     string.inspect(api.send(
       b,

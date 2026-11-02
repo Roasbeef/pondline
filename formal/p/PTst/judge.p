@@ -288,66 +288,66 @@ machine DrvCxLateRetry {
 
 test mutReencrypt [main=DrvMutReencrypt]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMutReencrypt });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMutReencrypt });
 
 test mutSendBeforeCommit [main=DrvMutSendBeforeCommit]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMutSendBeforeCommit });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMutSendBeforeCommit });
 
 test mutAckBeforeCommit [main=DrvMutAckBeforeCommit]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMutAckBeforeCommit });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMutAckBeforeCommit });
 
 test mutReceiptForExpired [main=DrvMutReceiptForExpired]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMutReceiptForExpired });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMutReceiptForExpired });
 
 test mutIgnoreExpiry [main=DrvMutIgnoreExpiry]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMutIgnoreExpiry });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMutIgnoreExpiry });
 
 test recallNoRetransmit [main=DrvRecallNoRetransmit]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvRecallNoRetransmit });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvRecallNoRetransmit });
 
 test recallNoFingerprint [main=DrvRecallNoFingerprint]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvRecallNoFingerprint });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvRecallNoFingerprint });
 
 test recallPreH2 [main=DrvRecallPreH2]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvRecallPreH2 });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvRecallPreH2 });
 
 test recallNoImplicitAccept [main=DrvRecallNoImplicitAccept]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvRecallNoImplicitAccept });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvRecallNoImplicitAccept });
 
 test calibSpoils [main=DrvCalibSpoils]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCalibSpoils });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCalibSpoils });
 
 test calibQuarantine [main=DrvCalibQuarantine]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCalibQuarantine });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCalibQuarantine });
 
 test cxRestore [main=DrvCxRestore]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCxRestore });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCxRestore });
 
 test cxLateRetry [main=DrvCxLateRetry]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCxLateRetry });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCxLateRetry });
 
 // QueuesDrain is left out so that the report names the consequence that
 // matters: a message behind the envelope is never delivered.
 test cxBlock [main=DrvCxBlock]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted in (union Reedwire, { DrvCxBlock });
+    NoExpiredDelivery, DeliveredAndReceipted in (union Pondline, { DrvCxBlock });
 
 test cxGeneric [main=DrvCxGeneric]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCxGeneric });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCxGeneric });
 
 test mutTightAnswers [main=DrvMutTightAnswers]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMutTightAnswers });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMutTightAnswers });

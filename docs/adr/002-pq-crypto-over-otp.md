@@ -4,7 +4,7 @@
 
 ## Decision
 
-Reedwire's cryptography is built from the primitives in OTP's `crypto`
+Pondline's cryptography is built from the primitives in OTP's `crypto`
 application (X25519, Ed25519, ML-KEM-1024, ChaCha20-Poly1305, SHA-256,
 HMAC-SHA-256 and the OS CSPRNG), reached through the `primitives` package.
 The protocols are written in Gleam in `core/crypto`: HKDF, PQXDH, and the
@@ -91,3 +91,7 @@ not do. Quantum-resistant authentication, which the profile listed as not
 provided, is provided at the handshake. ML-DSA-65 has no fixed-output
 vector through OTP 29 (hedged signing, no seeded key generation), so like
 ML-KEM it is checked by sizes, round trips and rejections.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

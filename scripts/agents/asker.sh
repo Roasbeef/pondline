@@ -21,12 +21,12 @@
 # of these tasks the peer will see; the rest are held at the peer until its
 # operator raises the budget, and this script simply keeps waiting.
 #
-# Environment: REEDWIRE_RUNTIME, API_SOCK, AGENT_DIR (see reedwire.sh).
+# Environment: PONDLINE_RUNTIME, API_SOCK, AGENT_DIR (see pondline.sh).
 
 set -u
 
 here=$(dirname "$0")
-rw="$here/reedwire.sh"
+rw="$here/pondline.sh"
 count=${1:?usage: asker.sh COUNT [PREFIX]}
 prefix=${2:-task}
 timeout=${ASK_TIMEOUT:-180}

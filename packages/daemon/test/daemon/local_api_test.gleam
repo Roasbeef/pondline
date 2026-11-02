@@ -489,19 +489,19 @@ pub fn invite_and_accept_carry_a_ticket_test() {
 
   let accepted =
     ask(f, f.operator, "accept", [
-      #("ticket", json.string("rw1abc")),
+      #("ticket", json.string("pl1abc")),
       #("description", json.string("al")),
     ])
     |> succeeded
   assert string_at(accepted, ["contact"]) == contact_hex()
 
   assert category(
-      ask(f, f.agent, "accept", [#("ticket", json.string("rw1abc"))]),
+      ask(f, f.agent, "accept", [#("ticket", json.string("pl1abc"))]),
     )
     == protocol.Forbidden
 
   assert fixture.calls(f.fake)
-    == ["invite_ticket t OperatorApproves 2", "accept_ticket rw1abc al"]
+    == ["invite_ticket t OperatorApproves 2", "accept_ticket pl1abc al"]
 }
 
 /// `accept` takes exactly one of an invitation and a ticket, and its
@@ -512,13 +512,13 @@ pub fn accept_takes_exactly_one_source_test() {
   let both =
     ask(f, f.operator, "accept", [
       #("invitation", json.string("AAAA")),
-      #("ticket", json.string("rw1secretticket")),
+      #("ticket", json.string("pl1secretticket")),
     ])
   let neither = ask(f, f.operator, "accept", [])
 
   assert category(both) == protocol.Invalid
   assert category(neither) == protocol.Invalid
-  assert !string.contains(string.inspect(both), "rw1secretticket")
+  assert !string.contains(string.inspect(both), "pl1secretticket")
   assert fixture.calls(f.fake) == []
 }
 

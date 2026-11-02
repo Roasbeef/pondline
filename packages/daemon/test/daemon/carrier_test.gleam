@@ -72,16 +72,16 @@ pub fn a_missing_provisioning_file_is_refused_test() {
 
 /// The real sidecar needs a network, so it runs only when asked for.
 pub fn tor_carrier_bootstraps_when_enabled_test() {
-  case support.env("REEDWIRE_TOR_NETWORK") {
+  case support.env("PONDLINE_TOR_NETWORK") {
     Error(Nil) ->
       io.println_error("SKIP tor_carrier_bootstraps_when_enabled_test")
 
     Ok(_) -> {
       let mailbox = support.start_mailbox()
       let loose = support.daemon_config(mailbox, support.fresh("tor"))
-      let binary = case support.env("REEDWIRE_TOR_BIN") {
+      let binary = case support.env("PONDLINE_TOR_BIN") {
         Ok(path) -> path
-        Error(Nil) -> "../../native/reedwire-tor/target/release/reedwire-tor"
+        Error(Nil) -> "../../native/pondline-tor/target/release/pondline-tor"
       }
       let settings = config.Config(..loose, tor: Some(binary))
       let assert Ok(daemon) = node.start(settings)

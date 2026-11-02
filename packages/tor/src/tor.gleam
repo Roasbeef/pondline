@@ -1,5 +1,5 @@
-//// Tor for Reedwire: onion streams and onion services through the
-//// `reedwire-tor` sidecar, a separate OS process running Arti.
+//// Tor for Pondline: onion streams and onion services through the
+//// `pondline-tor` sidecar, a separate OS process running Arti.
 ////
 //// Why a sidecar and not a NIF: a crash or stall inside Arti must not take
 //// the BEAM down, and bytes that cross a real socket give the BEAM ordinary
@@ -108,7 +108,7 @@ pub const max_nickname_bytes = 64
 /// How to run the sidecar.
 pub type Config {
   Config(
-    /// The path of the `reedwire-tor` binary.
+    /// The path of the `pondline-tor` binary.
     binary_path: String,
     /// The sidecar's state directory: Arti's keys and cache, and the
     /// outbound socket. Created mode 0700. It must be unique to one
@@ -282,7 +282,7 @@ pub opaque type Tor {
 /// ## Examples
 ///
 /// ```gleam
-/// tor.config("/opt/reedwire/reedwire-tor", "/var/lib/reedwire/tor")
+/// tor.config("/opt/pondline/pondline-tor", "/var/lib/pondline/tor")
 /// ```
 pub fn config(binary_path: String, state_dir: String) -> Config {
   Config(binary_path:, state_dir:, max_restarts: 3, ready_timeout_ms: 10_000)
@@ -298,7 +298,7 @@ pub fn config(binary_path: String, state_dir: String) -> Config {
 /// ## Examples
 ///
 /// ```gleam
-/// tor.start(tor.config("./reedwire-tor", "/tmp/rw-tor"))
+/// tor.start(tor.config("./pondline-tor", "/tmp/pl-tor"))
 /// // -> Ok(tor)
 /// ```
 pub fn start(config: Config) -> Result(Tor, TorError) {
@@ -349,7 +349,7 @@ fn total_backoff_ms(restarts: Int) -> Int {
 /// ## Examples
 ///
 /// ```gleam
-/// tor.supervised(tor.config("./reedwire-tor", "/tmp/rw-tor"))
+/// tor.supervised(tor.config("./pondline-tor", "/tmp/pl-tor"))
 /// ```
 pub fn supervised(config: Config) -> supervision.ChildSpecification(Tor) {
   sm.supervised(machine(config))

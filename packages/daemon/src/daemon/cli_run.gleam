@@ -1,4 +1,4 @@
-//// Runs a parsed `reedwire` command (spec §9.2).
+//// Runs a parsed `pondline` command (spec §9.2).
 ////
 //// `daemon/cli` decides what the user asked for; this module does the
 //// effects: reading the credential and the payload, talking to the daemon
@@ -52,7 +52,7 @@ import gleam/option.{None, Some}
 import gleam/result
 import simplifile
 
-/// The largest input file `reedwire` reads, in bytes. A payload is at most
+/// The largest input file `pondline` reads, in bytes. A payload is at most
 /// `limits.max_body_bytes` and an invitation file is far smaller, so this
 /// bound only stops a mistaken path from filling memory.
 const max_input_bytes = 1_048_576
@@ -326,7 +326,7 @@ fn ticket_outcome(
   path: option.Option(String),
 ) -> Outcome {
   // JSON carries both facts in one answer; human output separates them so
-  // `$(reedwire invite create ... --ticket)` captures the ticket alone.
+  // `$(pondline invite create ... --ticket)` captures the ticket alone.
   case output {
     JsonOutput -> {
       let fields = [
@@ -391,5 +391,5 @@ fn save_invitation(
 /// An outcome with a message for standard error and nothing on standard
 /// output.
 fn failure(status: Int, message: String) -> Outcome {
-  Outcome(status, <<>>, "reedwire: " <> message)
+  Outcome(status, <<>>, "pondline: " <> message)
 }

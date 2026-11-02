@@ -5,10 +5,10 @@
 ## Decision
 
 **One logging layer, `packages/telemetry`, over Erlang `logger`.** Every
-line Reedwire writes, and every line OTP or a library writes into the same
+line Pondline writes, and every line OTP or a library writes into the same
 VM, goes through one handler: OTP's stock `logger_std_h` (its overload
 protection unchanged) writing to **standard error**, formatted by
-`telemetry_ffi:format/2`. The daemon (`reedwire`) and the mailbox install it
+`telemetry_ffi:format/2`. The daemon (`pondline`) and the mailbox install it
 as the first thing their `main` does, for every command, and refuse to run
 if `logger` will not take it. No library installs it, so the simulation's
 own silencing of `logger` is untouched.
@@ -34,7 +34,7 @@ failed storage operation, a refused queue creation, a send outcome the
 engine could not record). `info`, the default: lifecycle (`node started`,
 `mailbox serving`) and the mailbox's access log. `debug`: per-message steps
 and OTP's progress reports, which are dropped below `debug`.
-`REEDWIRE_LOG_LEVEL` sets the threshold (`debug`, `info`, `warning` or
+`PONDLINE_LOG_LEVEL` sets the threshold (`debug`, `info`, `warning` or
 `warn`, `error` or `err`); anything else is `info`.
 
 **Format: logfmt**, one event per line:
@@ -74,7 +74,7 @@ file, is a `Secret` too. Delivered payloads already were.
 
 ## Why
 
-The no-secrets rule of §12.4 held for the lines Reedwire wrote and failed
+The no-secrets rule of §12.4 held for the lines Pondline wrote and failed
 for the lines OTP wrote. Reproduced before this change
 (`test/daemon/crash_report_test.gleam`): a daemon whose ChaCha20-Poly1305
 seal fails inside the engine's send job (OpenSSL handed a key one byte
@@ -99,8 +99,8 @@ late reply in a caller's mailbox is printed by a crash report's `messages`
 field or by an actor's "discarding unexpected message" warning.
 
 Standard error because standard output is a protocol: the mailbox prints
-`listening` and `onion` lines a launcher reads, `reedwire daemon` prints
-`ready <socket>`, and `reedwire receive --raw` writes payload bytes. OTP's
+`listening` and `onion` lines a launcher reads, `pondline daemon` prints
+`ready <socket>`, and `pondline receive --raw` writes payload bytes. OTP's
 default handler writes to standard output.
 
 logfmt rather than JSON lines: every value is one scalar with no nesting
@@ -138,7 +138,7 @@ from the engine as plain bytes fails `secrets_test` on its rendering.
   formatter.
 - The literal-only rule for components and events is a convention, as it
   was for `daemon/log`; the values are what the type system closes.
-- The sidecar's own diagnostics (`reedwire-tor: ...`) reach standard error
+- The sidecar's own diagnostics (`pondline-tor: ...`) reach standard error
   directly from the Rust process and are not in logfmt. They are fixed
   phrases.
 - A failure of the program's main process is printed by Gleam's generated
@@ -152,3 +152,7 @@ from the engine as plain bytes fails `secrets_test` on its rendering.
   `Secret` wrapping is what remains then.
 - Revisit if a structured export (OpenTelemetry) is wanted: it would attach
   as a second handler with the same formatter rules.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

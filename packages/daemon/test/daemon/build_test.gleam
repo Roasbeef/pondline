@@ -5,15 +5,15 @@ import gleam/option.{None}
 pub fn a_release_reports_what_its_launcher_exported_test() {
   let lookup = fn(name) {
     case name {
-      "REEDWIRE_BUILD_VERSION" -> Ok("0.1.0")
-      "REEDWIRE_BUILD_COMMIT" -> Ok("15b927e")
+      "PONDLINE_BUILD_VERSION" -> Ok("0.1.0")
+      "PONDLINE_BUILD_COMMIT" -> Ok("15b927e")
       _ -> Error(Nil)
     }
   }
 
   assert build.from_lookup(lookup) == Identity("0.1.0", "15b927e")
   assert build.describe(build.from_lookup(lookup))
-    == "reedwire 0.1.0 (commit 15b927e)"
+    == "pondline 0.1.0 (commit 15b927e)"
 }
 
 pub fn a_build_from_source_says_dev_and_unknown_test() {

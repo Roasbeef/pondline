@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Install (or remove) a Reedwire release under a prefix.
+# Install (or remove) a Pondline release under a prefix.
 #
 #   make install   [PREFIX=$HOME/.local]       # builds the release first
 #   make uninstall [PREFIX=$HOME/.local]
@@ -9,25 +9,25 @@
 #
 # What lands where, and why:
 #
-#   $PREFIX/lib/reedwire/<version>-<commit>-<platform>/
-#       the release tree, copied whole from build/release/<platform>/reedwire
+#   $PREFIX/lib/pondline/<version>-<commit>-<platform>/
+#       the release tree, copied whole from build/release/<platform>/pondline
 #       (or --from). It is self-contained (its own ERTS, OpenSSL and Tor
 #       sidecar; ADR-003), so nothing else is installed anywhere. The name
 #       is the build's identity from its BUILD file, so two builds sit side
 #       by side and reinstalling the same build finds its own tree.
-#   $PREFIX/lib/reedwire/current -> <that tree>
+#   $PREFIX/lib/pondline/current -> <that tree>
 #       the one switch between builds. It is replaced by a rename, so a
 #       launcher started during an install sees the old tree or the new one,
 #       never half of either.
-#   $PREFIX/bin/reedwire          -> ../lib/reedwire/current/bin/reedwire
-#   $PREFIX/bin/reedwire-mailbox  -> ../lib/reedwire/current/bin/mailbox
+#   $PREFIX/bin/pondline          -> ../lib/pondline/current/bin/pondline
+#   $PREFIX/bin/pondline-mailbox  -> ../lib/pondline/current/bin/mailbox
 #       the two commands, as relative symlinks. The release launchers
 #       resolve their own symlinks to find the tree, so no wrapper script is
 #       needed and nothing in the tree records the prefix. The mailbox gets
 #       a prefixed name because `mailbox` is too generic for a shared bin.
-#   $PREFIX/lib/reedwire/.reedwire-install
+#   $PREFIX/lib/pondline/.pondline-install
 #       a marker that says this directory is ours, so uninstall and later
-#       installs can tell it from someone else's `lib/reedwire`.
+#       installs can tell it from someone else's `lib/pondline`.
 #
 # Rules:
 #
@@ -35,9 +35,9 @@
 #     installed for it (uninstall first to force a fresh copy); a -dirty
 #     build is recopied only when its files differ. The links are rewritten
 #     to the same targets.
-#   - It refuses to replace anything it did not create: a `bin/reedwire` or
-#     `bin/reedwire-mailbox` that is not exactly the symlink above, or a
-#     `lib/reedwire` without the marker. It checks all of them before it
+#   - It refuses to replace anything it did not create: a `bin/pondline` or
+#     `bin/pondline-mailbox` that is not exactly the symlink above, or a
+#     `lib/pondline` without the marker. It checks all of them before it
 #     changes anything.
 #   - A running daemon or mailbox loads code from its tree long after it
 #     starts, so a tree a live process uses is never deleted or replaced.
@@ -75,7 +75,7 @@ if [ -z "$FROM" ]; then
     FROM=$SELF_DIR
   else
     PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-    FROM="$(dirname "$SELF_DIR")/build/release/$PLATFORM/reedwire"
+    FROM="$(dirname "$SELF_DIR")/build/release/$PLATFORM/pondline"
   fi
 fi
 
@@ -96,14 +96,14 @@ BIN="$PREFIX/bin"
 # below must compare the same spelling or it would miss a live tree.
 LIBROOT="$PREFIX/lib"
 if [ -d "$LIBROOT" ]; then LIBROOT=$(cd "$LIBROOT" && pwd -P); fi
-LIB="$LIBROOT/reedwire"
-MARKER="$LIB/.reedwire-install"
+LIB="$LIBROOT/pondline"
+MARKER="$LIB/.pondline-install"
 
 # The two commands, as "installed name:launcher in the tree".
-COMMANDS=("reedwire:reedwire" "reedwire-mailbox:mailbox")
+COMMANDS=("pondline:pondline" "pondline-mailbox:mailbox")
 
 # The symlink each command must be, relative to $BIN.
-link_target() { echo "../lib/reedwire/current/bin/$1"; }
+link_target() { echo "../lib/pondline/current/bin/$1"; }
 
 # Whether `bin/<name>` is absent or exactly our link.
 command_is_ours_or_absent() {
@@ -156,7 +156,7 @@ for entry in "${COMMANDS[@]}"; do
   name=${entry%%:*}
   launcher=${entry#*:}
   if ! command_is_ours_or_absent "$name" "$launcher"; then
-    echo "install.sh: $BIN/$name exists and is not a Reedwire link; refusing to replace it" >&2
+    echo "install.sh: $BIN/$name exists and is not a Pondline link; refusing to replace it" >&2
     exit 1
   fi
 done
@@ -191,7 +191,7 @@ fi
 
 # ----------------------------------------------------------------- install
 
-[ -f "$FROM/BUILD" ] && [ -x "$FROM/bin/reedwire" ] && [ -x "$FROM/bin/mailbox" ] || {
+[ -f "$FROM/BUILD" ] && [ -x "$FROM/bin/pondline" ] && [ -x "$FROM/bin/mailbox" ] || {
   echo "install.sh: no release at $FROM; run make release first" >&2
   exit 1
 }
@@ -261,8 +261,8 @@ while IFS= read -r tree; do
   fi
 done < <(trees)
 
-echo "reedwire $VERSION (commit $COMMIT) for $PLATFORM is installed under $PREFIX"
+echo "pondline $VERSION (commit $COMMIT) for $PLATFORM is installed under $PREFIX"
 case ":$PATH:" in
   *":$BIN:"*) ;;
-  *) echo "add $BIN to PATH, or run $BIN/reedwire directly" ;;
+  *) echo "add $BIN to PATH, or run $BIN/pondline directly" ;;
 esac

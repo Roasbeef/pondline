@@ -22,7 +22,7 @@ fi
 
 scale="${1:-1}"
 seed=20261101
-dll="PGenerated/PChecker/net8.0/Reedwire.dll"
+dll="PGenerated/PChecker/net8.0/Pondline.dll"
 
 # Each design test case and its schedule budget. The random strategy and a
 # PCT pass are both run; PCT favours long delays of one machine, which is how

@@ -16,7 +16,7 @@ set -u
 jar=${TLA2TOOLS:-/Users/roasbeef/tools/tla2tools.jar}
 workers=${TLC_WORKERS:-2}
 here=$(cd "$(dirname "$0")" && pwd)
-meta=$(mktemp -d "${TMPDIR:-/tmp}/reedwire-tla.XXXXXX")
+meta=$(mktemp -d "${TMPDIR:-/tmp}/pondline-tla.XXXXXX")
 trap 'rm -rf "$meta"' EXIT INT TERM
 
 cd "$here" || exit 2

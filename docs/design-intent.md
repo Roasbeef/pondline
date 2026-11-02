@@ -1,11 +1,11 @@
-# Implementation handoff: Reedwire
+# Implementation handoff: Pondline
 ## Design intent, architectural context, and implementation guidance
 
-**Working name:** Reedwire. The name is provisional; no domain, package, or trademark clearance has been established.
+**Working name:** Pondline. The name is provisional; no domain, package, or trademark clearance has been established.
 
 **Project status:** Architecture and specification stage. This discussion has not established a working implementation, completed security review, production deployment, or measured performance.
 
-**Companion document:** *Reedwire: Core System Specification, Version 0.1.* That document describes the proposed protocol and state transitions. This handoff explains the motivations, decisions, tradeoffs, and implementation priorities behind them.
+**Companion document:** *Pondline: Core System Specification, Version 0.1.* That document describes the proposed protocol and state transitions. This handoff explains the motivations, decisions, tradeoffs, and implementation priorities behind them.
 
 ---
 
@@ -151,7 +151,7 @@ An invitation is **data**, not a script. It must not contain executable installa
 
 The customer tells its existing agent:
 
-> “Install Reedwire from its official distribution and join this session. Help diagnose the issue. Ask before changing anything.”
+> “Install Pondline from its official distribution and join this session. Help diagnose the issue. Ask before changing anything.”
 
 Installation should provide the daemon, CLI, required runtime, and native libraries. Users should not separately configure Erlang, Rust, Tor, or NIF loading.
 

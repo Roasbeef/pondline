@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Reedwire's own lint: the house rules `gleam check` and `gleam format` do not
+Pondline's own lint: the house rules `gleam check` and `gleam format` do not
 know about. Gleam ships no lint command — the compiler checks types and
 the formatter arranges bytes, and neither has an opinion about whether an
 eagerly-evaluated fallback is expensive, how deep a `case` may nest, or
@@ -216,7 +216,7 @@ wrote ourselves. Nothing here is a security control.
   `@external` scan), `simplifile` (file and manifest discovery), `argv`, and
   for the affected-gate selector `tom` (`gleam.toml` parsing) and
   `gleam_regexp` (path literals); `qcheck` is a dev dependency of its
-  properties. **No Reedwire package**, in either direction —
+  properties. **No Pondline package**, in either direction —
   `lint` is a developer tool, not part of any plane, and nothing in the
   harness may call it.
 - **Depended on by**: nothing. `scripts/lint.sh` runs it, `make lint`
@@ -344,7 +344,7 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   see below.
 - **R4 `panic-in-src`** — `panic` or `let assert` outside `test/`, and
   outside the `src/` of a package `policy.harness_packages` names.
-  Reedwire policy forbids both; nothing else enforced it. The exemption is
+  Pondline policy forbids both; nothing else enforced it. The exemption is
   `conformance`, a test harness that compiles as a library, and it is
   about *presence* only: Part IV rule 3 also demands an `as "message"` on
   every admitted `let assert`, none of those ninety carries one, and no
@@ -375,7 +375,7 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   doc always gave), and the three stay compilable to the JavaScript
   target (the reason nothing gave until issue loom#92). The rule names **no
   target**: an Erlang external ends the portability, a JavaScript one
-  breaks the BEAM build Reedwire ships on, and a matched pair still puts
+  breaks the BEAM build Pondline ships on, and a matched pair still puts
   trusted-unchecked foreign code where the purity claim is. The
   `@external` half reads tokens rather than the AST so that an external
   in a file `glance` cannot parse is still reported rather than reduced
@@ -526,9 +526,9 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   can try a candidate before it is admitted.
 - **R16 `qualified-domain-call`** (`lint/qualified`, issue loom#593) — an
   unqualified *value* import (`import a/b.{name}`, `name` lowercase) from
-  one of Reedwire's own modules, where the qualifier is the closest thing
+  one of Pondline's own modules, where the qualifier is the closest thing
   Gleam has to a method receiver. Types and constructors never flag.
-  "Reedwire's own" is `project_roots`, the first path segment of every module in
+  "Pondline's own" is `project_roots`, the first path segment of every module in
   `packages/*/src`; a test reads the tree and fails if the list drifts.
   The MCP SDK does not collide with the `mcp` root, because its modules
   live under `gleam_mcp/`. `allowed` is the `#(module, name)` escape for a

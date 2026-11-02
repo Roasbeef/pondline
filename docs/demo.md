@@ -16,9 +16,9 @@ Options: `--skip-build` reuses the shipments from an earlier run, `--keep`
 leaves the temporary workspace (logs, databases) for inspection.
 
 `--release DIR` runs the demo from a release tree instead of the
-shipments, with nothing built: `build/release/<platform>/reedwire` after
+shipments, with nothing built: `build/release/<platform>/pondline` after
 `make release`, an unpacked `make dist` tarball, or an installed copy
-(`--release ~/.local/lib/reedwire/current` after `make install`). Every
+(`--release ~/.local/lib/pondline/current` after `make install`). Every
 program, the agents' CLI included, then runs on the tree's own Erlang
 runtime and OpenSSL, the Tor sidecar is the tree's, and the sandbox is
 given the tree in place of the host's Erlang. With `--carrier=loopback`
@@ -53,7 +53,7 @@ what bounds B's tasks, and the demo can show messages being held.
 3. **Pairing.** A creates an invitation (it carries the post-quantum key
    bundle), B accepts, A's operator approves. Both sides become `active`
    through messages that cross the mailbox. The invitation moves out of
-   band as a ticket by default (ADR-009): A prints a short `rw1` string,
+   band as a ticket by default (ADR-009): A prints a short `pl1` string,
    and B redeems it on standard input, fetching the sealed invitation
    from the mailbox. `--pairing=file` moves the invitation file instead.
 4. **Sandbox.** Probes run inside each agent's sandbox: it can use the

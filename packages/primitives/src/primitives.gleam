@@ -1,4 +1,4 @@
-//// The cryptographic primitives Reedwire builds its protocols from, taken
+//// The cryptographic primitives Pondline builds its protocols from, taken
 //// from OTP's `crypto` application rather than written here or pulled in
 //// through a native library (`docs/adr/002-pq-crypto-over-otp.md`).
 ////

@@ -1,4 +1,4 @@
-(* Reedwire CryptoProfileV1 pairing handshake, modelled as the code runs it.
+(* Pondline CryptoProfileV1 pairing handshake, modelled as the code runs it.
  *
  * This file is the ProVerif source of every model under formal/crypto. It is
  * preprocessed with cpp (check.sh does it) so that one text carries the
@@ -74,13 +74,13 @@ free c: channel.
 table invitations(bitstring).
 
 (* The domain separation strings of docs/crypto-profile-v1.md section 9. *)
-const label_binding: bitstring.    (* Reedwire_IdentityBinding_v1 *)
-const label_spk: bitstring.        (* Reedwire_SignedPrekey_v1 *)
-const label_pqspk: bitstring.      (* Reedwire_PQSignedPrekey_v1 *)
-const label_transcript: bitstring. (* Reedwire_InitiatorTranscript_v1 *)
-const label_pqxdh: bitstring.      (* Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1 *)
-const label_ratchet: bitstring.    (* Reedwire_Ratchet_v1 *)
-const label_mkeys: bitstring.      (* Reedwire_MessageKeys_v1 *)
+const label_binding: bitstring.    (* Pondline_IdentityBinding_v1 *)
+const label_spk: bitstring.        (* Pondline_SignedPrekey_v1 *)
+const label_pqspk: bitstring.      (* Pondline_PQSignedPrekey_v1 *)
+const label_transcript: bitstring. (* Pondline_InitiatorTranscript_v1 *)
+const label_pqxdh: bitstring.      (* Pondline_PQXDH_X25519_SHA-256_ML-KEM-1024_v1 *)
+const label_ratchet: bitstring.    (* Pondline_Ratchet_v1 *)
+const label_mkeys: bitstring.      (* Pondline_MessageKeys_v1 *)
 const version: bitstring.          (* the version byte 0x01 *)
 const kdf_prefix: bitstring.       (* 0xFF x 32 *)
 const zero_salt: bitstring.        (* 0x00 x 32 *)

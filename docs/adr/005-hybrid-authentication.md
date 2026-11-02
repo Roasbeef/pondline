@@ -11,7 +11,7 @@ requires both halves:
 
 - **Identity.** An identity is two signing keys, Ed25519 and ML-DSA-65,
   and an X25519 agreement key. Its binding is a hybrid signature over
-  `"Reedwire_IdentityBinding_v1" || ed25519_public || mldsa65_public ||
+  `"Pondline_IdentityBinding_v1" || ed25519_public || mldsa65_public ||
   x25519_public`, so it binds the two signing keys to each other as well
   as to the agreement key. A public identity is 5389 bytes, and the
   fingerprint (SHA-256 of it) covers all three keys.
@@ -20,7 +20,7 @@ requires both halves:
   bundle is 13736 bytes.
 - **Initiator.** The joiner signs the handshake transcript with both of
   its signing keys and sends the pair in the `InitialMessage`. The
-  transcript is `"Reedwire_InitiatorTranscript_v1" || version || AD ||
+  transcript is `"Pondline_InitiatorTranscript_v1" || version || AD ||
   bundle_commitment || EK || CT || ratchet_message`, with `AD =
   encode(IK_init) || encode(IK_resp)`: every field of the initial message
   except the signature, plus the responder's identity. The responder
@@ -48,7 +48,7 @@ with Ed25519 alone, and the joiner was authenticated only through DH1, an
 X25519 agreement. A quantum adversary active during pairing could forge an
 inviter's bundle or impersonate a joiner. Recorded traffic stays safe
 either way, since `SK` mixes ML-KEM, but pairing is the one moment two
-agents establish who the other is, and Reedwire has no later step that
+agents establish who the other is, and Pondline has no later step that
 re-establishes it. A relationship whose identities were forged at pairing
 stays forged. So the owner ruled (2026-11-01) that authentication is hybrid
 from day one rather than retrofitted, since retrofitting means a new
@@ -195,3 +195,7 @@ has such a key, every identity is also bound to an ML-DSA-65 key, and no trust
 derives from an Ed25519 key alone. The test suite pins the behaviour, so a
 library change that altered it is noticed. Revisit if any feature compares
 Ed25519 keys on their own, such as a directory or a pin.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

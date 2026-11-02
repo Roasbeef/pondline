@@ -22,7 +22,7 @@ if [ -z "${DOTNET_ROOT:-}" ] && [ -d "$HOME/.dotnet" ]; then
 fi
 
 seed=20261101
-dll="PGenerated/PChecker/net8.0/Reedwire.dll"
+dll="PGenerated/PChecker/net8.0/Pondline.dll"
 
 # Case, schedule budget, and the report that must come back: a liveness
 # monitor's name, or the assertion text of the safety monitor (P reports a

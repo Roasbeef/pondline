@@ -57,7 +57,7 @@ process.
   the 32-byte provisioning capability to a new 0600 file, prints the path
   only, never overwrites). Bad arguments print one line and exit 1.
   `--version` prints the build's identity (`mailbox/build`, the same shape
-  as `daemon/build`: `REEDWIRE_BUILD_VERSION` and `REEDWIRE_BUILD_COMMIT`
+  as `daemon/build`: `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`
   from the release launcher, `dev` and `unknown` from source).
 - `mailbox/internal/ffi_system`: the wall clock, a monotonic clock for
   durations, an exclusive 0600 file create, the environment and `halt`
@@ -82,7 +82,7 @@ the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
 ## Traffic
 
 - Client to server: `POST /v1/mailbox`, body a TLV `Request`
-  (`application/vnd.reedwire.mailbox+tlv`, `Content-Length` required). Every
+  (`application/vnd.pondline.mailbox+tlv`, `Content-Length` required). Every
   protocol outcome, refusals included, is `200` with a TLV `Response`; an
   undecodable body is `Refused(Malformed | UnsupportedVersion | TooLarge)`.
   HTTP statuses are only for the transport: `413` when `Content-Length`
@@ -148,7 +148,7 @@ the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
   dies with it. The Tor state directory holds the service key and its path
   must be short (a Unix socket lives in it). The service exists before Tor
   can reach it; a client retries (ADR-001). The onion path is tested only
-  with `REEDWIRE_TOR_NETWORK=1`.
+  with `PONDLINE_TOR_NETWORK=1`.
 - The server binds `127.0.0.1` by default and the binary offers no other
   interface.
 - The sweep period is armed only by `actor.periodic`; the handler never

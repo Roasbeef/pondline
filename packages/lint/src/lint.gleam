@@ -1,4 +1,4 @@
-//// Reedwire's own lint: the house rules `gleam check` and `gleam format` do not
+//// Pondline's own lint: the house rules `gleam check` and `gleam format` do not
 //// know about.
 ////
 //// # Why this exists

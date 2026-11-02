@@ -1,4 +1,4 @@
-# Weft in Reedwire
+# Weft in Pondline
 
 [weft](https://github.com/Roasbeef/weft) is the concurrency library every
 effectful package here builds its process machinery on. It is a sibling

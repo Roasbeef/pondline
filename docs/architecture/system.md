@@ -1,6 +1,6 @@
 # System Architecture
 
-Reedwire moves an end-to-end encrypted message from one agent's daemon to
+Pondline moves an end-to-end encrypted message from one agent's daemon to
 another's through a mailbox that stores only padded ciphertext. This
 document shows how the packages and operating-system processes fit
 together, how one message travels from the local API of the sender to the
@@ -38,7 +38,7 @@ flowchart BT
     mbx["mailbox<br/>coordinator, notifier, sweeper, mist"]
     dmn["daemon<br/>store, engine, workers, local API, CLI"]
     sim["sim<br/>deterministic simulation harness"]
-    lint["lint<br/>source linter, no Reedwire dependency"]
+    lint["lint<br/>source linter, no Pondline dependency"]
     weft(["weft<br/>external git dependency"])
 
     prim --> core
@@ -90,16 +90,16 @@ Tor. The CLI is a short-lived BEAM that talks to a running daemon.
 ```mermaid
 flowchart LR
     agent["agent adapter<br/>or operator shell"]
-    cli["reedwire send, receive, ack ...<br/>(reedwire.gleam, short-lived)"]
+    cli["pondline send, receive, ack ...<br/>(pondline.gleam, short-lived)"]
 
-    subgraph D["BEAM: reedwire daemon (cli_run.run_daemon)"]
+    subgraph D["BEAM: pondline daemon (cli_run.run_daemon)"]
         direction TB
         lapi["local_api server<br/>api.sock acceptor"]
         dtree["daemon/node supervisor tree"]
         dtor["tor port owner<br/>(carrier)"]
     end
 
-    sidecarD["reedwire-tor<br/>(native/reedwire-tor, Arti)"]
+    sidecarD["pondline-tor<br/>(native/pondline-tor, Arti)"]
 
     subgraph M["BEAM: mailbox serve (mailbox.gleam)"]
         direction TB
@@ -108,7 +108,7 @@ flowchart LR
         mtor["tor port owner<br/>(host_onion)"]
     end
 
-    sidecarM["reedwire-tor<br/>(onion service 'mailbox')"]
+    sidecarM["pondline-tor<br/>(onion service 'mailbox')"]
     db1[("daemon.db<br/>SQLite, WAL")]
     db2[("mailbox SQLite file<br/>WAL")]
     net(["Tor network"])
@@ -137,7 +137,7 @@ mailbox never sees a client address, because its only listener is bound to
 ([ADR-001](../adr/001-tor-sidecar.md)).
 
 The `daemon` command runs the daemon tree and the local API in one BEAM.
-Every other `reedwire` command is a client: it connects to `api.sock` in the
+Every other `pondline` command is a client: it connects to `api.sock` in the
 state directory, sends one request line and prints the reply
 (`daemon/cli_run.gleam`, `daemon/local_api_client.gleam`). The state
 directory is mode `0700` and the socket `0600`; a scoped credential
@@ -206,7 +206,7 @@ The sender's half runs from the local API to a stored envelope.
 ```mermaid
 sequenceDiagram
     autonumber
-    participant Op as reedwire send (CLI)
+    participant Op as pondline send (CLI)
     participant L as local_api
     participant E as engine
     participant S as store
@@ -437,13 +437,13 @@ above rests on idempotence.
 
 - Nothing here was run. Timeouts, tick periods and limits are read from
   constants in the code, and no behavior was confirmed by executing it.
-- The Rust sidecar (`native/reedwire-tor`) is shown only as a process; its
+- The Rust sidecar (`native/pondline-tor`) is shown only as a process; its
   internals and the exact frame format are in `tor/internal/codec` and
-  `native/reedwire-tor/src/frame.rs`.
+  `native/pondline-tor/src/frame.rs`.
 - The core state machines (`core/relationship`, `core/offer`, `core/frame`)
   and the crypto layer are described by their module docs and the spec, and
   are not diagrammed here.
 - The onion path with a real sidecar is tested only with
-  `REEDWIRE_TOR_NETWORK=1` and was not exercised by this document.
+  `PONDLINE_TOR_NETWORK=1` and was not exercised by this document.
 - `packages/*/README.md` pages are written separately; links to them depend
   on those files existing.

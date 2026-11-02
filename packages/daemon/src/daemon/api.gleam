@@ -337,7 +337,7 @@ pub fn supervisor(daemon: Daemon) -> Pid {
 ///
 /// ```gleam
 /// api.state_dir(daemon)
-/// // -> "/var/lib/reedwire"
+/// // -> "/var/lib/pondline"
 /// ```
 pub fn state_dir(daemon: Daemon) -> String {
   daemon.state_dir

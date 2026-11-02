@@ -1,4 +1,4 @@
-//// Installs Reedwire's handler: one logfmt stream on standard error, with
+//// Installs Pondline's handler: one logfmt stream on standard error, with
 //// OTP's own reports scrubbed.
 ////
 //// An entry point calls `install` (or `install_from_env`) before it starts
@@ -13,7 +13,7 @@
 //// error**, formatted by `telemetry_ffi:format/2`, and sets the primary
 //// level. Standard error because standard output is a protocol here: the
 //// mailbox prints `listening` and `onion` lines a launcher parses, and
-//// `reedwire receive --raw` writes payload bytes there. Below `debug`, a
+//// `pondline receive --raw` writes payload bytes there. Below `debug`, a
 //// filter drops OTP's progress reports (a child started), which say nothing
 //// an operator acts on.
 ////
@@ -31,7 +31,7 @@ import telemetry/level.{type Level}
 
 /// The environment variable an operator sets to choose the threshold:
 /// `debug`, `info`, `warning` or `error` (`level.parse`).
-pub const level_variable = "REEDWIRE_LOG_LEVEL"
+pub const level_variable = "PONDLINE_LOG_LEVEL"
 
 /// Installs the handler at `threshold`. Idempotent: a second call
 /// replaces the same configuration, which is what a second test does.
@@ -48,7 +48,7 @@ pub fn install(threshold: Level) -> Result(Nil, Nil) {
   ffi_logger.install(threshold)
 }
 
-/// Installs the handler at the threshold `REEDWIRE_LOG_LEVEL` names, or
+/// Installs the handler at the threshold `PONDLINE_LOG_LEVEL` names, or
 /// `info`, and returns the threshold it used.
 ///
 /// ## Examples

@@ -51,7 +51,7 @@ command -v sqlite3 >/dev/null || {
 
 # One scratch directory for every package's database and log, removed however
 # the script ends.
-scratch="$(mktemp -d -t reedwire-gen-sql-XXXXXX)"
+scratch="$(mktemp -d -t pondline-gen-sql-XXXXXX)"
 trap 'rm -rf "$scratch"' EXIT
 
 gen_package() {

@@ -5,7 +5,7 @@ import tor/internal/codec.{
   UnknownFailure, UnknownTag,
 }
 
-// These vectors are the same bytes that `native/reedwire-tor/src/frame.rs`
+// These vectors are the same bytes that `native/pondline-tor/src/frame.rs`
 // decodes and encodes in its own tests; if one side changes, both fail.
 
 pub fn encode_bootstrap_test() {

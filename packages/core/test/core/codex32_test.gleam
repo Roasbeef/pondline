@@ -45,7 +45,7 @@ pub fn the_prefix_is_covered_by_the_checksum_test() {
   let data = symbols(vector_data)
   let whole = list.append(data, codex32.checksum("ms", data))
 
-  assert !codex32.verify("rw", whole)
+  assert !codex32.verify("pl", whole)
 }
 
 /// Uppercase, characters outside the alphabet and separators are not
@@ -81,9 +81,9 @@ pub fn the_codeword_length_bound_is_exact_test() {
   let over = [7, ..longest]
 
   assert codex32.verify(
-    "rw",
-    list.append(longest, codex32.checksum("rw", longest)),
+    "pl",
+    list.append(longest, codex32.checksum("pl", longest)),
   )
-  assert !codex32.verify("rw", list.append(over, codex32.checksum("rw", over)))
+  assert !codex32.verify("pl", list.append(over, codex32.checksum("pl", over)))
   assert string.length(codex32.alphabet) == 32
 }

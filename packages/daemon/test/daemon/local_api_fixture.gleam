@@ -91,7 +91,7 @@ pub fn scratch_dir() -> String {
   }
   let suffix = bit_array.base16_encode(primitives.random_bytes(5))
 
-  base <> "/rw-" <> string.lowercase(suffix)
+  base <> "/pl-" <> string.lowercase(suffix)
 }
 
 /// Starts a fake and a server over it, runs `body`, and cleans up.
@@ -177,7 +177,7 @@ pub fn deliver(fake: Fake, delivery: Delivery) -> Nil {
 
 /// The ticket the fake backend issues. Not a valid ticket: the fake only
 /// carries it through.
-pub const fake_ticket = "rw1faketicketfortheapitests"
+pub const fake_ticket = "pl1faketicketfortheapitests"
 
 /// A backend that records each call and answers with fixed values.
 pub fn backend(fake: Fake) -> Backend {

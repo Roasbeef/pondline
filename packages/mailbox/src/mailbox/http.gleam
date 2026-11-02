@@ -69,7 +69,7 @@ import telemetry/field
 import telemetry/log
 
 /// The media type of every request and response body.
-pub const media_type = "application/vnd.reedwire.mailbox+tlv"
+pub const media_type = "application/vnd.pondline.mailbox+tlv"
 
 /// How long `start` waits for the listener to report its port. mist runs
 /// `after_start` before `mist.start` returns, so the report is already in

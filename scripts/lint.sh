@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# lint.sh — Reedwire's own lint over the Gleam sources.
+# lint.sh — Pondline's own lint over the Gleam sources.
 #
 # Usage: scripts/lint.sh [options] [path...]   (default: every packages/*/src)
 #
@@ -11,7 +11,7 @@
 # undivided block, R12 a closure capturing a whole value for its fields, and
 # the orientation rules of loom#593: R13 a large module's `## Flow` spine,
 # R14 a transition table checked against its type, R15 state-machine types
-# before the first function, R16 an unqualified import of a Reedwire function,
+# before the first function, R16 an unqualified import of a Pondline function,
 # and the censuses R17 (call-flow order) and R18 (short helpers the module doc
 # never names); `packages/lint/CLAUDE.md` says what each is for. Two rules
 # read `test/` rather than `src/`: R19 a SKIP diagnostic printed to stdout,

@@ -118,7 +118,7 @@ type Data {
 /// ## Examples
 ///
 /// ```gleam
-/// carrier.start(name, status, Some("/opt/reedwire/reedwire-tor"), dir, timer.WallClock)
+/// carrier.start(name, status, Some("/opt/pondline/pondline-tor"), dir, timer.WallClock)
 /// // -> Ok(started)
 /// ```
 pub fn start(

@@ -1,11 +1,11 @@
-//// The control protocol between this package and the `reedwire-tor`
+//// The control protocol between this package and the `pondline-tor`
 //// sidecar: requests out, events back.
 ////
 //// Why a hand-written binary encoding: the channel carries five event
 //// shapes and two request shapes, each with a few small fields, and both
 //// ends must decode *totally*. Every byte string yields a value or a typed
 //// `DecodeError`, never a crash and never a partial result. The Rust side
-//// (`native/reedwire-tor/src/frame.rs`) holds the matching decoder and
+//// (`native/pondline-tor/src/frame.rs`) holds the matching decoder and
 //// carries the same golden vectors as `test/tor/codec_test.gleam`.
 ////
 //// The Erlang port is opened with `{packet, 4}`, so the 4-byte big-endian

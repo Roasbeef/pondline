@@ -2,7 +2,7 @@
 //// bound to an X25519 agreement key.
 ////
 //// Signal's X3DH uses one Curve25519 key for both agreement and signing
-//// through XEdDSA. Reedwire keeps separate keys instead (`docs/review/
+//// through XEdDSA. Pondline keeps separate keys instead (`docs/review/
 //// 2026-10-31-design-review.md`, rulings): the signing keys sign, the
 //// X25519 key agrees, and a binding signature ties them together. The keys
 //// are generated fresh per relationship, so an identity says nothing about
@@ -37,7 +37,7 @@ pub const public_identity_bytes = 5389
 
 /// The domain-separation label of the binding signature, which signs this
 /// label followed by the Ed25519, ML-DSA-65 and X25519 public keys.
-pub const binding_label = <<"Reedwire_IdentityBinding_v1":utf8>>
+pub const binding_label = <<"Pondline_IdentityBinding_v1":utf8>>
 
 /// The public half of an identity, with a binding signature that has been
 /// verified: either it came from `generate`, or `decode_public` checked it.
@@ -112,7 +112,7 @@ pub fn generate(suite: Suite) -> Result(Identity, Error) {
 ///
 /// ```gleam
 /// identity.binding_message(ed25519_public, mldsa_public, x25519_public)
-/// // -> <<"Reedwire_IdentityBinding_v1", ..>>
+/// // -> <<"Pondline_IdentityBinding_v1", ..>>
 /// ```
 pub fn binding_message(
   signing: Ed25519Public,

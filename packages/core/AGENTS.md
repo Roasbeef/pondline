@@ -49,7 +49,7 @@ primitive functions the shell builds from `packages/primitives`.
   long codex32 BCH checksum (fifteen symbols, any eight substitutions
   detected up to 1023 symbols), and strict byte/5-bit regrouping.
 - `core/ticket` (ADR-009): `Ticket` (an endpoint and a 32-byte secret `K`,
-  opaque), `encode`/`decode` of the `rw1` text (130 characters onion, 74
+  opaque), `encode`/`decode` of the `pl1` text (130 characters onion, 74
   loopback), `keys` (locator, retrieve capability, AEAD key and nonce,
   commitment key, each under its own HKDF label), `seal` and `open` (the
   AEAD, then the HMAC commitment to the plaintext).
@@ -184,7 +184,7 @@ None. `core` sends no messages and owns no processes.
   `gleam test` once, then
   `erl -noshell -pa build/dev/erlang/*/ebin -eval 'core@swarm:campaign(5000, 7), halt().'`
   (prints the seed and run index of the first failure); replay one seed
-  with `REEDWIRE_REPLAY=<hex> gleam test` or
+  with `PONDLINE_REPLAY=<hex> gleam test` or
   `core@swarm:replay("<hex>")`.
 - `core/tlv`, `limits.padded_size`, `envelope.pad`/`unpad`/`from_wire`,
   `retention.offers` and `retransmit.due_at` are transcribed into Lean and

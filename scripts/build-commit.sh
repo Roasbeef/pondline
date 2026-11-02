@@ -1,7 +1,7 @@
 #!/bin/sh
 #
 # Print the commit this source tree was built from, for the build identity
-# a release reports (`reedwire --version`, `mailbox --version`, the
+# a release reports (`pondline --version`, `mailbox --version`, the
 # `version` and `commit` fields of `health`; ADR-003 addendum).
 #
 # A git checkout or worktree answers with its HEAD, followed by `-dirty`

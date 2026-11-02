@@ -1,6 +1,6 @@
 # Tor Architecture
 
-The `tor` package gives the rest of Reedwire outbound onion streams and onion-service hosting without linking Arti into the VM. Arti runs in `reedwire-tor`, a separate OS process (`native/reedwire-tor`). One `weft/state_machine` in this package owns that process's Erlang port, relays typed requests to it, and restarts it when it dies. This document describes who owns which state, how a request reaches the sidecar and comes back, and how an outbound stream bypasses the machine. It reflects the code at `632db2f`.
+The `tor` package gives the rest of Pondline outbound onion streams and onion-service hosting without linking Arti into the VM. Arti runs in `pondline-tor`, a separate OS process (`native/pondline-tor`). One `weft/state_machine` in this package owns that process's Erlang port, relays typed requests to it, and restarts it when it dies. This document describes who owns which state, how a request reaches the sidecar and comes back, and how an outbound stream bypasses the machine. It reflects the code at `632db2f`.
 
 The decision and its measurements are in [ADR-001](../../docs/adr/001-tor-sidecar.md). The spec sections it implements are §6.1, §10.3 to §10.5 and §13.1 of [spec.md](../../docs/spec.md). The state machine library is described in [weft.md](../../docs/weft.md). The package's short reference is [CLAUDE.md](CLAUDE.md); this document is the longer map behind it. The Rust side is covered only where the boundary needs it.
 
@@ -31,7 +31,7 @@ flowchart TB
         ffisock["tor/internal/ffi_socket<br/>tor_ffi.erl"]
     end
 
-    subgraph Sidecar["reedwire-tor (native/reedwire-tor)"]
+    subgraph Sidecar["pondline-tor (native/pondline-tor)"]
         direction TB
         ctl["main.rs control_loop<br/>frame.rs"]
         out["connect.rs accept_loop<br/>connect.sock"]
@@ -55,7 +55,7 @@ flowchart TB
     ctl --> host
 ```
 
-The machine never sees stream bytes. A slow stream cannot delay a control frame, and a control frame cannot delay a stream. The sidecar accepts streams only after it has sent `Ready` (`native/reedwire-tor/src/main.rs:222`), so a caller that has seen `start` return can connect.
+The machine never sees stream bytes. A slow stream cannot delay a control frame, and a control frame cannot delay a stream. The sidecar accepts streams only after it has sent `Ready` (`native/pondline-tor/src/main.rs:222`), so a caller that has seen `start` return can connect.
 
 | Package or type | Owns | Does not own |
 | --- | --- | --- |
@@ -65,7 +65,7 @@ The machine never sees stream bytes. A slow stream cannot delay a control frame,
 | `tor/address` | The only constructors for a destination: `OnionAddress` (v3 shape) and `Port` (1 to 65535). No constructor accepts a clearnet host. | Checksum or version verification, which Arti performs on connect. |
 | `tor/internal/codec` | The control frame encoding and total decoding. | Request ids; the machine allocates them. |
 | `tor/internal/ffi_port`, `ffi_socket`, `src/tor_ffi.erl` | The externals. Every exported Erlang function catches every exception and returns `{ok, X}` or `{error, Reason}`. | Policy. They decide nothing. |
-| `reedwire-tor` | Arti, the state directory contents, the `connect.sock` listener, onion service forwarding to `127.0.0.1:local_port`, and the sidecar's own limits. | Restart policy, request matching, the typed error model. |
+| `pondline-tor` | Arti, the state directory contents, the `connect.sock` listener, onion service forwarding to `127.0.0.1:local_port`, and the sidecar's own limits. | Restart policy, request matching, the typed error model. |
 
 ## Startup
 
@@ -78,7 +78,7 @@ sequenceDiagram
     participant S as tor.start
     participant M as Machine (init, handle, entered)
     participant P as ffi_port.open_sidecar
-    participant R as reedwire-tor
+    participant R as pondline-tor
 
     App->>S: start(Config)
     S->>M: start_machine, sm.start
@@ -175,7 +175,7 @@ flowchart LR
 
 `tor/internal/codec` defines seven message shapes after the VM strips the 4-byte length prefix: requests `0x01 Bootstrap`, `0x02 HostOnion`, `0x03 Shutdown`, and events `0x81 Bootstrapped`, `0x82 OnionReady`, `0x83 Failed`, `0x90 Ready`, `0x91 ServiceStatus` (module doc, `src/tor/internal/codec.gleam:17`). Integers are big-endian and a string is a `u16` length plus UTF-8. Decoding is total: every byte string gives an `Event` or a `DecodeError` (`EmptyPayload`, `UnknownTag`, `Malformed`, `BadUtf8`), and trailing bytes are `Malformed`.
 
-The machine treats an undecodable frame as a protocol disagreement. It closes the port and takes the restart path with status -1 (`src/tor.gleam:807`). Status -2 means the ready timeout fired and -3 means an orderly `Stop`; real exit statuses come from `exit_status`. The Rust decoder is in `native/reedwire-tor/src/frame.rs`, with `MAX_FRAME` of 64 KiB (line 51) and `MAX_TEXT` of 1024 bytes (line 54). Both ends are tested against the same golden vectors (`test/tor/codec_test.gleam`).
+The machine treats an undecodable frame as a protocol disagreement. It closes the port and takes the restart path with status -1 (`src/tor.gleam:807`). Status -2 means the ready timeout fired and -3 means an orderly `Stop`; real exit statuses come from `exit_status`. The Rust decoder is in `native/pondline-tor/src/frame.rs`, with `MAX_FRAME` of 64 KiB (line 51) and `MAX_TEXT` of 1024 bytes (line 54). Both ends are tested against the same golden vectors (`test/tor/codec_test.gleam`).
 
 ## Outbound streams
 
@@ -216,7 +216,7 @@ The sidecar enforces its own limits, none stress-tested according to ADR-001: `M
 
 ## The sidecar's lifetime
 
-The sidecar exits when its stdin reaches end of file (`native/reedwire-tor/src/main.rs:20`). The port is owned by the machine, so a machine that dies closes the port and the sidecar exits. In the other direction, a sidecar that dies is reported as a `PortExit` message, and the machine restarts it itself rather than leaving that to a supervisor, which would drop subscribers and pending requests.
+The sidecar exits when its stdin reaches end of file (`native/pondline-tor/src/main.rs:20`). The port is owned by the machine, so a machine that dies closes the port and the sidecar exits. In the other direction, a sidecar that dies is reported as a `PortExit` message, and the machine restarts it itself rather than leaving that to a supervisor, which would drop subscribers and pending requests.
 
 ```mermaid
 flowchart TB
@@ -258,13 +258,13 @@ The backoff is linear: `200 * restarts` ms (`src/tor.gleam:331`), so a crash loo
 | Caller of `bootstrap` or `host_onion` | Its own reply `Subject` and its deadline. Sends `Abandon*` when it gives up. |
 | Caller of `connect` | The `Stream` it opened, its socket and the handshake. |
 | Subscriber | A `Subject(Event)`. Events are sent as they happen and are not replayed. |
-| `reedwire-tor` (OS process) | Arti, the state directory, `connect.sock`, forwarding to `127.0.0.1:local_port`. |
+| `pondline-tor` (OS process) | Arti, the state directory, `connect.sock`, forwarding to `127.0.0.1:local_port`. |
 
 The machine is the only process that touches `pending`, so replies and abandons cannot race. A caller that times out cannot know whether the sidecar acted: `Timeout` means only that the caller stopped waiting. `shutdown` asks the machine to stop and returns once it has sent `Shutdown` and closed the port (`src/tor.gleam:566`); the OS process may take a moment longer to disappear. The `ask` helper used by `start`, `sidecar_pid` and `shutdown` has no abandon message because none of those requests leaves a pending entry (`src/tor.gleam:418`).
 
 ## Tests
 
-`test/tor/codec_test.gleam` runs the golden vectors and a totality check over generated garbage. `test/tor/lifecycle_test.gleam` uses shell-script stand-ins for the sidecar: one that never reports ready, one that exits at once, and one that checks the `start` wait covers the backoff. `test/tor/sidecar_test.gleam` runs the real binary without the network: refusals, `Shutdown`, exit on port close, and recovery from `kill -9`. The live-network spike (`test/tor/network_spike_test.gleam`, run through `test/tor_slow_test.erl`) is gated by `REEDWIRE_TOR_NETWORK`, and the binary is found through `REEDWIRE_TOR_BIN` (`test/tor/support.gleam`).
+`test/tor/codec_test.gleam` runs the golden vectors and a totality check over generated garbage. `test/tor/lifecycle_test.gleam` uses shell-script stand-ins for the sidecar: one that never reports ready, one that exits at once, and one that checks the `start` wait covers the backoff. `test/tor/sidecar_test.gleam` runs the real binary without the network: refusals, `Shutdown`, exit on port close, and recovery from `kill -9`. The live-network spike (`test/tor/network_spike_test.gleam`, run through `test/tor_slow_test.erl`) is gated by `PONDLINE_TOR_NETWORK`, and the binary is found through `PONDLINE_TOR_BIN` (`test/tor/support.gleam`).
 
 ## Known gaps
 

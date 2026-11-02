@@ -590,6 +590,6 @@ pub fn pqxdh_shared_secret_known_answer_test() {
     )
   assert secret.expose(shared)
     == <<
-      0x6fba3e33d9b8711d0c4d6c4cd0a02a835617f0313bfe5f74992c5fb903b75473:size(256),
+      0x3ead1ec7a28aaab8448c828a178f7cd6f772fc65336720a0670e066844066bc6:size(256),
     >>
 }

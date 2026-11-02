@@ -8,12 +8,12 @@
 # sandbox is not simply breaking everything: the agent can reach the daemon
 # with its own credential.
 #
-# Environment: REEDWIRE_RUNTIME, API_SOCK, AGENT_DIR, STATE_DIR.
+# Environment: PONDLINE_RUNTIME, API_SOCK, AGENT_DIR, STATE_DIR.
 
 set -u
 
 here=$(dirname "$0")
-rw="$here/reedwire.sh"
+rw="$here/pondline.sh"
 
 # Prints `ok <name>` when the command fails, and `FAIL <name>` when it
 # succeeds. Output of the command is discarded.
@@ -41,16 +41,16 @@ must_fail "cannot read the original agent.cred" cat "$STATE_DIR/agent.cred"
 must_fail "cannot list the state directory" ls "$STATE_DIR"
 
 # So the operator credential cannot be used: the CLI cannot even open it.
-# The CLI is the release's launcher when REEDWIRE_RUNTIME is a release tree,
+# The CLI is the release's launcher when PONDLINE_RUNTIME is a release tree,
 # and the shipment on the host's erl otherwise.
-if [ -x "$REEDWIRE_RUNTIME/bin/reedwire" ]; then
-  set -- "$REEDWIRE_RUNTIME/bin/reedwire"
+if [ -x "$PONDLINE_RUNTIME/bin/pondline" ]; then
+  set -- "$PONDLINE_RUNTIME/bin/pondline"
 else
-  set -- erl -pa "$REEDWIRE_RUNTIME"/*/ebin \
-    -eval 'reedwire:main(), erlang:halt(0)' -noshell -extra
+  set -- erl -pa "$PONDLINE_RUNTIME"/*/ebin \
+    -eval 'pondline:main(), erlang:halt(0)' -noshell -extra
 fi
 must_fail "cannot use the operator credential" \
-  env REEDWIRE_CREDENTIAL_FILE="$STATE_DIR/operator.cred" \
+  env PONDLINE_CREDENTIAL_FILE="$STATE_DIR/operator.cred" \
   "$@" health --socket "$API_SOCK"
 
 # The agent's own credential is refused for operator actions, by the daemon.

@@ -1,9 +1,9 @@
-name = "reedwire-formal"
+name = "pondline-formal"
 version = "0.1.0"
-defaultTargets = ["Reedwire", "gen-vectors"]
+defaultTargets = ["Pondline", "gen-vectors"]
 
 [[lean_lib]]
-name = "Reedwire"
+name = "Pondline"
 
 [[lean_exe]]
 name = "gen-vectors"
