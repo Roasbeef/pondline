@@ -621,6 +621,10 @@ would want to know them.
    Evidence: the module doc of `invitation.gleam:5`, and row `base`, where
    Q5 holds with no join secret in the model.
 
+Where these went: finding 1's V2 binding and findings 6 and 7 are recorded in
+`docs/crypto-profile-v1.md` §10, finding 3 in its §8, findings 2 and 6 in the
+addendum to ADR-005, and finding 8 in ADR-013. Findings 4 and 5 need no change.
+
 ## Open gaps
 
 - **Post-compromise security of the ratchet** is not modelled: the model

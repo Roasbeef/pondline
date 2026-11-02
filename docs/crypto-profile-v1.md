@@ -314,6 +314,12 @@ What v1 provides:
   key agreement: `SK` is derived exactly as before.
 - **Forward secrecy and post-compromise security against a classical
   adversary**, from the Double Ratchet's DH steps and chain-key deletion.
+  Forward secrecy of `SK` itself rests on two things: retiring the prekeys
+  (`offer.consume` drops the secret stock once a `Hello` consumes the offer)
+  and the first DH ratchet step inside `respond`. Long-term identity keys
+  alone do not expose a past session, but if either of those two moved, a
+  recorded handshake plus a later disk image would yield the session key
+  (`docs/formal/crypto.md`, rows `fs_longterm` and `fs_prekeys`).
 - **Authenticated, replay-resistant, bounded-reordering delivery**, with
   every message bound to both identities through the associated data.
 
@@ -378,6 +384,17 @@ external test vectors for PQXDH or this ratchet, so correctness rests on the
 round-trip, tamper, replay, bound and persistence tests, a property suite
 over a deterministic fake, mutation checks, and review. Cross-implementation
 vectors remain to be produced if a second implementation is ever written.
+
+Queued for a `CryptoProfileV2`: bind `CT || PQSPK` into the handshake's HKDF
+`info`. Today those values are bound by the transcript signature and the signed
+bundle commitment, which the symbolic model shows is sufficient and necessary
+under the hybrid signatures; a KDF binding would also hold against a forger,
+and costs nothing on the wire (`docs/formal/crypto.md`, finding 1).
+
+Ed25519 verification is the RFC 8032 equation as OpenSSL implements it, and
+accepts small-order and mixed-order public keys; X25519 accepts non-canonical
+encodings. Both are decided and pinned by the Wycheproof tests (ADR-005,
+addendum).
 
 ## 11. Invitation tickets
 
