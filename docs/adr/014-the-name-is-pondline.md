@@ -1,6 +1,6 @@
 # ADR-014 — The project is named Pondline, on the wire as well as in the docs
 
-**Status**: accepted · **Date**: 2026-11-02 · **Spec ref**: §5, §7
+**Status**: accepted · **Date**: 2026-11-02 · **Spec ref**: §4.2, §5.2, §6.1
 
 ## Decision
 
