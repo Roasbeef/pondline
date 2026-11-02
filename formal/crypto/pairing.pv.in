@@ -1,0 +1,491 @@
+(* Reedwire CryptoProfileV1 pairing handshake, modelled as the code runs it.
+ *
+ * This file is the ProVerif source of every model under formal/crypto. It is
+ * preprocessed with cpp (check.sh does it) so that one text carries the
+ * faithful protocol, the adversary scenarios, and the intentionally broken
+ * variants. Every #ifdef below is either a scenario (what the attacker can
+ * do) or a mutation (what the protocol forgets to do); the faithful model is
+ * the text with no macro defined.
+ *
+ * The protocol modelled is the one in packages/core/src/core/crypto/pqxdh.gleam
+ * (initiate and respond), identity.gleam (the hybrid binding), ratchet.gleam
+ * (init_sender, init_receiver, encrypt, decrypt for the first two messages)
+ * and relationship.gleam (the Hello carried by the Initial frame and the
+ * Accept the inviter answers with). docs/formal/crypto.md says what is
+ * abstracted and why. The one deliberate departure from the code is that
+ * the Hello and the Accept are the only ratchet messages modelled; the
+ * model stops once the joiner has authenticated the Accept.
+ *
+ * Scenario macros (adversary capabilities):
+ *   BREAK_DH          the attacker computes any X25519 shared secret.
+ *   BREAK_ED          the attacker forges any Ed25519 signature.
+ *   BREAK_ML          the attacker forges any ML-DSA-65 signature.
+ *   BREAK_KEM         the attacker decapsulates any ML-KEM ciphertext.
+ *   WEAK_KEM          the KEM is not ciphertext-binding: the attacker can
+ *                     re-encapsulate a ciphertext into a different one with
+ *                     the same shared secret under the same key.
+ *   LEAK_INVITATION   the invitation file (the bundle) reaches the attacker.
+ *   REVEAL_LT         both parties publish their identity secrets after the
+ *                     session (phase 1).
+ *   REVEAL_PREKEYS    the inviter also publishes the prekey secrets after
+ *                     the session (phase 1), as if they were never retired.
+ *   REVEAL_LT_BEFORE  both parties publish their identity secrets before
+ *                     the session starts.
+ *   DH_EQUATION       use the commutative X25519 encoding instead of the
+ *                     oriented one (reference only; see the X25519 section).
+ *   ONLY=n            keep query n alone, for a run on one property.
+ *
+ * Mutation macros (protocol defects, each expected to produce an attack):
+ *   NO_TRANSCRIPT_SIG the inviter does not verify the transcript signature.
+ *   NO_CT_IN_SIG      the transcript signature does not cover CT.
+ *   CT_IN_KDF         the handshake KDF also takes CT and PQSPK (a repair,
+ *                     used together with NO_CT_IN_SIG).
+ *   ONE_HALF_ED       every hybrid check verifies the Ed25519 half only.
+ *   ONE_HALF_ML       every hybrid check verifies the ML-DSA-65 half only.
+ *   NO_AD             the session associated data is empty.
+ *)
+
+set attacker = active.
+#ifdef UNTYPED
+set ignoreTypes = true.
+#else
+set ignoreTypes = false.
+#endif
+
+(* ---------------------------------------------------------------- types *)
+
+type xsk.      (* X25519 secret *)
+type xpk_t.    (* X25519 public *)
+type edsk.     (* Ed25519 secret *)
+type edpk_t.   (* Ed25519 public *)
+type mlsk.     (* ML-DSA-65 secret *)
+type mlpk_t.   (* ML-DSA-65 public *)
+type kemsk.    (* ML-KEM-1024 decapsulation key *)
+type kempk_t.  (* ML-KEM-1024 encapsulation key *)
+type rand.     (* fresh randomness consumed by a hedged signature or a KEM *)
+
+free c: channel.
+
+(* The invitation file travels out of band and the mailbox never sees it.
+ * It is a table rather than a private channel: a table insert does not
+ * block the inviter, and ProVerif reconstructs attack traces through a
+ * table where it gives up on a private channel. A file, once written, can
+ * be read by any number of joiners, which the table also captures. *)
+table invitations(bitstring).
+
+(* The domain separation strings of docs/crypto-profile-v1.md section 9. *)
+const label_binding: bitstring.    (* Reedwire_IdentityBinding_v1 *)
+const label_spk: bitstring.        (* Reedwire_SignedPrekey_v1 *)
+const label_pqspk: bitstring.      (* Reedwire_PQSignedPrekey_v1 *)
+const label_transcript: bitstring. (* Reedwire_InitiatorTranscript_v1 *)
+const label_pqxdh: bitstring.      (* Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1 *)
+const label_ratchet: bitstring.    (* Reedwire_Ratchet_v1 *)
+const label_mkeys: bitstring.      (* Reedwire_MessageKeys_v1 *)
+const version: bitstring.          (* the version byte 0x01 *)
+const kdf_prefix: bitstring.       (* 0xFF x 32 *)
+const zero_salt: bitstring.        (* 0x00 x 32 *)
+const zero: bitstring.             (* the u32 0, as PN and N of a first message *)
+const one: bitstring.              (* HMAC input 0x01 *)
+const two: bitstring.              (* HMAC input 0x02 *)
+const empty_ad: bitstring.
+const accept_body: bitstring.      (* the Accept control message *)
+
+(* --------------------------------------------------------------- X25519 *)
+
+fun xpk(xsk): xpk_t.
+
+#ifdef DH_EQUATION
+(* The textbook encoding: one function with the commutativity equation.
+ * ProVerif does not finish any query that needs the inviter clause under
+ * it within an hour on this machine (the inviter computes four agreements
+ * against attacker-chosen keys, and each equation variant multiplies the
+ * clause), so it is kept for reference and not run by check.sh. *)
+fun dh(xsk, xpk_t): bitstring.
+equation forall a: xsk, b: xsk; dh(a, xpk(b)) = dh(b, xpk(a)).
+#define DHL(a, y) dh(a, y)
+#define DHR(b, x) dh(b, x)
+#ifdef BREAK_DH
+fun breakdh(xpk_t, xpk_t): bitstring
+reduc forall a: xsk, b: xsk; breakdh(xpk(a), xpk(b)) = dh(a, xpk(b)).
+#endif
+#else
+(* The encoding check.sh runs: an agreement is the term dhpk(J, R), where J
+ * is the public key on the joiner side of the computation and R the one on
+ * the inviter side, and it is computed from either secret (dhl by the holder
+ * of the left secret, dhr by the holder of the right one). This replaces
+ * the commutativity equation by an orientation. What it gives up is the
+ * identification of dhpk(X, Y) with dhpk(Y, X): an attack that needs an
+ * honest party to agree against a key in the opposite orientation from the
+ * one it was generated for is not representable. In this profile every
+ * X25519 key has one role for the life of the relationship (joiner identity,
+ * EK and joiner ratchet keys are always left operands; SPK, inviter identity
+ * and inviter ratchet keys always right operands) and the honest processes
+ * below only ever put their own secret on their own side, so no honest
+ * computation flips orientation. docs/formal/crypto.md records this as the
+ * one abstraction a reader must accept. dhpk is private: the attacker
+ * reaches an agreement only through dhl or dhr with a secret it holds, or
+ * through breakdh in the BREAK_DH scenario. *)
+fun dhpk(xpk_t, xpk_t): bitstring [private].
+fun dhl(xsk, xpk_t): bitstring
+reduc forall a: xsk, y: xpk_t; dhl(a, y) = dhpk(xpk(a), y).
+fun dhr(xsk, xpk_t): bitstring
+reduc forall b: xsk, x: xpk_t; dhr(b, x) = dhpk(x, xpk(b)).
+#define DHL(a, y) dhl(a, y)
+#define DHR(b, x) dhr(b, x)
+#ifdef BREAK_DH
+(* A quantum adversary: from two public keys it computes their agreement.
+ * This is the capability itself rather than a reveal of the secrets, so
+ * nothing else about the parties changes. *)
+fun breakdh(xpk_t, xpk_t): bitstring
+reduc forall x: xpk_t, y: xpk_t; breakdh(x, y) = dhpk(x, y).
+#endif
+#endif
+
+(* -------------------------------------------------------------- Ed25519 *)
+
+fun edpk(edsk): edpk_t.
+fun edsign(bitstring, edsk): bitstring.
+fun edverify(bitstring, bitstring, edpk_t): bool
+reduc forall m: bitstring, k: edsk; edverify(edsign(m, k), m, edpk(k)) = true.
+
+#ifdef BREAK_ED
+fun edforge(bitstring, edpk_t): bitstring
+reduc forall m: bitstring, k: edsk; edforge(m, edpk(k)) = edsign(m, k).
+#endif
+
+(* ------------------------------------------------------------ ML-DSA-65 *)
+
+(* Signing is hedged: the signature takes fresh randomness, so two
+ * signatures of one message differ. Nothing in the protocol relies on a
+ * signature being reproducible, and the model keeps the randomness so that
+ * a reader cannot mistake a signature for a deterministic commitment. *)
+fun mlpk(mlsk): mlpk_t.
+fun mlsign(bitstring, mlsk, rand): bitstring.
+fun mlverify(bitstring, bitstring, mlpk_t): bool
+reduc forall m: bitstring, k: mlsk, r: rand; mlverify(mlsign(m, k, r), m, mlpk(k)) = true.
+
+#ifdef BREAK_ML
+fun mlforge(bitstring, mlpk_t, rand): bitstring
+reduc forall m: bitstring, k: mlsk, r: rand; mlforge(m, mlpk(k), r) = mlsign(m, k, r).
+#endif
+
+(* ----------------------------------------------------------- ML-KEM-1024 *)
+
+fun kempk(kemsk): kempk_t.
+fun encap(kempk_t, rand): bitstring.   (* the ciphertext *)
+fun kemss(kempk_t, rand): bitstring.   (* the shared secret it carries *)
+
+(* Implicit rejection: a ciphertext that was not produced by encapsulation
+ * to this key decapsulates to a value that depends on the secret key and
+ * the ciphertext (FIPS 203 derives it as J(z || c)), never to an error.
+ * The attacker learns nothing from it unless it holds the key. *)
+fun implicit_reject(kemsk, bitstring): bitstring.
+
+#ifdef WEAK_KEM
+(* A KEM that is not ciphertext-binding (the HON-BIND-K-CT notion of
+ * Cremers, Dax and Medinger fails): the attacker turns a ciphertext into a
+ * different one that decapsulates to the same shared secret under the same
+ * key. ML-KEM is ciphertext-binding for honestly generated keys, so this is
+ * a what-if scenario that shows what the transcript signature carries. *)
+fun reencap(bitstring): bitstring.
+#endif
+
+fun decap(kemsk, bitstring): bitstring
+reduc forall k: kemsk, r: rand; decap(k, encap(kempk(k), r)) = kemss(kempk(k), r)
+#ifdef WEAK_KEM
+otherwise forall k: kemsk, r: rand; decap(k, reencap(encap(kempk(k), r))) = kemss(kempk(k), r)
+#endif
+otherwise forall k: kemsk, ct: bitstring; decap(k, ct) = implicit_reject(k, ct).
+
+#ifdef BREAK_KEM
+fun kembreak(kempk_t, bitstring): bitstring
+reduc forall k: kemsk, r: rand; kembreak(kempk(k), encap(kempk(k), r)) = kemss(kempk(k), r).
+#endif
+
+(* ---------------------------------------------- hash, HKDF, HMAC, AEAD *)
+
+fun h(bitstring): bitstring.                          (* SHA-256 *)
+fun hmac(bitstring, bitstring): bitstring.            (* HMAC-SHA-256(key, data) *)
+fun hkdf(bitstring, bitstring, bitstring): bitstring. (* salt, ikm, info *)
+
+(* ChaCha20-Poly1305 under a message key. The AEAD key and nonce are both
+ * HKDF output of the message key, so one symbol stands for the pair. *)
+fun aead(bitstring, bitstring, bitstring): bitstring.  (* key, ad, plaintext *)
+fun adec(bitstring, bitstring, bitstring): bitstring
+reduc forall k: bitstring, ad: bitstring, m: bitstring; adec(k, ad, aead(k, ad, m)) = m.
+
+(* ------------------------------------------------------------ identities *)
+
+(* PublicIdentity = ed25519_public || mldsa65_public || x25519_public ||
+ * binding, where the binding is a hybrid signature by the two signing keys
+ * over the label and all three public keys. A data constructor: anyone can
+ * assemble one and take one apart, and the fingerprint hashes the whole. *)
+fun identity(edpk_t, mlpk_t, xpk_t, bitstring): bitstring [data].
+
+(* HybridSignature = Ed25519 signature || ML-DSA-65 signature, as a pair. *)
+fun hybrid(bitstring, bitstring): bitstring [data].
+
+#if defined(ONE_HALF_ED)
+#define HVERIFY(sig, msg, edp, mlp) (let hybrid(s1, s2) = sig in edverify(s1, msg, edp))
+#elif defined(ONE_HALF_ML)
+#define HVERIFY(sig, msg, edp, mlp) (let hybrid(s1, s2) = sig in mlverify(s2, msg, mlp))
+#else
+#define HVERIFY(sig, msg, edp, mlp) (let hybrid(s1, s2) = sig in edverify(s1, msg, edp) && mlverify(s2, msg, mlp))
+#endif
+
+(* The bytes the initiator signs: the label, the version, both identities in
+ * full, the bundle commitment, EK, CT and the first ratchet message. *)
+#ifdef NO_CT_IN_SIG
+#define TRANSCRIPT(ikj, ikr, commit, ek, ct, msg) (label_transcript, version, ikj, ikr, commit, ek, msg)
+#else
+#define TRANSCRIPT(ikj, ikr, commit, ek, ct, msg) (label_transcript, version, ikj, ikr, commit, ek, ct, msg)
+#endif
+
+(* SK = HKDF(salt = 0^32, ikm = 0xFF^32 || DH1 || DH2 || DH3 || SS, info). The
+ * code never puts CT or PQSPK into this derivation; CT_IN_KDF is the repair
+ * the KEM-binding experiment compares against. *)
+#ifdef CT_IN_KDF
+#define DERIVE_SK(dh1, dh2, dh3, ss, ct, pqspk) hkdf(zero_salt, (kdf_prefix, dh1, dh2, dh3, ss, ct, pqspk), label_pqxdh)
+#else
+#define DERIVE_SK(dh1, dh2, dh3, ss, ct, pqspk) hkdf(zero_salt, (kdf_prefix, dh1, dh2, dh3, ss), label_pqxdh)
+#endif
+
+#ifdef NO_AD
+#define SESSION_AD(ikj, ikr) empty_ad
+#else
+#define SESSION_AD(ikj, ikr) (h(ikj), h(ikr))
+#endif
+
+(* The Double Ratchet key schedule of profile section 5. KDF_RK splits one
+ * HKDF output into the next root key and a chain key; the model gives the
+ * two halves two independent one-way functions of the same inputs, which
+ * is what the byte split of one HKDF output achieves. KDF_CK gives the
+ * message key as HMAC(ck, 0x01), expanded by HKDF into the AEAD key. *)
+fun kdf_rk_root(bitstring, bitstring): bitstring.
+fun kdf_rk_chain(bitstring, bitstring): bitstring.
+#define KDF_RK_ROOT(rk, dhout) kdf_rk_root(rk, dhout)
+#define KDF_RK_CHAIN(rk, dhout) kdf_rk_chain(rk, dhout)
+#define MESSAGE_KEY(ck) hkdf(zero_salt, hmac(ck, one), label_mkeys)
+
+(* ----------------------------------------------------------------- events *)
+
+event HonestInviter(bitstring).
+event HonestJoiner(bitstring).
+event InviterOffers(bitstring, bitstring).
+(* The third argument of JoinerStarts and InviterAccepts is the pair of the
+ * transcript and CT. CT is carried beside the transcript because NO_CT_IN_SIG
+ * removes it from the transcript: without this pair, no query could observe a
+ * re-encapsulated CT in that variant, and its row could never find an attack.
+ * In the faithful model the transcript already holds CT, so the pair adds
+ * nothing there.
+ *
+ * joiner identity, inviter identity, (transcript, CT), SK, first message key *)
+event JoinerStarts(bitstring, bitstring, bitstring, bitstring, bitstring).
+(* inviter identity, joiner identity, (transcript, CT), SK, first message key *)
+event InviterAccepts(bitstring, bitstring, bitstring, bitstring, bitstring).
+(* inviter identity, joiner identity, SK *)
+event InviterSendsAccept(bitstring, bitstring, bitstring).
+(* joiner identity, inviter identity, SK *)
+event JoinerActive(bitstring, bitstring, bitstring).
+event HelloSent(bitstring).
+
+(* ---------------------------------------------------------------- queries *)
+
+#if !defined(ONLY) || ONLY == 1
+(* Q1 secrecy of SK from the joiner's view (the honest joiner derived it). *)
+query j: bitstring, r: bitstring, t: bitstring, sk: bitstring, mk: bitstring;
+  event(JoinerStarts(j, r, t, sk, mk)) && attacker(sk).
+#endif
+
+#if !defined(ONLY) || ONLY == 2
+(* Q2 secrecy of the first message key from the joiner's view. *)
+query j: bitstring, r: bitstring, t: bitstring, sk: bitstring, mk: bitstring;
+  event(JoinerStarts(j, r, t, sk, mk)) && attacker(mk).
+#endif
+
+#if !defined(ONLY) || ONLY == 3
+(* Q3 secrecy of the Hello plaintext. *)
+query x: bitstring; event(HelloSent(x)) && attacker(x).
+#endif
+
+#if !defined(ONLY) || ONLY == 4
+(* Q4 secrecy of SK from the inviter's view, when the joiner it accepted is
+ * honest. With a leaked invitation the attacker can be a joiner, and the
+ * key of that session is its own; Q4 says an honest joiner's key is not. *)
+query r: bitstring, j: bitstring, t: bitstring, sk: bitstring, mk: bitstring;
+  event(InviterAccepts(r, j, t, sk, mk)) && event(HonestJoiner(j)) && attacker(sk).
+#endif
+
+#if !defined(ONLY) || ONLY == 5
+(* Q5 the inviter authenticates the joiner: injective agreement on both
+ * identities, the whole transcript, SK and the first message key, for any
+ * joiner identity the inviter accepts. Fails exactly when someone other
+ * than an honest joiner can redeem the invitation. *)
+query r: bitstring, j: bitstring, t: bitstring, sk: bitstring, mk: bitstring;
+  inj-event(InviterAccepts(r, j, t, sk, mk)) ==> inj-event(JoinerStarts(j, r, t, sk, mk)).
+#endif
+
+#if !defined(ONLY) || ONLY == 6
+(* Q6 as Q5, restricted to honest joiner identities: nobody can make the
+ * inviter accept a session attributed to an honest joiner that the joiner
+ * did not start with this inviter, this transcript and these keys. *)
+query r: bitstring, j: bitstring, t: bitstring, sk: bitstring, mk: bitstring;
+  inj-event(InviterAccepts(r, j, t, sk, mk)) && event(HonestJoiner(j)) ==> inj-event(JoinerStarts(j, r, t, sk, mk)).
+#endif
+
+#if !defined(ONLY) || ONLY == 7
+(* Q7 the joiner authenticates the inviter: when the joiner authenticates
+ * the Accept it holds the key the inviter derived in a session it
+ * attributes to this joiner, injectively. *)
+query j: bitstring, r: bitstring, sk: bitstring;
+  inj-event(JoinerActive(j, r, sk)) ==> inj-event(InviterSendsAccept(r, j, sk)).
+#endif
+
+#if !defined(ONLY) || ONLY == 8
+(* Q8 no unknown key share: two sessions that end up with the same SK agree
+ * on who the two parties are. *)
+query r: bitstring, j: bitstring, j2: bitstring, r2: bitstring, t: bitstring, t2: bitstring, sk: bitstring, mk: bitstring, mk2: bitstring;
+  event(InviterAccepts(r, j, t, sk, mk)) && event(JoinerStarts(j2, r2, t2, sk, mk2)) ==> j = j2 && r = r2.
+#endif
+
+#if !defined(ONLY) || ONLY == 9
+(* Q9 transcript binding of the key: the same SK implies the same
+ * transcript, so no re-encapsulation or substitution leaves the two sides
+ * agreeing on keys under different transcripts. *)
+query r: bitstring, j: bitstring, j2: bitstring, r2: bitstring, t: bitstring, t2: bitstring, sk: bitstring, mk: bitstring, mk2: bitstring;
+  event(InviterAccepts(r, j, t, sk, mk)) && event(JoinerStarts(j2, r2, t2, sk, mk2)) ==> t = t2.
+#endif
+
+(* -------------------------------------------------------------- inviter *)
+
+let inviter() =
+  new edR: edsk; new mlR: mlsk; new xR: xsk; new rb: rand;
+  let edpR = edpk(edR) in
+  let mlpR = mlpk(mlR) in
+  let xpR = xpk(xR) in
+  let bindR = hybrid(edsign((label_binding, edpR, mlpR, xpR), edR), mlsign((label_binding, edpR, mlpR, xpR), mlR, rb)) in
+  let IKR = identity(edpR, mlpR, xpR, bindR) in
+  event HonestInviter(IKR);
+#ifdef REVEAL_LT_BEFORE
+  out(c, (edR, mlR, xR));
+#endif
+  (* generate_prekeys: a signed X25519 prekey and a signed ML-KEM prekey. *)
+  new spkS: xsk; let SPK = xpk(spkS) in
+  new pqS: kemsk; let PQSPK = kempk(pqS) in
+  new r1: rand; new r2: rand;
+  let sig_spk = hybrid(edsign((label_spk, SPK), edR), mlsign((label_spk, SPK), mlR, r1)) in
+  let sig_pq = hybrid(edsign((label_pqspk, PQSPK), edR), mlsign((label_pqspk, PQSPK), mlR, r2)) in
+  let bundle = (version, IKR, SPK, sig_spk, PQSPK, sig_pq) in
+  let commit = h(bundle) in
+  event InviterOffers(IKR, bundle);
+  insert invitations(bundle);
+#ifdef LEAK_INVITATION
+  out(c, bundle);
+#endif
+  (* respond: the Initial frame arrives through the mailbox. decode_initial
+   * verified the joiner identity binding; respond checks the commitment,
+   * then the transcript signature, then derives SK and decrypts. *)
+  in(c, (=version, IKJ: bitstring, EK: xpk_t, CT: bitstring, =commit, tsig: bitstring, msg1: bitstring));
+  let identity(edpJ, mlpJ, xpJ, bindJ) = IKJ in
+  if HVERIFY(bindJ, (label_binding, edpJ, mlpJ, xpJ), edpJ, mlpJ) then
+  let transcript = TRANSCRIPT(IKJ, IKR, commit, EK, CT, msg1) in
+#ifndef NO_TRANSCRIPT_SIG
+  if HVERIFY(tsig, transcript, edpJ, mlpJ) then
+#endif
+  let dh1 = DHR(spkS, xpJ) in
+  let dh2 = DHR(xR, EK) in
+  let dh3 = DHR(spkS, EK) in
+  let ss = decap(pqS, CT) in
+  let SK = DERIVE_SK(dh1, dh2, dh3, ss, CT, PQSPK) in
+  let AD = SESSION_AD(IKJ, IKR) in
+  (* init_receiver then decrypt: the first message carries the joiner
+   * ratchet key in its header; the inviter steps the ratchet with the
+   * signed prekey as its own first ratchet key pair. *)
+  let (hdr1: bitstring, sealed1: bitstring) = msg1 in
+  let (rkJ: xpk_t, =zero, =zero) = hdr1 in
+  let root1 = KDF_RK_ROOT(SK, DHR(spkS, rkJ)) in
+  let ck_recv = KDF_RK_CHAIN(SK, DHR(spkS, rkJ)) in
+  let mk1 = MESSAGE_KEY(ck_recv) in
+  let hello = adec(mk1, (AD, hdr1), sealed1) in
+  event InviterAccepts(IKR, IKJ, (transcript, CT), SK, mk1);
+  (* The DH ratchet step taken on receipt gives the inviter a sending
+   * chain under a fresh ratchet key; approve encrypts Accept from it. *)
+  new rkRs: xsk;
+  let root2 = KDF_RK_ROOT(root1, DHR(rkRs, rkJ)) in
+  let ck_send = KDF_RK_CHAIN(root1, DHR(rkRs, rkJ)) in
+  let mk2 = MESSAGE_KEY(ck_send) in
+  let hdr2 = (xpk(rkRs), zero, zero) in
+  event InviterSendsAccept(IKR, IKJ, SK);
+  out(c, (hdr2, aead(mk2, (AD, hdr2), accept_body)))
+#if defined(REVEAL_LT) || defined(REVEAL_PREKEYS)
+  ; phase 1; out(c, (edR, mlR, xR))
+#endif
+#ifdef REVEAL_PREKEYS
+  ; out(c, (spkS, pqS))
+#endif
+  .
+
+(* --------------------------------------------------------------- joiner *)
+
+let joiner() =
+  (* invitation.decode: the bundle is read from the invitation file and
+   * its binding and both prekey signatures verified. *)
+  get invitations(bundle) in
+  let (=version, IKR: bitstring, SPK: xpk_t, sig_spk: bitstring, PQSPK: kempk_t, sig_pq: bitstring) = bundle in
+  let identity(edpR, mlpR, xpR, bindR) = IKR in
+  if HVERIFY(bindR, (label_binding, edpR, mlpR, xpR), edpR, mlpR) then
+  if HVERIFY(sig_spk, (label_spk, SPK), edpR, mlpR) then
+  if HVERIFY(sig_pq, (label_pqspk, PQSPK), edpR, mlpR) then
+  (* relationship.join: a fresh pairwise identity. *)
+  new edJ: edsk; new mlJ: mlsk; new xJ: xsk; new rbj: rand;
+  let edpJ = edpk(edJ) in
+  let mlpJ = mlpk(mlJ) in
+  let xpJ = xpk(xJ) in
+  let bindJ = hybrid(edsign((label_binding, edpJ, mlpJ, xpJ), edJ), mlsign((label_binding, edpJ, mlpJ, xpJ), mlJ, rbj)) in
+  let IKJ = identity(edpJ, mlpJ, xpJ, bindJ) in
+  event HonestJoiner(IKJ);
+#ifdef REVEAL_LT_BEFORE
+  out(c, (edJ, mlJ, xJ));
+#endif
+  (* initiate. *)
+  new ekS: xsk; let EK = xpk(ekS) in
+  let dh1 = DHL(xJ, SPK) in
+  let dh2 = DHL(ekS, xpR) in
+  let dh3 = DHL(ekS, SPK) in
+  new kr: rand;
+  let CT = encap(PQSPK, kr) in
+  let ss = kemss(PQSPK, kr) in
+  let SK = DERIVE_SK(dh1, dh2, dh3, ss, CT, PQSPK) in
+  let AD = SESSION_AD(IKJ, IKR) in
+  (* init_sender then encrypt: a fresh ratchet key, one DH step against
+   * the signed prekey, and the Hello under the first message key. *)
+  new rkJs: xsk;
+  let root1 = KDF_RK_ROOT(SK, DHL(rkJs, SPK)) in
+  let ck_send = KDF_RK_CHAIN(SK, DHL(rkJs, SPK)) in
+  let mk1 = MESSAGE_KEY(ck_send) in
+  let hdr1 = (xpk(rkJs), zero, zero) in
+  new hello: bitstring;
+  event HelloSent(hello);
+  let msg1 = (hdr1, aead(mk1, (AD, hdr1), hello)) in
+  let commit = h(bundle) in
+  let transcript = TRANSCRIPT(IKJ, IKR, commit, EK, CT, msg1) in
+  new rt: rand;
+  let tsig = hybrid(edsign(transcript, edJ), mlsign(transcript, mlJ, rt)) in
+  event JoinerStarts(IKJ, IKR, (transcript, CT), SK, mk1);
+  out(c, (version, IKJ, EK, CT, commit, tsig, msg1));
+  (* The Accept: the inviter ratchet key arrives in its header, the joiner
+   * takes its DH step and decrypts. relationship.in_awaiting makes the
+   * relationship Active on an authenticated Accept. *)
+  in(c, (hdr2: bitstring, sealed2: bitstring));
+  let (rkR: xpk_t, =zero, =zero) = hdr2 in
+  let ck_recv = KDF_RK_CHAIN(root1, DHL(rkJs, rkR)) in
+  let mk2 = MESSAGE_KEY(ck_recv) in
+  let (=accept_body) = adec(mk2, (AD, hdr2), sealed2) in
+  event JoinerActive(IKJ, IKR, SK)
+#if defined(REVEAL_LT) || defined(REVEAL_PREKEYS)
+  ; phase 1; out(c, (edJ, mlJ, xJ))
+#endif
+  .
+
+process
+  (!inviter()) | (!joiner())
