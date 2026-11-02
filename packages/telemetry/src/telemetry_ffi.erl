@@ -101,9 +101,17 @@ getenv(Name) ->
 %% ------------------------------------------------------------ formatting
 
 %% `logger`'s formatter callback. Every line starts `time=... level=...`.
-%% A formatter that raises is removed by `logger`, taking every later line
-%% with it, so a body that cannot be built degrades to a fixed line.
-format(#{level := Level, msg := Msg} = Event, _Config) ->
+%% If a formatter raises, `logger_h_common:try_format` prints the event's raw
+%% message through OTP's own formatter, which is the leak this module exists
+%% to close. So nothing here may raise: a body that cannot be built keeps its
+%% timestamp and degrades to a fixed line, and anything else falls to a fixed
+%% line of its own.
+format(Event, _Config) ->
+    try line(Event)
+    catch _:_ -> <<"level=error component=otp event=unformattable\n">>
+    end.
+
+line(#{level := Level, msg := Msg} = Event) ->
     Meta = maps:get(meta, Event, #{}),
     Body =
         try body(Msg, Meta)
@@ -125,6 +133,8 @@ body({report, Report}, Meta) when is_map(Report) ->
     pairs([{component, otp} | report(Report, Meta)]);
 body({string, Text}, Meta) ->
     pairs([{component, otp} | text(Text, Meta)]);
+body({report, _Keywords}, Meta) ->
+    pairs([{component, otp}, {event, foreign_report} | origin(Meta)]);
 body({Format, Args}, Meta) when is_list(Args) ->
     pairs([{component, otp} | formatted(Format, Args, Meta)]);
 body(_Other, Meta) ->

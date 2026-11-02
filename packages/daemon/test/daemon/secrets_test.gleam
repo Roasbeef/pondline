@@ -26,23 +26,18 @@ import telemetry/level
 
 const payload = "SECRET-PAYLOAD-0b1c2d3e4f"
 
-/// Lowercase hex of some bytes.
-fn hex(bytes: BitArray) -> String {
-  string.lowercase(bit_array.base16_encode(bytes))
-}
-
 /// The three capabilities of an inbox, in hex.
-fn capabilities(inbox: route.Inbox) -> List(String) {
+fn capabilities(inbox: route.Inbox) -> List(BitArray) {
   [
-    hex(capability.expose(inbox.read)),
-    hex(capability.expose(inbox.append)),
-    hex(capability.expose(inbox.admin)),
+    capability.expose(inbox.read),
+    capability.expose(inbox.append),
+    capability.expose(inbox.admin),
   ]
 }
 
 /// A ticket's text, its secret `K`, and every value derived from `K` that
-/// stays with the two daemons (ADR-009), in lowercase hex where binary.
-fn ticket_secrets(issued: Secret) -> List(String) {
+/// stays with the two daemons (ADR-009).
+fn ticket_secrets(issued: Secret) -> List(BitArray) {
   let assert Ok(text) = bit_array.to_string(secret.expose(issued))
   let assert Ok(made) = ticket.decode(text)
   let assert Ok(keys) = ticket.keys(suite.suite(), made)
@@ -54,12 +49,12 @@ fn ticket_secrets(issued: Secret) -> List(String) {
     codex32.symbols_to_bytes(payload)
 
   [
-    text,
-    string.drop_start(text, 3),
-    hex(k),
-    hex(capability.expose(keys.retrieve)),
-    hex(secret.expose(keys.key)),
-    hex(secret.expose(keys.commit_key)),
+    secret.expose(issued),
+    <<string.drop_start(text, 3):utf8>>,
+    k,
+    capability.expose(keys.retrieve),
+    secret.expose(keys.key),
+    secret.expose(keys.commit_key),
   ]
 }
 
@@ -153,17 +148,18 @@ pub fn logs_and_errors_carry_no_secret_test() {
   let assert Ok(inboxes_b) = engine.live_inboxes(api.engine_handle(b))
   let secrets =
     list.flat_map(list.append(inboxes_a, inboxes_b), capabilities)
-    |> list.prepend(hex(file))
-    |> list.prepend(payload)
+    |> list.prepend(file)
+    |> list.prepend(<<payload:utf8>>)
     |> list.append(ticket_secrets(issued.ticket))
+    |> list.flat_map(support.spellings)
 
-  let captured = case bit_array.to_string(support.capture_stop()) {
-    Ok(text) -> text
-    Error(Nil) -> ""
-  }
+  // Whitespace goes, because a decimal byte list prints with spaces in an
+  // inspected bit array and without them in a crash report's frame.
+  let captured = support.flatten(support.capture_stop())
+  let rendered = list.map(rendered, string.replace(_, " ", ""))
 
   // The log is not empty, so the search below means something.
-  assert string.contains(captured, "queue_created")
+  assert string.contains(captured, "response=queue_created")
 
   list.each(secrets, fn(secret) {
     assert !string.contains(captured, secret)

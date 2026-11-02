@@ -31,6 +31,9 @@ fn capture_stop() -> List(Dynamic)
 @external(erlang, "telemetry_test_ffi", "format")
 fn format(event: Dynamic) -> String
 
+@external(erlang, "telemetry_test_ffi", "format_bad_time")
+fn format_bad_time(secret: BitArray) -> String
+
 @external(erlang, "telemetry_test_ffi", "spawn_crasher")
 fn spawn_crasher(secret: BitArray) -> Nil
 
@@ -225,6 +228,13 @@ pub fn foreign_text_is_withheld_test() {
 }
 
 /// Each line is one line: a report's newlines never reach the output.
+/// OTP answers a raising formatter by printing the raw event, so a part of
+/// the line that cannot be built must degrade here and never raise.
+pub fn an_unbuildable_line_is_a_fixed_line_test() {
+  assert format_bad_time(<<"FORMAT-SECRET":utf8>>)
+    == "level=error component=otp event=unformattable\n"
+}
+
 pub fn every_line_is_one_line_test() {
   capture_start()
   spawn_crasher(<<secret:utf8>>)

@@ -34,8 +34,8 @@ failed storage operation, a refused queue creation, a send outcome the
 engine could not record). `info`, the default: lifecycle (`node started`,
 `mailbox serving`) and the mailbox's access log. `debug`: per-message steps
 and OTP's progress reports, which are dropped below `debug`.
-`REEDWIRE_LOG_LEVEL` sets the threshold (`debug`, `info`, `warning`,
-`error`); anything else is `info`.
+`REEDWIRE_LOG_LEVEL` sets the threshold (`debug`, `info`, `warning` or
+`warn`, `error` or `err`); anything else is `info`.
 
 **Format: logfmt**, one event per line:
 
@@ -61,7 +61,9 @@ text (only its byte count). Shapes covered: `proc_lib` crash reports
 terminations, application start and exit, the emulator's own "Error in
 process" report, `weft` and `gleam_otp` discarded-message warnings, and
 free text from `logging.log` (mist, glisten). A body the formatter cannot
-build becomes `event=unformattable`, never a dropped handler.
+build becomes `event=unformattable`. The formatter must not raise, because
+OTP answers a raising formatter by printing the event's raw message through
+its own (`logger_h_common:try_format`).
 
 **Plaintext travels as a `Secret` between processes.** The send payload is
 a `core/secret.Secret` from the local API's decode, through
@@ -139,6 +141,12 @@ from the engine as plain bytes fails `secrets_test` on its rendering.
 - The sidecar's own diagnostics (`reedwire-tor: ...`) reach standard error
   directly from the Rust process and are not in logfmt. They are fixed
   phrases.
+- A failure of the program's main process is printed by Gleam's generated
+  entry module, which writes to standard error without going through
+  `logger`, and shows a panic's message and a failed match's value (not
+  stack arguments). No handler can cover it. What guards it is the rule that
+  source does not panic (`docs/gleam-style.md` Part IV); a review found no
+  `let assert` or `panic` on that path in the entry points.
 - The handler is per VM. A host that embeds the daemon without calling
   `handler.install` keeps OTP's formatter and loses the scrubbing; the
   `Secret` wrapping is what remains then.

@@ -3,7 +3,7 @@
 %% rather than shapes written by hand.
 -module(telemetry_test_ffi).
 
--export([capture_start/0, capture_stop/0, log/2, format/1,
+-export([capture_start/0, capture_stop/0, log/2, format/1, format_bad_time/1,
          spawn_crasher/1, raw_crasher/1, gen_server_crasher/1,
          string_event/1, bif_crash/1, send_raw/2,
          factory_child_report/1]).
@@ -50,6 +50,12 @@ collect(Acc) ->
 
 %% The handler's formatter applied to one captured event, as one binary.
 format(Event) ->
+    unicode:characters_to_binary(telemetry_ffi:format(Event, #{})).
+
+%% An event whose timestamp cannot be rendered, holding a secret in its report.
+format_bad_time(Secret) ->
+    Event = #{level => error, msg => {report, #{secret => Secret}},
+              meta => #{time => not_a_time}},
     unicode:characters_to_binary(telemetry_ffi:format(Event, #{})).
 
 %% A `proc_lib` process holding `Secret` in its mailbox and dictionary that

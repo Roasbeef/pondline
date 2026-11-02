@@ -127,7 +127,7 @@ pub opaque type Daemon {
 /// who also wants it, and the ticket's text, a `Secret` because it is the
 /// authority to fetch and open the invitation.
 pub type IssuedTicket {
-  IssuedTicket(file: BitArray, ticket: Secret)
+  IssuedTicket(file: Secret, ticket: Secret)
 }
 
 /// Why a call did not do what was asked.
@@ -452,7 +452,7 @@ pub fn accept(
 ///
 /// ```gleam
 /// api.invite_ticket(daemon, "vendor support", offer.OperatorApproves, 10)
-/// // -> Ok(IssuedTicket(file: <<...>>, ticket: secret))
+/// // -> Ok(IssuedTicket(file: file, ticket: secret))
 /// ```
 pub fn invite_ticket(
   daemon: Daemon,
@@ -492,7 +492,7 @@ pub fn invite_ticket(
     )
   use Nil <- result.try(store_blob(daemon, inbox, request))
 
-  Ok(IssuedTicket(file:, ticket: ticket.encode(made)))
+  Ok(IssuedTicket(file: secret.new(file), ticket: ticket.encode(made)))
 }
 
 /// Redeems a ticket: fetches the sealed invitation from the mailbox it

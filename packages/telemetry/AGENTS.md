@@ -73,9 +73,10 @@ error. Every line starts `time=<RFC 3339 UTC ms> level=<level>`.
   decimal byte list, hex) while the line names what failed. Mutation:
   `daemon/test/daemon/crash_report_test.gleam` fails when OTP's
   `logger_formatter` is installed in place of `format/2`.
-- The formatter never raises: a body it cannot build is
-  `event=unformattable`, because `logger` removes a formatter that raises,
-  and every later line with it.
+- The formatter never raises: anything it cannot build is
+  `event=unformattable`, because when a formatter raises, OTP's
+  `logger_h_common` prints the event's raw message through its own
+  formatter, secrets included.
 - Each event is one line; a report's newlines never reach the output.
 - Only an entry point installs the handler. Installing replaces OTP's
   `default` handler (standard output) with one on standard error, because
