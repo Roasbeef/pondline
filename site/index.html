@@ -1,0 +1,340 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Pondline</title>
+<meta name="description" content="End-to-end encrypted, Tor-first, post-quantum messaging for software agents run by different people. Pre-1.0 and not independently reviewed.">
+<link rel="icon" href="logo-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="base.css">
+<script>try{var t=localStorage.getItem('pl-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+<style>
+:root{--w:min(calc(100vw - 2*var(--g)),780px);--rail:calc(var(--g) + var(--w)*.036);--in:max(30px,calc(var(--w)*.036 + 36px))}
+.above{position:relative;background:var(--b0);border-bottom:calc(var(--w)*.012) solid var(--teal);padding:12px var(--g) 0}
+.above .nav{justify-content:flex-end;margin-bottom:clamp(6px,2vh,22px)}
+.word{stroke:var(--teal);display:block;width:var(--w);height:calc(var(--w)*.3);margin-bottom:calc(var(--w)*-.1 + var(--w)*.0);position:relative;z-index:2;overflow:visible}
+.word .f{stroke:var(--verm)}.word .d{fill:var(--teal);stroke:none}
+main{position:relative}
+main::before{content:"";position:absolute;z-index:1;top:0;bottom:0;left:calc(var(--rail) - 1px);width:2px;background:var(--teal)}
+.sinker{position:absolute;z-index:1;bottom:0;left:calc(var(--rail) - 6px);width:12px;height:12px;background:var(--verm);border-radius:50%}
+section{padding:clamp(36px,6vw,72px) var(--g) clamp(36px,6vw,72px) calc(var(--g) + var(--in))}
+section>*{max-width:1000px}
+.hero{background:var(--b1);padding-top:clamp(24px,3.2vw,40px);padding-bottom:clamp(32px,4vw,52px);display:grid;gap:12px 48px;grid-template-columns:minmax(0,1.25fr) minmax(0,1fr);max-width:none}
+.hero>*{max-width:none}.hero>div:first-child{grid-row:1/3}.status{align-self:start}
+h1{font-size:clamp(29px,3.5vw,44px);line-height:1.12;margin:0 0 14px;font-weight:600;letter-spacing:-.01em}
+.lede{margin:0 0 18px;max-width:38em}
+.cta{display:flex;flex-wrap:wrap;gap:8px 20px;font:14px/1.3 var(--mono);margin:0}
+.cta a{padding:10px 14px;background:var(--deep);color:var(--deep-ink);text-decoration:none;border-left:4px solid var(--verm)}
+.cta a+a{background:none;color:var(--link);text-decoration:underline;border:0;padding-left:0}
+.say{margin:0 0 6px;font-style:italic}
+.ticket{display:block;font:13px/1.45 var(--mono);overflow-wrap:anywhere;background:var(--deep);color:var(--deep-ink);padding:10px 12px;margin:6px 0 6px;border-left:4px solid var(--verm)}
+.note{font-size:15px;color:var(--mute);margin:0 0 14px;line-height:1.45}
+.status{margin:0;font-size:15.5px;line-height:1.45;border-top:2px solid var(--verm);padding-top:8px}
+.status b{font:600 12.5px var(--mono);letter-spacing:.04em;display:block}
+h2{position:relative;font-size:clamp(25px,2.8vw,34px);line-height:1.16;margin:0 0 16px;font-weight:600;max-width:24em}
+h2::before{content:"";position:absolute;top:.55em;height:2px;background:var(--teal);left:calc(var(--in)*-1);width:calc(var(--in) - 10px)}
+.b2{background:var(--b2)}.b3{background:var(--b3)}.b4{background:var(--b4)}.b1{background:var(--b1)}
+.prose{max-width:38em;margin:0 0 1em}
+.pts{display:grid;gap:18px 40px;grid-template-columns:repeat(2,minmax(0,1fr));margin:20px 0 0}
+.pts div{border-top:1px solid var(--hair);padding-top:8px}
+dt{font-weight:600}dd{margin:2px 0 0}
+.pts dd{font-size:16.5px}
+.tabs{display:flex;flex-wrap:wrap;gap:6px;margin:20px 0 14px}
+.tabs button{font:13px/1.2 var(--mono);padding:9px 11px;background:none;color:inherit;border:1px solid var(--hair);cursor:pointer;min-height:38px}
+.tabs button[aria-selected=true]{background:var(--deep);color:var(--deep-ink);border-color:var(--deep);box-shadow:inset 0 -3px 0 var(--verm)}
+.stage{list-style:none;margin:0;padding:0;display:grid}
+.js .stage>li{grid-area:1/1;min-width:0}
+.js .stage>li[data-off]{visibility:hidden}
+html:not(.js) .stage>li{margin-bottom:36px}
+.stage>li{min-width:0}
+h3{font-size:21px;margin:0 0 4px;line-height:1.25}
+.stage p{margin:0 0 10px;max-width:42em}
+.xs{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));border:1px solid var(--hair);font-size:15.5px;line-height:1.42}
+.xs>div{padding:10px 12px 12px;min-width:0}
+.xs .lab{display:block;font:600 11.5px/1.3 var(--mono);letter-spacing:.05em;margin-bottom:3px;opacity:.82}
+.xs .mb{grid-column:1/3;background:var(--b0);min-height:5.2em}
+.xs .A,.xs .B{background:var(--deep);color:var(--deep-ink);min-height:7.5em}
+.xs .B{border-left:1px solid var(--deep-hair)}
+.xs .wl{grid-column:1/3;position:relative;height:30px;padding:0;background:var(--deep);border-top:3px solid var(--teal)}
+.xs .wl span{position:absolute;top:7px;font:11px/1.2 var(--mono);color:var(--deep-mute)}
+.xs .wl .ml{left:50%;transform:translateX(-50%);white-space:nowrap}
+.blk{position:absolute;top:-9px;left:var(--to);width:15px;height:15px;margin-left:-7px;background:var(--verm);animation:go .9s ease-in-out}
+@keyframes go{from{left:var(--from)}to{left:var(--to)}}
+.crash{margin-top:20px;border:1px solid var(--hair);background:var(--b0);padding:10px 12px;font-size:15.5px;line-height:1.4}
+.crash summary{cursor:pointer;font-weight:600;font-size:17px}
+.tw{overflow-x:auto;margin-top:10px}
+.crash table{border-collapse:collapse;width:100%;min-width:560px}
+.crash th,.crash td{text-align:left;vertical-align:top;padding:6px 10px 6px 0;border-top:1px solid var(--hair);font-weight:400}
+.crash thead th{font:600 11.5px var(--mono);letter-spacing:.04em;border-top:0}
+.crash tbody th{font-weight:600}
+.crash .note{margin:10px 0 2px}
+.pad{display:flex;flex-wrap:wrap;gap:12px 22px;align-items:flex-end;margin:20px 0 0;font:12px var(--mono)}
+.pad i{display:block;background:var(--verm);margin-bottom:4px}
+.two{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px 44px}
+ul.l{margin:0;padding:0 0 0 18px}ul.l li{margin:0 0 9px;font-size:16.5px}
+h3.m{font:600 13px var(--mono);letter-spacing:.04em;margin:0 0 8px}
+.spec div{display:grid;grid-template-columns:minmax(0,11em) minmax(0,1fr);gap:0 18px;border-top:1px solid var(--hair);padding:6px 0;font-size:16px}
+.spec dt{font-weight:600}.spec dd{margin:0}
+.docs{background:var(--deep);color:var(--deep-ink);--link:var(--deep-link);--hair:var(--deep-hair);--mute:var(--deep-mute)}
+.dl{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:22px 44px}
+.dl h3{font:600 12.5px var(--mono);letter-spacing:.05em;color:var(--mute);margin:0 0 8px}
+.dl ul{list-style:none;margin:0;padding:0}.dl li{margin:0 0 9px;font-size:16.5px;line-height:1.35}
+.dl a{font-size:18px}.dl span{display:block;color:var(--mute);font-size:15px}
+footer{background:var(--deep);color:var(--deep-mute);border-top:1px solid var(--deep-hair);padding:22px var(--g);font-size:15px;--link:var(--deep-link)}
+footer p{margin:0 0 8px;max-width:50em}
+@media (max-width:760px){
+ body{font-size:17px}
+ .hero,.pts,.two,.dl{grid-template-columns:minmax(0,1fr)}
+ .hero>div:first-child{grid-row:auto}.hero>.status{order:1}.hero>div:nth-child(2){order:2;margin-top:12px}
+ .nav{gap:2px 14px}
+ .above .nav{justify-content:flex-start}
+ .spec div{grid-template-columns:minmax(0,1fr)}
+ .xs{font-size:14px}.xs>div{padding:8px 9px 10px}
+}
+</style>
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="above">
+ <nav class="nav" aria-label="Site">
+  <a href="#pair">Pairing</a><a href="#message">Message</a><a href="#limits">Limits</a><a href="#docs">Docs</a><a href="https://github.com/Roasbeef/pondline">GitHub</a>
+  <button class="tbtn" type="button" id="theme" aria-label="Switch between light and dark"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2 8a6 6 0 0 0 12 0z" fill="currentColor"/></svg></button>
+ </nav>
+ <svg class="word" viewBox="0 0 500 150" role="img" aria-label="Pondline">
+  <g fill="none" stroke-width="12" transform="translate(12 0)">
+   <circle class="f" cx="30" cy="70" r="24"/><path d="M6 40V150"/><circle cx="102" cy="70" r="24"/>
+   <path d="M150 40V100M150 70a24 24 0 0 1 48 0V100"/><circle cx="246" cy="70" r="24"/><path d="M270 6V100M294 6V100M318 40V100"/>
+   <path d="M342 40V100M342 70a24 24 0 0 1 48 0V100"/><path d="M414 70H462A24 24 0 1 0 455 87"/><circle class="d" cx="318" cy="16" r="8"/>
+  </g>
+ </svg>
+</header>
+<main id="main">
+<section class="hero" aria-labelledby="h1">
+ <div>
+  <h1 id="h1">A private, durable line between agents run by different people.</h1>
+  <p class="lede">Pondline is end-to-end encrypted, Tor-first, post-quantum messaging for software agents. Two agents pair once with a short ticket. From then on they exchange messages through a mailbox that stores nothing it can read, even when one side is offline.</p>
+  <p class="cta"><a href="docs/quickstart.html">Read the quick start</a><a href="#message">Follow one message</a></p>
+ </div>
+ <div>
+  <p class="say">&ldquo;Have your agent drop mine a pondline:&rdquo;</p>
+  <code class="ticket">pl1q0x7vvfgcfvz3jjt4c29kddntq35l0aj4d7c6cvvf57d5phdr9u0jz3crqpg88nlchnwdxp6qxla0x2u0hahqymxe23aefrlxk9utlqsq662klmqgan6g959vd0p6z3</code>
+  <p class="note">The example ticket from ADR-009. 130 characters: a mailbox address and a random secret. Whoever holds one can try to pair, so hand it over a channel you trust.</p>
+ </div>
+ <p class="status"><b>STATUS</b>Pre-1.0. No independent security review. The wire format isn't frozen. Built and tested only on macOS on Apple silicon; Linux has never been run. Report security problems through <a href="https://github.com/Roasbeef/pondline/security/advisories/new">private vulnerability reporting</a>.</p>
+</section>
+
+<section class="b1" id="why" aria-labelledby="h-why" style="padding-top:8px">
+ <h2 id="h-why">Why it exists</h2>
+ <p class="prose">Agents working across trust boundaries need a way to reach each other. Pondline treats a message as a durable, replay-aware delivery, not a remote procedure call.</p>
+ <dl class="pts">
+  <div><dt>No shared account at a hosted relay.</dt><dd>Each daemon picks a mailbox to receive at and creates one queue per relationship there. A mailbox address is a v3 onion address. There is no way to name a public host; a loopback port exists for testing, when an operator explicitly asks for it.</dd></div>
+  <div><dt>One side can be asleep.</dt><dd>Envelopes wait at the recipient's mailbox. Every send and receive commits to SQLite before it touches the network, so a crash retries the same ciphertext and never redelivers a message.</dd></div>
+  <div><dt>The mailbox isn't trusted with plaintext.</dt><dd>Pairing uses hybrid PQXDH with ML-KEM-1024. Every authentication step needs both an Ed25519 and an ML-DSA-65 proof. The session then runs Signal's Double Ratchet.</dd></div>
+  <div><dt>A message is not a command.</dt><dd>An incoming message is never permission to do anything. What an agent does with it is its host's policy, enforced outside Pondline. Each pairing has a message budget, and messages past it are held until the operator raises it.</dd></div>
+ </dl>
+</section>
+
+<section class="b2" id="pair" aria-labelledby="h-pair">
+ <h2 id="h-pair">Pairing, seen from both sides of the line</h2>
+ <p class="prose">Read each step as a cross-section. Above the line is what the mailbox can observe. Below the line is what only the two daemons hold. The orange block shows where the bytes just moved.</p>
+ <div class="stepper" data-name="Pairing step">
+ <ol class="stage">
+  <li data-t="1 A invites">
+   <h3>A creates an invitation and a ticket</h3>
+   <pre tabindex="0"><code>pondline invite create --state-dir ./a --description "agent A" --budget 10 --ticket &gt; a.ticket</code></pre>
+   <p>The ticket goes to standard output, never into a command-line argument. The full invitation is about 14 KB, too much to paste into a chat, so it waits at A's mailbox, sealed under keys derived from the ticket's secret.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>A sealed blob under a random locator. It can't read the invitation.</div>
+    <div class="wl" style="--from:8%;--to:50%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Holds the prekey bundle and the ticket: mailbox address plus random secret.</div><div class="B"><span class="lab">DAEMON B</span>Knows nothing yet.</div></div>
+  </li>
+  <li data-t="2 Ticket moves">
+   <h3>The ticket changes hands, outside Pondline</h3>
+   <p>Paste it into whatever channel you already trust. It is a bearer secret, like the invitation file. A mailbox you would rather not ask to hold the invitation can be skipped by moving the file instead.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>Nothing. The ticket doesn't pass through it.</div>
+    <div class="wl" style="--from:8%;--to:92%"><i class="blk"></i><span class="ml">your own channel</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Waits. Its relationship isn't active.</div><div class="B"><span class="lab">DAEMON B</span>Its operator now has the ticket.</div></div>
+  </li>
+  <li data-t="3 B accepts">
+   <h3>B accepts and runs the handshake</h3>
+   <pre tabindex="0"><code>pondline invite accept --state-dir ./b --ticket --stdin &lt; a.ticket</code></pre>
+   <p>B's daemon fetches the sealed invitation, checks it, runs the handshake against A's prekey bundle, and sends a <code>Hello</code> that names its own return queue.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>A fetch of the blob, then one padded envelope on A's queue.</div>
+    <div class="wl" style="--from:92%;--to:50%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Receives the Hello and lists B as a contact to approve.</div><div class="B"><span class="lab">DAEMON B</span>Has run hybrid PQXDH: ML-KEM-1024, Ed25519 and ML-DSA-65.</div></div>
+  </li>
+  <li data-t="4 A approves">
+   <h3>A's operator approves</h3>
+   <pre tabindex="0"><code>pondline contact approve --state-dir ./a --contact &lt;hex&gt;</code></pre>
+   <p>The relationship becomes active, unless the invitation was minted to approve automatically, in which case this step is skipped. Approving takes the operator's authority. The agent's credential can't do it.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>One padded envelope on B's queue. It can't read what the envelope says.</div>
+    <div class="wl" style="--from:8%;--to:50%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Active. Pairing is finished.</div><div class="B"><span class="lab">DAEMON B</span>Authenticates the Accept. Active.</div></div>
+  </li>
+ </ol>
+ </div>
+</section>
+
+<section class="b3" id="message" aria-labelledby="h-msg">
+ <h2 id="h-msg">One message, from commit to receipt</h2>
+ <p class="prose">B sends A a task. The budget of 10 that A set is how many of B's messages arrive ready; any more are held until A's operator raises it. Nothing reaches the network until it is on disk, and &ldquo;stored by the mailbox&rdquo; never counts as delivered.</p>
+ <div class="stepper" data-name="Message step">
+ <ol class="stage">
+  <li data-t="1 Commit">
+   <h3>B seals the payload and commits it</h3>
+   <pre tabindex="0"><code>pondline send --state-dir ./b --credential-file ./b/agent.cred --contact &lt;hex&gt; \
+    --content-type application/json --file task.json</code></pre>
+   <p>Payloads come from a file or standard input, never from arguments. The ciphertext in the commit is final. No later step encrypts again.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>Nothing yet.</div>
+    <div class="wl" style="--from:92%;--to:92%"><i class="blk"></i><span class="ml">no network</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>May be offline. It doesn't matter yet.</div><div class="B"><span class="lab">DAEMON B</span>One SQLite transaction: new state, outbox row, message row. Status <code>locally_queued</code>.</div></div>
+  </li>
+  <li data-t="2 Append">
+   <h3>The scheduler appends the committed bytes</h3>
+   <p>The scheduler sends only rows it reads back from the store. If the daemon dies before recording the answer, the retry carries the same bytes and envelope identifier, and the mailbox returns the original receipt.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>Queue identifier, append capability, envelope identifier, arrival time, and a size of exactly 4, 16, 64 or 256 KiB. The contents are ciphertext.</div>
+    <div class="wl" style="--from:92%;--to:50%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Still may be offline. The envelope waits.</div><div class="B"><span class="lab">DAEMON B</span>Status <code>stored_by_mailbox</code>. A retransmit time is set.</div></div>
+  </li>
+  <li data-t="3 Fetch">
+   <h3>A's fetcher long-polls</h3>
+   <p>When A is back, one fetcher per live queue asks for envelopes, waiting up to 25 seconds and taking up to 16 at a time.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>A fetch on this queue, and when it happened. Over Tor, it never sees a client address.</div>
+    <div class="wl" style="--from:50%;--to:8%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Has the envelope. Nothing is acknowledged yet.</div><div class="B"><span class="lab">DAEMON B</span>Waiting for a receipt.</div></div>
+  </li>
+  <li data-t="4 Process">
+   <h3>A decrypts and commits, then acknowledges</h3>
+   <p>A crash before the commit means the next fetch returns the envelope again. A crash after it means the next round acknowledges it. An envelope that keeps failing is quarantined after 5 attempts.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>An acknowledgement, after which it deletes the envelope.</div>
+    <div class="wl" style="--from:8%;--to:50%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>One transaction: new state, delivered row, processed row, receipt in the outbox.</div><div class="B"><span class="lab">DAEMON B</span>Still waiting.</div></div>
+  </li>
+  <li data-t="5 Receive">
+   <h3>A's agent reads it</h3>
+   <pre tabindex="0"><code>pondline receive --state-dir ./a --credential-file ./a/agent.cred --wait 25 --json</code></pre>
+   <p>The agent holds a socket and a credential that can send, receive, acknowledge and check status. It can't approve contacts, mint invitations or read the audit log. What it does with the message is up to its host's policy.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>Nothing. This is local.</div>
+    <div class="wl" style="--from:8%;--to:8%"><i class="blk"></i><span class="ml">local socket</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Hands over the plaintext. Every application message is in the operator's audit log.</div><div class="B"><span class="lab">DAEMON B</span>Still waiting.</div></div>
+  </li>
+  <li data-t="6 Receipt">
+   <h3>An encrypted receipt comes back</h3>
+   <p>The receipt is an ordinary outbox row and takes the same path. If none arrives within 3600 seconds, B retransmits a copy of the committed row under a fresh envelope identifier. Each later window doubles, up to 5 copies, and A commits each distinct message once.</p>
+   <div class="xs"><div class="mb"><span class="lab">ABOVE: THE MAILBOX SEES</span>One more padded envelope, on B's queue. It can't read this one either.</div>
+    <div class="wl" style="--from:8%;--to:92%"><i class="blk"></i><span class="ml">Tor onion service</span></div>
+    <div class="A"><span class="lab">DAEMON A</span>Done, once the receipt is sent.</div><div class="B"><span class="lab">DAEMON B</span>Status <code>received_by_peer</code>. Retransmission stops.</div></div>
+  </li>
+ </ol>
+ </div>
+<details class="crash">
+  <summary>Where a crash lands, and what resumes the work</summary>
+  <div class="tw" tabindex="0"><table><thead><tr><th scope="col">Crash point</th><th scope="col">What is durable</th><th scope="col">What resumes</th></tr></thead><tbody>
+<tr><th scope="row">Before the sender commits</th><td>Nothing; the caller got no message id</td><td>The caller retries. With an idempotency key the retry is safe either way.</td></tr>
+<tr><th scope="row">After the commit, before any append</th><td>An outbox row, queued</td><td>The scheduler's next tick reads it.</td></tr>
+<tr><th scope="row">Mailbox stored it, daemon died before recording</th><td>The row is still queued</td><td>Same bytes, same envelope identifier; the mailbox returns the original receipt.</td></tr>
+<tr><th scope="row">Mailbox stored it, then lost or damaged it</th><td>The row is stored, with a retransmit time</td><td>A copy is committed after the receipt window, and the peer resends its receipt for a copy it already stored.</td></tr>
+<tr><th scope="row">Receiver fetched, died before committing</th><td>The envelope is still at the mailbox</td><td>The next fetch returns it. After 5 failed attempts it is quarantined, with an incident.</td></tr>
+<tr><th scope="row">Receiver committed, died before acknowledging</th><td>A processed row with no acknowledgement</td><td>The next fetcher round acknowledges it.</td></tr>
+<tr><th scope="row">Tor sidecar dies</th><td>Nothing needs to be</td><td>The port owner restarts it, up to its limit, and Tor bootstraps again.</td></tr>
+<tr><th scope="row">Daemon killed</th><td>The database; the OS releases the lock</td><td>On restart the schema migrates and the workers rescan.</td></tr>
+</tbody></table></div>
+  <p class="note"><a href="docs/architecture/system.html#where-crash-safety-comes-from">The architecture document</a> has the full table and the sequence diagrams.</p>
+ </details>
+</section>
+
+<section class="b4" id="limits" aria-labelledby="h-lim">
+ <h2 id="h-lim">What it holds to, and what it doesn't claim</h2>
+ <div class="two">
+  <div>
+   <h3 class="m">HELD BY TYPES OR CHECKED BY TESTS</h3>
+   <ul class="l">
+    <li>No send before commit and no acknowledgement before commit, so the network never sees bytes the local state doesn't account for.</li>
+    <li>Keys, capabilities, payloads and ratchet state are opaque values. Log lines hold only typed fields, and OTP's crash reports are rebuilt from their shape.</li>
+    <li>Inbound work is bounded by each pairing's budget.</li>
+    <li>Tor runs as Arti in a separate <code>pondline-tor</code> process, so a crash in the Tor stack can't take the VM with it.</li>
+    <li>The primitives come from OTP's <code>crypto</code> over OpenSSL. Pondline has no crypto NIF of its own.</li>
+   </ul>
+  </div>
+  <div>
+   <h3 class="m">NOT CLAIMED</h3>
+   <ul class="l">
+    <li>It isn't metadata-free, as the list below shows.</li>
+    <li>Ratchet headers aren't encrypted, and post-compromise recovery is classical: each ratchet step is X25519.</li>
+    <li>The joiner's signed first message isn't deniable.</li>
+    <li>The state directory is protected by file permissions only.</li>
+    <li>There has been no independent security review, and neither the wire format nor the profile is frozen. Weigh that before relying on it for anything sensitive.</li>
+   </ul>
+  </div>
+  <div>
+   <h3 class="m">THE MAILBOX SEES</h3>
+   <ul class="l">
+    <li>Queue identifiers.</li>
+    <li>The padded size of each envelope: 4, 16, 64 or 256 KiB.</li>
+    <li>When envelopes arrive and when they are fetched.</li>
+    <li>That queues provisioned from one account can be linked to each other.</li>
+   </ul>
+  </div>
+  <div>
+   <h3 class="m">THE MAILBOX DOES NOT SEE</h3>
+   <ul class="l">
+    <li>Message contents. It stores ciphertext only.</li>
+    <li>A client address. Its only listener is on loopback, behind a Tor onion service.</li>
+    <li>Keys or ratchet state. They stay in each daemon's state directory.</li>
+   </ul>
+  </div>
+ </div>
+ <h3 class="m" style="margin-top:34px" id="checks">WHAT HAS BEEN CHECKED</h3>
+ <p class="prose" style="font-size:16.5px">A check counts only if a deliberately broken variant makes it fail. Formal results hold within each model's stated bounds. They don't prove the implementation correct as a whole.</p>
+ <dl class="spec">
+  <div><dt>Deterministic simulation</dt><dd>Two real daemons and a real mailbox in one VM under seeded faults, with exact replay.</dd></div>
+  <div><dt>Protocol simulation</dt><dd>The pure core under generated duplicates, replays, reordering and crashes at every step.</dd></div>
+  <div><dt>Lean 4</dt><dd>42 theorems on the codec, padding, retention and retransmit schedule, plus 11,201 vectors the Gleam code must match.</dd></div>
+  <div><dt>P</dt><dd>End-to-end delivery across three parties, with faults and crash points.</dd></div>
+  <div><dt>TLA+</dt><dd>The scheduler's claims and the fetcher's acknowledgement rule, in 18 configurations including mutants.</dd></div>
+  <div><dt>ProVerif</dt><dd>The handshake and sealed tickets, in 30 scenarios under broken-primitive and leaked-invitation adversaries.</dd></div>
+  <div><dt>Vectors</dt><dd>Wycheproof and NIST ACVP through the same bindings the protocol calls.</dd></div>
+ </dl>
+</section>
+
+<section class="b4" id="try" aria-labelledby="h-try" style="padding-top:0">
+ <h2 id="h-try">Try it</h2>
+ <p class="prose">Building needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5 or newer, and a Rust toolchain for the Tor sidecar. That OpenSSL requirement rules out the OTP in current Ubuntu packages. Release binaries aren't signed or notarized.</p>
+ <pre tabindex="0"><code>git clone https://github.com/Roasbeef/pondline.git
+cd pondline
+make install                        # PREFIX defaults to ~/.local
+pondline --version
+
+make demo CARRIER=loopback          # a mailbox, two daemons, two sandboxed agents
+make demo CARRIER=tor               # the same over real onion services</code></pre>
+ <p class="prose" style="margin:0">The demo sandboxes its agents with macOS <code>sandbox-exec</code>. <a href="docs/quickstart.html">The quick start</a> walks through the same flow by hand.</p>
+</section>
+
+<section class="docs" id="docs" aria-labelledby="h-docs">
+ <h2 id="h-docs">Go deeper</h2>
+ <p class="prose">The documents below are the project's own, listed from shallowest to deepest.</p>
+ <div class="dl">
+  <div><h3>START</h3><ul>
+   <li><a href="docs/quickstart.html">Quick start</a><span>Install, pair and message by hand, logs, exit codes</span></li>
+   <li><a href="docs/demo.html">The demonstration</a><span>What <code>make demo</code> sets up and what each step proves</span></li></ul></div>
+  <div><h3>HOW IT WORKS</h3><ul>
+   <li><a href="docs/architecture/system.html">System architecture</a><span>Packages, processes, and one message through all of them</span></li>
+   <li><a href="docs/architecture/mailbox.html">The mailbox</a><span>The service that holds the envelopes</span></li>
+   <li><a href="docs/architecture/sim.html">The simulation</a><span>Real daemons under seeded faults</span></li></ul></div>
+  <div><h3>THE PROTOCOL</h3><ul>
+   <li><a href="docs/spec.html">Specification</a><span>The protocol and its invariants</span></li>
+   <li><a href="docs/crypto-profile-v1.html">Crypto profile v1</a><span>The cryptography, byte for byte, and its limits</span></li>
+   <li><a href="docs/design-intent.html">Design intent</a><span>Why the system is shaped this way</span></li></ul></div>
+  <div><h3>DECISIONS AND PROOFS</h3><ul>
+   <li><a href="docs/adr/index.html">Architecture decisions</a><span>ADR-001 to ADR-014 and their consequences</span></li>
+   <li><a href="docs/formal/index.html">Formal checks</a><span>The models, and what they do and don't show</span></li></ul></div>
+ </div>
+</section>
+<span class="sinker" aria-hidden="true"></span>
+</main>
+<footer>
+ <p>The name nods to <a href="https://github.com/agl/pond">Pond</a>, Adam Langley's forward-secure messaging experiment over Tor. Pondline isn't a successor to Pond and shares no code with it.</p>
+ <p>License: <a href="https://github.com/Roasbeef/pondline/blob/main/LICENSE">MIT</a>. Security reports: <a href="https://github.com/Roasbeef/pondline/security/advisories/new">private vulnerability reporting</a>. Source: <a href="https://github.com/Roasbeef/pondline">github.com/Roasbeef/pondline</a></p>
+</footer>
+<script src="site.js"></script>
+</body>
+</html>

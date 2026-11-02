@@ -1,0 +1,60 @@
+:root{--w:190px;--rail:calc(var(--g) + var(--w)*.036);--side:200px}
+.above{display:flex;flex-wrap:wrap;justify-content:space-between;align-items:flex-end;gap:6px 20px;background:var(--b0);border-bottom:calc(var(--w)*.012 + .5px) solid var(--teal);padding:10px var(--g) 0}
+.word{stroke:var(--teal);display:block;width:var(--w);height:calc(var(--w)*.3);margin-bottom:calc(var(--w)*-.1);position:relative;z-index:2;overflow:visible}
+.word .f{stroke:var(--verm)}.word .d{fill:var(--teal);stroke:none}
+.above .nav{padding-bottom:6px}
+.shell{position:relative;background:var(--b1);min-height:80vh;display:grid;grid-template-columns:var(--side) minmax(0,1fr);gap:0 40px;padding:30px var(--g) 60px}
+.shell::before{content:"";position:absolute;top:0;bottom:0;left:calc(var(--rail) - 1px);width:2px;background:var(--teal)}
+.side{padding-left:30px;font-size:15.5px;line-height:1.3;position:sticky;top:12px;align-self:start;max-height:calc(100vh - 24px);overflow:auto}
+.side>details>summary{font:600 13px var(--mono);cursor:pointer;display:none}
+.side h2,.side details details>summary{font:600 11.5px var(--mono);letter-spacing:.05em;text-transform:uppercase;color:var(--mute);margin:18px 0 6px}
+.side details details>summary{cursor:pointer}
+.side h2:first-of-type{margin-top:6px}
+.side ul{list-style:none;margin:0;padding:0}
+.side a{display:block;padding:4px 0;color:inherit}
+.side a[aria-current]{font-weight:700;text-decoration:none;box-shadow:inset 3px 0 0 var(--verm);padding-left:8px}
+article{min-width:0;max-width:46em}
+h1.t{font-size:clamp(32px,4vw,46px);line-height:1.1;margin:0 0 8px;font-weight:600}
+.src{font:12.5px/1.5 var(--mono);color:var(--mute);margin:0 0 14px;overflow-wrap:anywhere}
+.src a{color:inherit}
+.warn{border-left:4px solid var(--verm);padding:6px 12px;font-size:15.5px;line-height:1.4;margin:0 0 22px;background:var(--b0)}
+article h1:not(.t){font-size:30px;line-height:1.2;margin:46px 0 12px;font-weight:600;border-top:2px solid var(--teal);padding-top:12px}
+article h2{font-size:25px;line-height:1.2;margin:36px 0 10px;font-weight:600}
+article h3{font-size:20px;line-height:1.25;margin:26px 0 8px}
+article h4{font-size:17px;margin:20px 0 6px}
+article h1,article h2,article h3{scroll-margin-top:12px}
+article p{margin:0 0 .95em}
+article ul,article ol{padding-left:1.3em;margin:0 0 1em}article li{margin-bottom:.35em}
+article blockquote{margin:0 0 1em;padding:2px 14px;border-left:3px solid var(--hair);color:var(--mute)}
+article hr{border:0;border-top:1px solid var(--hair);margin:30px 0}
+.toc{font-size:15px;line-height:1.3;border:1px solid var(--hair);padding:8px 12px;margin:0 0 24px;background:var(--b0)}
+.toc summary{font:600 12px var(--mono);letter-spacing:.05em;cursor:pointer;color:var(--mute)}
+.toc ul{list-style:none;margin:8px 0 0;padding:0}
+@media (min-width:1100px){.toc>ul{columns:2;column-gap:28px}.toc>ul>li{break-inside:avoid}}
+.toc ul ul{margin:4px 0 6px 14px;font-size:14px}.toc li{margin:0 0 5px}.toc a{color:inherit}
+.tw{overflow-x:auto;margin:0 0 1.2em;max-width:100%}
+.tw table{border-collapse:collapse;font-size:15.5px;line-height:1.38}
+.tw th,.tw td{text-align:left;vertical-align:top;padding:7px 12px 7px 0;border-top:1px solid var(--hair);min-width:6em}
+.tw thead th{font:600 12px var(--mono);border-top:0;border-bottom:2px solid var(--teal)}
+.cb{position:relative;margin:0 0 1em}.cb pre{margin:0}
+.copy{position:absolute;top:6px;right:6px;font:11.5px var(--mono);background:var(--deep);color:var(--deep-ink);border:1px solid var(--deep-hair);padding:3px 6px;cursor:pointer}
+/* Where a pointer can hover, the badge appears only on demand so it never covers a long first line. */
+@media (hover:hover){.copy{opacity:0}.cb:hover .copy,.cb:focus-within .copy{opacity:1}}
+.mm{margin:0 0 1.3em}
+/* Diagrams shrink to fit down to 70% of natural size (set per image), then scroll sideways, so labels stay readable. */
+.mm img{display:block;max-width:100%;height:auto}
+.mm-l,.mm-d{overflow-x:auto}
+.mm-l{display:var(--mm-l)}.mm-d{display:var(--mm-d)}
+.mm summary{font:12px var(--mono);color:var(--mute);cursor:pointer;margin-top:4px}
+.mm pre{margin-top:6px}
+footer{background:var(--deep);color:var(--deep-mute);padding:20px var(--g);font-size:15px;--link:var(--deep-link)}
+footer p{margin:0;max-width:50em}
+@media (max-width:820px){
+ body{font-size:17px}
+ :root{--w:150px}
+ .above{flex-direction:column-reverse;align-items:flex-start}
+ .shell{grid-template-columns:minmax(0,1fr);padding-top:20px}
+ article,.side{padding-left:24px}
+ .side{position:static;max-height:none;margin-bottom:14px}
+ .side>details>summary{display:block;padding:8px 0}
+}

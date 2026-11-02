@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>$pagetitle$ | Pondline</title>
+<link rel="icon" href="$root$logo-mark.svg" type="image/svg+xml">
+<link rel="stylesheet" href="$root$base.css">
+<link rel="stylesheet" href="$root$docs.css">
+<script>try{var t=localStorage.getItem('pl-theme');if(t)document.documentElement.dataset.theme=t}catch(e){}</script>
+</head>
+<body>
+<a class="skip" href="#doc">Skip to content</a>
+<header class="above">
+ <a href="$root$index.html" aria-label="Pondline home"><svg class="word" viewBox="0 0 500 150" aria-hidden="true"><g fill="none" stroke-width="12" transform="translate(12 0)"><circle class="f" cx="30" cy="70" r="24"/><path d="M6 40V150"/><circle cx="102" cy="70" r="24"/><path d="M150 40V100M150 70a24 24 0 0 1 48 0V100"/><circle cx="246" cy="70" r="24"/><path d="M270 6V100M294 6V100M318 40V100"/><path d="M342 40V100M342 70a24 24 0 0 1 48 0V100"/><path d="M414 70H462A24 24 0 1 0 455 87"/><circle class="d" cx="318" cy="16" r="8"/></g></svg></a>
+ <nav class="nav" aria-label="Site"><a href="$root$index.html#pair">How it works</a><a href="$root$index.html#limits">Limits</a><a href="https://github.com/Roasbeef/pondline">GitHub</a>
+ <button class="tbtn" type="button" id="theme" aria-label="Switch between light and dark"><svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><circle cx="8" cy="8" r="6.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M2 8a6 6 0 0 0 12 0z" fill="currentColor"/></svg></button></nav>
+</header>
+<div class="shell">
+ <nav class="side" aria-label="Documents"><details open data-phone-closed><summary>All documents</summary>
+$nav$
+ </details></nav>
+ <article id="doc">
+  <h1 class="t">$title$</h1>
+  <p class="src">Rendered from <a href="https://github.com/Roasbeef/pondline/blob/main/$source$">$source$</a></p>
+  <p class="warn">Pre-1.0 and not independently reviewed. The wire format isn't frozen. Built and tested only on macOS on Apple silicon. Report security problems through <a href="https://github.com/Roasbeef/pondline/security/advisories/new">private vulnerability reporting</a>.</p>
+$if(toc)$
+  <details class="toc" open data-phone-closed><summary>On this page</summary>$table-of-contents$</details>
+$endif$
+$body$
+ </article>
+</div>
+<footer><p>License: <a href="https://github.com/Roasbeef/pondline/blob/main/LICENSE">MIT</a>. Source: <a href="https://github.com/Roasbeef/pondline">github.com/Roasbeef/pondline</a></p></footer>
+<script src="$root$site.js"></script>
+</body>
+</html>
