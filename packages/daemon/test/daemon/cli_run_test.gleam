@@ -203,7 +203,7 @@ pub fn invite_accept_with_a_ticket_reads_the_file_test() {
   use f <- fixture.with_server
 
   let path = f.dir <> "/ticket.txt"
-  let assert Ok(Nil) = simplifile.write(path, "rw1abc\n")
+  let assert Ok(Nil) = simplifile.write(path, "pl1abc\n")
   let outcome =
     run(f, [
       "invite",
@@ -217,7 +217,7 @@ pub fn invite_accept_with_a_ticket_reads_the_file_test() {
 
   assert outcome.status == 0
   assert stdout(outcome) == contact_hex() <> "\n"
-  assert list.contains(fixture.calls(f.fake), "accept_ticket rw1abc\n al")
+  assert list.contains(fixture.calls(f.fake), "accept_ticket pl1abc\n al")
 }
 
 /// A ticket input that is not text, such as an invitation file given with

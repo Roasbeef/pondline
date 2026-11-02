@@ -89,7 +89,7 @@ fn loopback_ticket() -> Ticket {
 /// A checksummed string over arbitrary data symbols, so the decoder's
 /// strictness is tested past the checksum.
 fn checksummed(data: List(Int)) -> String {
-  "rw1"
+  "pl1"
   <> codex32.from_symbols(data)
   <> codex32.from_symbols(codex32.checksum(ticket.prefix, data))
 }
@@ -117,8 +117,8 @@ pub fn a_ticket_round_trips_test() {
 pub fn tickets_have_their_documented_lengths_test() {
   assert string.length(text(onion_ticket())) == 130
   assert string.length(text(loopback_ticket())) == 74
-  assert string.starts_with(text(onion_ticket()), "rw1q")
-  assert string.starts_with(text(loopback_ticket()), "rw1p")
+  assert string.starts_with(text(onion_ticket()), "pl1q")
+  assert string.starts_with(text(loopback_ticket()), "pl1p")
 }
 
 /// Every single-character substitution, anywhere after the prefix, is
@@ -287,7 +287,7 @@ pub fn only_the_exact_text_form_is_read_test() {
   assert ticket.decode(" " <> good) == Error(ticket.NotATicket)
   assert ticket.decode("ms1" <> string.drop_start(good, 3))
     == Error(ticket.NotATicket)
-  assert ticket.decode("rw1b") == Error(ticket.NotATicket)
+  assert ticket.decode("pl1b") == Error(ticket.NotATicket)
   assert ticket.decode("") == Error(ticket.NotATicket)
   assert ticket.decode(good <> string.repeat("q", 200))
     == Error(ticket.NotATicket)
@@ -300,7 +300,7 @@ pub fn a_ticket_does_not_print_its_secret_test() {
   let shown = string.inspect(made) <> string.inspect(keys)
 
   assert !string.contains(shown, text(made))
-  assert !string.contains(shown, "rw1")
+  assert !string.contains(shown, "pl1")
   assert !string.contains(shown, string.inspect(<<9:256>>))
 }
 
@@ -409,7 +409,7 @@ pub fn a_malformed_blob_is_refused_test() {
 
 // ---------------------------------------------------------------- helpers
 
-/// Runs `check` only for positions after the `rw1` prefix.
+/// Runs `check` only for positions after the `pl1` prefix.
 fn skip_prefix(position: Int, check: fn() -> Nil) -> Nil {
   case position < 3 {
     True -> Nil

@@ -619,10 +619,10 @@ fn read_loop(
 
 /// The refusal of a word no command takes. An option name is repeated so
 /// the user can see the typo; a stray word is not, because a stray word
-/// is often a secret typed where a flag stood (`--ticket rw1...`).
+/// is often a secret typed where a flag stood (`--ticket pl1...`).
 fn unknown(name: String) -> String {
   // An option written `--name=value` is named without its value, which
-  // may be the secret (`--ticket=rw1...`).
+  // may be the secret (`--ticket=pl1...`).
   case string.starts_with(name, "-"), string.split_once(name, "=") {
     True, Ok(#(option, _)) -> "unknown option " <> option <> "=..."
     True, Error(Nil) -> "unknown option " <> name

@@ -54,7 +54,7 @@ const low_mask = 0x3fffffffffffffffff
 /// ## Examples
 ///
 /// ```gleam
-/// list.length(codex32.checksum("rw", [0, 1, 2]))
+/// list.length(codex32.checksum("pl", [0, 1, 2]))
 /// // -> 15
 /// ```
 pub fn checksum(hrp: String, data: List(Int)) -> List(Int) {
@@ -77,7 +77,7 @@ pub fn checksum(hrp: String, data: List(Int)) -> List(Int) {
 /// ## Examples
 ///
 /// ```gleam
-/// codex32.verify("rw", list.append(data, codex32.checksum("rw", data)))
+/// codex32.verify("pl", list.append(data, codex32.checksum("pl", data)))
 /// // -> True
 /// ```
 pub fn verify(hrp: String, data: List(Int)) -> Bool {

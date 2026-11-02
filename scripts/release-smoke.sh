@@ -233,7 +233,7 @@ step "ok   two daemons ready; health reports version=$VERSION commit=$COMMIT"
 TICKET=$(reedwire invite create --state-dir "$T/a" --description responder \
   --budget 10 --out "$T/invite.bin" --ticket 2>/dev/null) || die "invite create --ticket"
 case "$TICKET" in
-  rw1*) ;;
+  pl1*) ;;
   *) die "invite create --ticket printed no ticket" ;;
 esac
 [ -s "$T/invite.bin" ] || die "invite create --ticket --out wrote no file"

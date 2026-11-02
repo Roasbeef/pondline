@@ -53,7 +53,7 @@ pub fn invitation(result: Dynamic) -> Result(BitArray, String) {
 ///
 /// ```gleam
 /// cli_render.ticket(result)
-/// // -> Ok("rw1...")
+/// // -> Ok("pl1...")
 /// ```
 pub fn ticket(result: Dynamic) -> Result(String, String) {
   field(result, "ticket", decode.string)

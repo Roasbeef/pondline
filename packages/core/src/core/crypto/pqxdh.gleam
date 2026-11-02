@@ -19,7 +19,7 @@
 //// DH1 = DH(IK_init, SPK)   DH2 = DH(EK, IK_resp)   DH3 = DH(EK, SPK)
 //// (SS, CT) = ML-KEM-1024.Encaps(PQSPK)
 //// SK = HKDF(salt = 0^32, ikm = 0xFF^32 || DH1 || DH2 || DH3 || SS,
-////           info = "Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1", L = 32)
+////           info = "Pondline_PQXDH_X25519_SHA-256_ML-KEM-1024_v1", L = 32)
 //// AD = fingerprint(IK_init) || fingerprint(IK_resp)
 //// ```
 ////
@@ -84,19 +84,19 @@ import gleam/result
 pub const wire_version = 1
 
 /// The HKDF `info` of the shared-secret derivation.
-pub const kdf_info = <<"Reedwire_PQXDH_X25519_SHA-256_ML-KEM-1024_v1":utf8>>
+pub const kdf_info = <<"Pondline_PQXDH_X25519_SHA-256_ML-KEM-1024_v1":utf8>>
 
 /// The label the signed X25519 prekey's signature covers, followed by the
 /// 32-byte public key.
-pub const spk_label = <<"Reedwire_SignedPrekey_v1":utf8>>
+pub const spk_label = <<"Pondline_SignedPrekey_v1":utf8>>
 
 /// The label the signed ML-KEM prekey's signature covers, followed by the
 /// 1568-byte public key.
-pub const pqspk_label = <<"Reedwire_PQSignedPrekey_v1":utf8>>
+pub const pqspk_label = <<"Pondline_PQSignedPrekey_v1":utf8>>
 
 /// The label the initiator's transcript signature covers, followed by the
 /// transcript fields (`initial_transcript`).
-pub const transcript_label = <<"Reedwire_InitiatorTranscript_v1":utf8>>
+pub const transcript_label = <<"Pondline_InitiatorTranscript_v1":utf8>>
 
 /// The size of an encoded bundle: the version (1), the inviter's public
 /// identity (5389), the SPK (32) and its hybrid signature (3373), the PQSPK

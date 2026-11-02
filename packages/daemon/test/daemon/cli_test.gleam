@@ -360,7 +360,7 @@ pub fn no_command_accepts_a_payload_or_a_credential_in_argv_test() {
 /// flag, and a ticket typed after it, or anywhere else, is refused without
 /// the refusal repeating it (ADR-009).
 pub fn no_command_accepts_a_ticket_in_argv_test() {
-  let ticket = "rw1qy352euf40x77qfrg4ncn27daufrg4ncn27daufrg4ncn27daufrg"
+  let ticket = "pl1qy352euf40x77qfrg4ncn27daufrg4ncn27daufrg4ncn27daufrg"
   let commands = [
     ["invite", "create", "--description", "d", "--budget", "1", "--ticket"],
     ["invite", "accept", "--ticket", "--stdin"],
@@ -380,7 +380,7 @@ pub fn no_command_accepts_a_ticket_in_argv_test() {
         let assert Error(message) = parse(line)
 
         assert !string.contains(message, ticket)
-        assert !string.contains(message, "rw1")
+        assert !string.contains(message, "pl1")
       },
     )
   })

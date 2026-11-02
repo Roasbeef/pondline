@@ -43,7 +43,7 @@ import gleam/result
 pub const path = "/v1/mailbox"
 
 /// The body's media type.
-pub const content_type = "application/vnd.reedwire.mailbox+tlv"
+pub const content_type = "application/vnd.pondline.mailbox+tlv"
 
 /// How much longer than the long-poll wait a `Fetch` may take to answer: the
 /// mailbox's own wait plus time to build and send the batch over Tor.

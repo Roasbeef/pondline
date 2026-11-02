@@ -86,7 +86,7 @@ pub fn a_ticket_pairs_two_daemons_and_a_message_crosses_test() {
 
   let assert Ok(issued) =
     api.invite_ticket(a, "by ticket", offer.AutoApprove, 5)
-  assert string.starts_with(text(issued.ticket), "rw1p")
+  assert string.starts_with(text(issued.ticket), "pl1p")
   assert string.length(text(issued.ticket)) == 74
 
   // A pasted ticket arrives with a newline; that is not part of it.

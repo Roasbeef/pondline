@@ -97,10 +97,10 @@ pub const state_version = 1
 pub const header_bytes = 40
 
 /// The HKDF `info` of the root-key step.
-pub const root_info = <<"Reedwire_Ratchet_v1":utf8>>
+pub const root_info = <<"Pondline_Ratchet_v1":utf8>>
 
 /// The HKDF `info` that expands a message key into an AEAD key and nonce.
-pub const message_info = <<"Reedwire_MessageKeys_v1":utf8>>
+pub const message_info = <<"Pondline_MessageKeys_v1":utf8>>
 
 /// One side's ratchet state. Opaque: it is built by `init_sender`,
 /// `init_receiver` or `decode_state`, and changes only by returning a new

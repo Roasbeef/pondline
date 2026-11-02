@@ -23,7 +23,7 @@
 #             nothing else: no state directory, no network except its
 #             daemon's one Unix socket.
 #
-# Pairing goes by ticket by default (ADR-009): A prints a short rw1 string
+# Pairing goes by ticket by default (ADR-009): A prints a short pl1 string
 # and B redeems it from standard input, fetching the sealed invitation from
 # the mailbox. --pairing=file moves the 14.6 KB invitation file instead.
 #
@@ -394,7 +394,7 @@ if [ "$PAIRING" = ticket ]; then
   TICKET=$(reedwire invite create --state-dir "$A" --description "responder" \
     --budget "$BUDGET" --ticket 2>/dev/null) || die "invite create --ticket failed"
   case "$TICKET" in
-    rw1*) ;;
+    pl1*) ;;
     *) die "invite create --ticket printed no ticket" ;;
   esac
   pass "ticket issued: ${#TICKET} characters, ${TICKET:0:4}...; the sealed invitation waits at the mailbox"
