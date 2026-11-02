@@ -53,7 +53,7 @@ type Options {
 }
 
 const usage: String =
-  "reedwire lint — the house rules gleam check does not know
+  "pondline lint — the house rules gleam check does not know
 
 usage: gleam run -m lint/cli -- [options] <path>...
 

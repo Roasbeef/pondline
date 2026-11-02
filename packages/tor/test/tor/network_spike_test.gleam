@@ -2,7 +2,7 @@
 //// onion service in front of a local echo server and the other connecting
 //// to it, then a crash and a slow reader.
 ////
-//// It runs only with `REEDWIRE_TOR_NETWORK=1`. `tor_slow_test.erl` calls
+//// It runs only with `PONDLINE_TOR_NETWORK=1`. `tor_slow_test.erl` calls
 //// `run_spike`, because EUnit's default timeout is shorter than a
 //// bootstrap plus an onion service publication. Measurements go to
 //// stderr as `SPIKE` lines, which is where the ADR's numbers come from.
@@ -118,9 +118,9 @@ fn spike() -> Nil {
   drain_events(host_events)
 
   // Bytes round-trip through two sidecars and the Tor network.
-  let assert Ok(Nil) = stream.send(s, <<"hello reedwire":utf8>>, 10_000)
+  let assert Ok(Nil) = stream.send(s, <<"hello pondline":utf8>>, 10_000)
   let assert Ok(echoed) = stream.recv(s, 1024, 60_000)
-  assert bit_array.to_string(echoed) == Ok("hello reedwire")
+  assert bit_array.to_string(echoed) == Ok("hello pondline")
   report("round trip: ok")
 
   let assert Ok(host_pid) = tor.sidecar_pid(host_side)

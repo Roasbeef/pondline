@@ -2,7 +2,7 @@
 //// bound to an X25519 agreement key.
 ////
 //// Signal's X3DH uses one Curve25519 key for both agreement and signing
-//// through XEdDSA. Reedwire keeps separate keys instead (`docs/review/
+//// through XEdDSA. Pondline keeps separate keys instead (`docs/review/
 //// 2026-10-31-design-review.md`, rulings): the signing keys sign, the
 //// X25519 key agrees, and a binding signature ties them together. The keys
 //// are generated fresh per relationship, so an identity says nothing about

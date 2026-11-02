@@ -260,7 +260,7 @@ pub async fn accept_loop(outbound: Arc<Outbound>, listener: UnixListener) {
         let Ok((mut sock, _)) = listener.accept().await else {
             // The listener only fails when the socket file is gone or the
             // process is out of descriptors; neither is recoverable here.
-            eprintln!("reedwire-tor: outbound listener failed");
+            eprintln!("pondline-tor: outbound listener failed");
             return;
         };
 

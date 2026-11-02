@@ -7,8 +7,8 @@
 //// plays every seed twice and requires identical worlds, which holds only
 //// because the suite is seeded.
 ////
-//// `REEDWIRE_SWARM=<count>` and `REEDWIRE_SWARM_SEED=<number>` size and seed
-//// the campaign test, and `REEDWIRE_REPLAY=<hex>` plays one seed with its
+//// `PONDLINE_SWARM=<count>` and `PONDLINE_SWARM_SEED=<number>` size and seed
+//// the campaign test, and `PONDLINE_REPLAY=<hex>` plays one seed with its
 //// log. A failing campaign prints the seed and run index.
 
 import core/offer
@@ -44,13 +44,13 @@ const default_generator_seed = 20_261_101
 
 pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_test() {
   swarm.campaign(
-    env_int("REEDWIRE_SWARM", default_runs),
-    env_int("REEDWIRE_SWARM_SEED", default_generator_seed),
+    env_int("PONDLINE_SWARM", default_runs),
+    env_int("PONDLINE_SWARM_SEED", default_generator_seed),
   )
 }
 
 pub fn a_seed_given_in_the_environment_replays_test() {
-  case env("REEDWIRE_REPLAY", "") {
+  case env("PONDLINE_REPLAY", "") {
     "" -> Nil
     hex -> swarm.replay(hex)
   }

@@ -43,21 +43,21 @@ pub fn start_sink() -> #(Int, process.Pid)
 @external(erlang, "tor_test_ffi", "drain_sink")
 pub fn drain_sink(sink: process.Pid) -> Nil
 
-/// The sidecar binary: `REEDWIRE_TOR_BIN`, or the release build in the
+/// The sidecar binary: `PONDLINE_TOR_BIN`, or the release build in the
 /// repository relative to the package directory.
 pub fn binary_path() -> String {
-  getenv("REEDWIRE_TOR_BIN")
-  |> result.unwrap("../../native/reedwire-tor/target/release/reedwire-tor")
+  getenv("PONDLINE_TOR_BIN")
+  |> result.unwrap("../../native/pondline-tor/target/release/pondline-tor")
 }
 
 /// Whether the network spike is enabled.
 pub fn network_enabled() -> Bool {
-  getenv("REEDWIRE_TOR_NETWORK") == Ok("1")
+  getenv("PONDLINE_TOR_NETWORK") == Ok("1")
 }
 
 /// Reports a skipped test on stderr, which EUnit does not discard.
 pub fn skip(name: String) -> Nil {
-  io.println_error("SKIP " <> name <> ": needs REEDWIRE_TOR_NETWORK=1")
+  io.println_error("SKIP " <> name <> ": needs PONDLINE_TOR_NETWORK=1")
 }
 
 /// Runs a body against a started sidecar with a fresh state directory,

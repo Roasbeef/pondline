@@ -1,7 +1,7 @@
 //// The command line's Tor options, and the onion-hosting path itself.
 ////
 //// Argument parsing is checked on every run. Hosting needs the Tor network,
-//// so `run_onion` does its work only with `REEDWIRE_TOR_NETWORK=1`;
+//// so `run_onion` does its work only with `PONDLINE_TOR_NETWORK=1`;
 //// `mailbox_slow_test.erl` calls it because EUnit's default timeout is
 //// shorter than a bootstrap.
 
@@ -66,17 +66,17 @@ pub fn grant_takes_no_tor_options_test() {
 
 /// Hosts a mailbox on an onion service and checks the address it returns.
 pub fn run_onion() -> Nil {
-  case getenv("REEDWIRE_TOR_NETWORK") == Ok("1") {
+  case getenv("PONDLINE_TOR_NETWORK") == Ok("1") {
     True -> host()
     False ->
-      io.println_error("SKIP onion_hosting: needs REEDWIRE_TOR_NETWORK=1")
+      io.println_error("SKIP onion_hosting: needs PONDLINE_TOR_NETWORK=1")
   }
 }
 
 fn host() -> Nil {
   let binary =
-    getenv("REEDWIRE_TOR_BIN")
-    |> result.unwrap("../../native/reedwire-tor/target/release/reedwire-tor")
+    getenv("PONDLINE_TOR_BIN")
+    |> result.unwrap("../../native/pondline-tor/target/release/pondline-tor")
   let dir = make_scratch_dir()
 
   let config =

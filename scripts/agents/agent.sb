@@ -1,4 +1,4 @@
-;; The sandbox every Reedwire demo agent runs in (macOS Seatbelt).
+;; The sandbox every Pondline demo agent runs in (macOS Seatbelt).
 ;;
 ;; An agent is a program that reads messages from a peer it does not control,
 ;; so the pairing's budget is only half of the defence: the other half is that
@@ -16,7 +16,7 @@
 ;;   API_SOCK   the daemon's local API socket, the only thing it may connect to.
 ;;   STATE_DIR  the daemon's state directory (database, operator.cred, Tor
 ;;              state). Named only so it can be denied by name.
-;;   RUNTIME    the built `reedwire` CLI: the Erlang shipment of the daemon
+;;   RUNTIME    the built `pondline` CLI: the Erlang shipment of the daemon
 ;;              package, code only, read-only; or, with demo.sh --release, a
 ;;              release tree, which carries its own VM and OpenSSL.
 ;;   OTP_ROOT   the Erlang/OTP installation the CLI runs on (the directory that

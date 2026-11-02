@@ -48,7 +48,7 @@
 ////
 //// `gepa`, the reflective prompt search as a library, joined for the plain
 //// reason that it is meant to be embedded elsewhere: a project that is not
-//// Reedwire depends on it without taking Reedwire, so it may name no Reedwire package
+//// Pondline depends on it without taking Pondline, so it may name no Pondline package
 //// and no BEAM-only one, and its state machine is property-tested on both
 //// targets the way `evalstat`'s rule is. The eval package consumes it; it
 //// consumes nothing in the tree.
@@ -78,7 +78,7 @@
 ////
 //// Because no target is the safe one. An Erlang external closes the
 //// portable half. A JavaScript external keeps it and breaks the BEAM build
-//// instead, which is the target Reedwire actually ships on. A matched pair
+//// instead, which is the target Pondline actually ships on. A matched pair
 //// keeps both builds and still puts trusted-unchecked foreign code inside
 //// the packages whose entire claim is that they are pure functions of
 //// their arguments. The rule therefore names no target: this is the strict

@@ -1,5 +1,5 @@
 //// PQXDH, the post-quantum extended triple Diffie-Hellman handshake
-//// (Signal's specification), specialised to Reedwire's invitation flow, and
+//// (Signal's specification), specialised to Pondline's invitation flow, and
 //// the hand-off into the Double Ratchet.
 ////
 //// ## Roles
@@ -27,7 +27,7 @@
 //// key pair is the signed prekey, as in Signal's hand-off from X3DH. Signal
 //// puts the identity encodings themselves in `AD`; a hybrid identity is
 //// 5389 bytes, and `AD` is stored in every ratchet state and authenticated
-//// with every message, so Reedwire uses the identities' fingerprints
+//// with every message, so Pondline uses the identities' fingerprints
 //// (SHA-256 of each encoding) instead. SHA-256's collision resistance binds
 //// the identities as tightly, for 64 bytes rather than 10778.
 ////

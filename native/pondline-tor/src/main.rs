@@ -1,8 +1,8 @@
-//! `reedwire-tor`: Arti as a separate OS process.
+//! `pondline-tor`: Arti as a separate OS process.
 //!
 //! Why a sidecar and not a NIF: a crash or stall inside Arti must not take
 //! the BEAM down, and bytes that cross a real socket give the BEAM ordinary
-//! passive-mode backpressure end to end, so Reedwire builds no read-credit
+//! passive-mode backpressure end to end, so Pondline builds no read-credit
 //! machinery of its own (`docs/adr/001-tor-sidecar.md`).
 //!
 //! The Erlang side starts this binary as a port with `{packet, 4}`. Two
@@ -97,7 +97,7 @@ async fn control_loop(
             // End of file is the normal way a port owner leaves.
             Err(FrameError::Closed) => return ExitCode::SUCCESS,
             Err(FrameError::TooLarge(len)) => {
-                eprintln!("reedwire-tor: control frame of {len} bytes refused");
+                eprintln!("pondline-tor: control frame of {len} bytes refused");
                 return ExitCode::from(EXIT_PROTOCOL);
             }
         };
@@ -108,7 +108,7 @@ async fn control_loop(
         let request = match Request::decode(&payload) {
             Ok(request) => request,
             Err(e) => {
-                eprintln!("reedwire-tor: undecodable control frame: {e:?}");
+                eprintln!("pondline-tor: undecodable control frame: {e:?}");
                 return ExitCode::from(EXIT_PROTOCOL);
             }
         };
@@ -188,25 +188,25 @@ async fn main() -> ExitCode {
     let _ = rustls::crypto::ring::default_provider().install_default();
 
     let Some(state_dir) = state_dir_arg() else {
-        eprintln!("usage: reedwire-tor --state-dir <dir>");
+        eprintln!("usage: pondline-tor --state-dir <dir>");
         return ExitCode::from(EXIT_SETUP);
     };
     if let Err(e) = private_dir(&state_dir) {
-        eprintln!("reedwire-tor: cannot create the state directory: {e}");
+        eprintln!("pondline-tor: cannot create the state directory: {e}");
         return ExitCode::from(EXIT_SETUP);
     }
 
     let client = match build_client(&state_dir) {
         Ok(client) => client,
         Err(e) => {
-            eprintln!("reedwire-tor: cannot create the Tor client: {e}");
+            eprintln!("pondline-tor: cannot create the Tor client: {e}");
             return ExitCode::from(EXIT_SETUP);
         }
     };
     let (listener, socket_path) = match bind_outbound(&state_dir) {
         Ok(bound) => bound,
         Err(e) => {
-            eprintln!("reedwire-tor: cannot bind the outbound socket: {e}");
+            eprintln!("pondline-tor: cannot bind the outbound socket: {e}");
             return ExitCode::from(EXIT_SETUP);
         }
     };

@@ -415,7 +415,7 @@ pub type InvitationFile {
 /// ## Examples
 ///
 /// ```gleam
-/// let assert Ok(store) = store.open("/var/lib/reedwire/daemon.db", suite)
+/// let assert Ok(store) = store.open("/var/lib/pondline/daemon.db", suite)
 /// store.close(store)
 /// // -> Ok(Nil)
 /// ```

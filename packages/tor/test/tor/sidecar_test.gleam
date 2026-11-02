@@ -7,7 +7,7 @@ import tor/stream
 import tor/support
 
 pub fn missing_binary_fails_to_start_test() {
-  let cfg = tor.config("/nonexistent/reedwire-tor", "/tmp/rwtor-none")
+  let cfg = tor.config("/nonexistent/pondline-tor", "/tmp/rwtor-none")
   assert tor.start(cfg) == Error(tor.StartFailed(tor.SpawnFailed))
 }
 

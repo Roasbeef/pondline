@@ -2,7 +2,7 @@
 ////
 //// # Why a rule about blank lines
 ////
-//// Reedwire's comment register is not decoration (`CLAUDE.md`, "Literate
+//// Pondline's comment register is not decoration (`CLAUDE.md`, "Literate
 //// code"): a reader should be able to follow a module's ownership model and
 //// its failure behaviour by reading its prose in order. That only works if
 //// the prose is *findable*, and what makes a comment findable is the blank

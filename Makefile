@@ -1,4 +1,4 @@
-# Reedwire — common developer commands.
+# Pondline — common developer commands.
 #
 # Every target is a thin wrapper over the scripts and package tooling, so
 # what CI runs and what you run locally are the same commands.
@@ -44,8 +44,8 @@ test-%: ## Run one package's tests, e.g. make test-core
 # ---------------------------------------------------------------- sidecar
 
 .PHONY: sidecar
-sidecar: ## Build the reedwire-tor Arti sidecar (release); the tor package's tests need it
-	cargo build --release --manifest-path native/reedwire-tor/Cargo.toml
+sidecar: ## Build the pondline-tor Arti sidecar (release); the tor package's tests need it
+	cargo build --release --manifest-path native/pondline-tor/Cargo.toml
 
 .PHONY: demo
 demo: ## Run the two-daemon, two-sandboxed-agent demo: make demo CARRIER=loopback|tor
@@ -53,13 +53,13 @@ demo: ## Run the two-daemon, two-sandboxed-agent demo: make demo CARRIER=loopbac
 
 # ---------------------------------------------------------------- releasing
 
-# One self-contained tree, build/release/<platform>/reedwire, holding both
-# programs (bin/reedwire and bin/mailbox) over its own ERTS, OpenSSL and Tor
+# One self-contained tree, build/release/<platform>/pondline, holding both
+# programs (bin/pondline and bin/mailbox) over its own ERTS, OpenSSL and Tor
 # sidecar (docs/adr/003-packaging.md and its addendum). release.sh builds the
-# sidecar itself unless REEDWIRE_TOR_BIN names one already built, which is
+# sidecar itself unless PONDLINE_TOR_BIN names one already built, which is
 # how a worktree reuses another checkout's.
 .PHONY: release
-release: ## Build the self-contained release into build/release/<platform>/reedwire
+release: ## Build the self-contained release into build/release/<platform>/pondline
 	@scripts/release.sh
 
 .PHONY: release-smoke
@@ -67,16 +67,16 @@ release-smoke: ## Boot the release with no erl, gleam or Homebrew: mailbox, two 
 	@scripts/release-smoke.sh
 
 .PHONY: dist
-dist: release release-smoke ## Package the release as dist/reedwire-<version>-<platform>.tar.gz + .sha256
+dist: release release-smoke ## Package the release as dist/pondline-<version>-<platform>.tar.gz + .sha256
 	@scripts/dist.sh
 
-# Installs the release under $(PREFIX): the tree in $(PREFIX)/lib/reedwire and
-# the reedwire and reedwire-mailbox commands in $(PREFIX)/bin.
+# Installs the release under $(PREFIX): the tree in $(PREFIX)/lib/pondline and
+# the pondline and pondline-mailbox commands in $(PREFIX)/bin.
 # scripts/install.sh says what lands where and why.
 PREFIX ?= $(HOME)/.local
 
 .PHONY: install
-install: release ## Install reedwire and reedwire-mailbox under PREFIX (default ~/.local)
+install: release ## Install pondline and pondline-mailbox under PREFIX (default ~/.local)
 	@PREFIX="$(PREFIX)" scripts/install.sh
 
 .PHONY: uninstall

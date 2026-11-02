@@ -1,4 +1,4 @@
-//// The `reedwire` command line, parsed (spec §9.2).
+//// The `pondline` command line, parsed (spec §9.2).
 ////
 //// This module is pure: it turns arguments into a `Command` and a `Command`
 //// into the request it sends, and touches no file, socket or environment
@@ -24,7 +24,7 @@
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
 //// the daemon, `--credential-file F` to name the credential (default
-//// `D/operator.cred`, or the `REEDWIRE_CREDENTIAL_FILE` variable) and
+//// `D/operator.cred`, or the `PONDLINE_CREDENTIAL_FILE` variable) and
 //// `--json` for machine-readable output.
 ////
 //// ## Exit codes
@@ -78,7 +78,7 @@ pub const exit_unavailable = 6
 
 /// The text printed for `help` and for a usage error.
 pub const usage =
-  "usage: reedwire <command> [options]
+  "usage: pondline <command> [options]
 
 commands:
   daemon --state-dir D --mailbox HOST:PORT --provision-file F
@@ -109,7 +109,7 @@ pub type Carrier {
   Loopback
 }
 
-/// The options of `reedwire daemon`.
+/// The options of `pondline daemon`.
 pub type DaemonOptions {
   DaemonOptions(
     state_dir: String,
@@ -221,15 +221,15 @@ type Options {
 }
 
 /// Turns arguments into a command, or a one-line usage error.
-/// `env_credential_file` is the value of `REEDWIRE_CREDENTIAL_FILE`, which
+/// `env_credential_file` is the value of `PONDLINE_CREDENTIAL_FILE`, which
 /// the caller reads because this module reads nothing.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// cli.parse(["health", "--state-dir", "/var/lib/reedwire"], None)
-/// // -> Ok(Client(Target("/var/lib/reedwire/api.sock",
-/// //      "/var/lib/reedwire/operator.cred"), HumanOutput, ShowHealth))
+/// cli.parse(["health", "--state-dir", "/var/lib/pondline"], None)
+/// // -> Ok(Client(Target("/var/lib/pondline/api.sock",
+/// //      "/var/lib/pondline/operator.cred"), HumanOutput, ShowHealth))
 /// cli.parse(["send", "--payload", "hi"], None)
 /// // -> Error("unknown option --payload")
 /// ```

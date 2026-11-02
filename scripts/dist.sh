@@ -5,9 +5,9 @@
 #
 #   scripts/dist.sh        # or `make dist`, which builds and smoke-tests first
 #
-# writes dist/reedwire-<version>-<platform>.tar.gz, whose one top-level
-# directory has the same name and is the release tree (bin/reedwire,
-# bin/mailbox, install.sh, ...), and dist/reedwire-<version>-<platform>.tar.gz.sha256
+# writes dist/pondline-<version>-<platform>.tar.gz, whose one top-level
+# directory has the same name and is the release tree (bin/pondline,
+# bin/mailbox, install.sh, ...), and dist/pondline-<version>-<platform>.tar.gz.sha256
 # in the format `shasum -a 256 -c` and `sha256sum -c` read.
 #
 # The tarball is not signed and its macOS binaries carry ad hoc signatures
@@ -18,12 +18,12 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
-REL="$ROOT/build/release/$PLATFORM/reedwire"
+REL="$ROOT/build/release/$PLATFORM/pondline"
 
 [ -f "$REL/BUILD" ] || { echo "dist.sh: no release at $REL; run make release first" >&2; exit 1; }
 
 VERSION=$(sed -n 's/^version=//p' "$REL/BUILD")
-STEM="reedwire-$VERSION-$PLATFORM"
+STEM="pondline-$VERSION-$PLATFORM"
 DIST="$ROOT/dist"
 STAGE="$ROOT/build/dist-stage"
 

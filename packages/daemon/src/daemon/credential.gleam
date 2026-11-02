@@ -61,7 +61,7 @@ pub type Credentials {
 /// ## Examples
 ///
 /// ```gleam
-/// credential.ensure("/var/lib/reedwire")
+/// credential.ensure("/var/lib/pondline")
 /// // -> Ok(Credentials(operator: _, agent: _))
 /// ```
 pub fn ensure(state_dir: String) -> Result(Credentials, String) {
@@ -98,7 +98,7 @@ fn ensure_file(path: String) -> Result(Secret, String) {
 /// ## Examples
 ///
 /// ```gleam
-/// credential.read("/var/lib/reedwire/agent.cred")
+/// credential.read("/var/lib/pondline/agent.cred")
 /// // -> Ok(_)
 /// ```
 pub fn read(path: String) -> Result(Secret, String) {

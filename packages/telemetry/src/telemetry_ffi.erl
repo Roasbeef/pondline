@@ -2,7 +2,7 @@
 %% each function is foreign, is in `telemetry/internal/ffi_logger.gleam`.
 %%
 %% Most of this file is the handler's formatter, `format/2`, and most of
-%% that is one rule: an event Reedwire did not render is rebuilt from its
+%% that is one rule: an event Pondline did not render is rebuilt from its
 %% shape and never printed as given. OTP's own formatter prints a crashed
 %% process's mailbox and dictionary, a stack frame's arguments (a NIF or BIF
 %% that raises puts its whole argument list in the frame, which for
@@ -68,7 +68,7 @@ install(Level) ->
 
 %% A remote group leader's events belong to that node, as in OTP's own
 %% default. Progress reports say a child or an application started, which
-%% is `debug` in Reedwire's policy, so below `debug` they are dropped.
+%% is `debug` in Pondline's policy, so below `debug` they are dropped.
 filters(debug) ->
     [{remote_gl, {fun logger_filters:remote_gl/2, stop}}];
 filters(_) ->
@@ -81,7 +81,7 @@ enabled(Level) ->
 %% The line travels as a report under one key, so nothing between here and
 %% the formatter can reinterpret it as a format string.
 emit(Level, Line) ->
-    logger:log(Level, #{reedwire => Line}, #{domain => [reedwire]}),
+    logger:log(Level, #{pondline => Line}, #{domain => [pondline]}),
     nil.
 
 constructor_name(Value) when is_atom(Value) ->
@@ -127,7 +127,7 @@ timestamp(Meta) ->
 
 %% Our own line was rendered by `telemetry@line:render/3` from typed fields
 %% and is printed as it is. Everything else is foreign.
-body({report, #{reedwire := Line}}, _Meta) when is_binary(Line) ->
+body({report, #{pondline := Line}}, _Meta) when is_binary(Line) ->
     Line;
 body({report, Report}, Meta) when is_map(Report) ->
     pairs([{component, otp} | report(Report, Meta)]);

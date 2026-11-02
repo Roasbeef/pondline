@@ -1,4 +1,4 @@
-//// What the `reedwire` CLI prints for a successful response.
+//// What the `pondline` CLI prints for a successful response.
 ////
 //// Machine-readable output (`--json`) is the response line unchanged and
 //// needs no rendering. Human output is built here from the response's

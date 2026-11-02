@@ -188,8 +188,8 @@ pub opaque type HubMessage {
 /// ## Examples
 ///
 /// ```gleam
-/// local_api.start(backend, credentials, "/var/lib/reedwire/api.sock")
-/// // -> Ok(Server(path: "/var/lib/reedwire/api.sock", ..))
+/// local_api.start(backend, credentials, "/var/lib/pondline/api.sock")
+/// // -> Ok(Server(path: "/var/lib/pondline/api.sock", ..))
 /// ```
 pub fn start(
   backend: Backend,

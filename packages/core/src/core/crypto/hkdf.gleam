@@ -87,7 +87,7 @@ fn expand_blocks(
   }
 }
 
-/// Extract then expand, the form every caller in Reedwire uses.
+/// Extract then expand, the form every caller in Pondline uses.
 ///
 /// ## Examples
 ///

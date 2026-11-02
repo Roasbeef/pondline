@@ -91,7 +91,7 @@ pub fn scratch_dir() -> String {
   }
   let suffix = bit_array.base16_encode(primitives.random_bytes(5))
 
-  base <> "/rw-" <> string.lowercase(suffix)
+  base <> "/pl-" <> string.lowercase(suffix)
 }
 
 /// Starts a fake and a server over it, runs `body`, and cleans up.

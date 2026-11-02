@@ -2024,7 +2024,7 @@ pub fn r6_flags_an_erlang_external_test() {
 }
 
 /// The rule names no target on purpose. A JavaScript external keeps the
-/// portable half and breaks the BEAM build instead, which is the target Reedwire
+/// portable half and breaks the BEAM build instead, which is the target Pondline
 /// actually ships on, and it is still foreign code where the purity claim is.
 pub fn r6_flags_a_javascript_external_too_test() {
   r6_in(
@@ -2341,7 +2341,7 @@ pub type Msg {
   |> should.equal(#(1, 0))
 }
 
-/// R16 gates: an unqualified import of a Reedwire function is an error, and the
+/// R16 gates: an unqualified import of a Pondline function is an error, and the
 /// same function imported qualified is silent.
 pub fn r16_gates_an_unqualified_domain_import_test() {
   gate_of(

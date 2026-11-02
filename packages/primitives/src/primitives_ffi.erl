@@ -89,7 +89,7 @@ mlkem1024_decapsulate(_, _) -> {error, nil}.
 
 %% ML-DSA-65 (FIPS 204). The secret is OpenSSL's expanded private key, 4032
 %% bytes; OTP 29 cannot rebuild a key pair from the 32-byte seed through
-%% generate_key/3, so the expanded form is what Reedwire stores. Signing is
+%% generate_key/3, so the expanded form is what Pondline stores. Signing is
 %% OpenSSL's default hedged mode, which mixes fresh randomness into every
 %% signature, so two signatures of one message differ and both verify.
 mldsa65_keypair() ->

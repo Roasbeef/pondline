@@ -1,9 +1,9 @@
 [package]
-name = "reedwire-tor"
+name = "pondline-tor"
 version = "0.1.0"
 edition = "2021"
 license = "MIT OR Apache-2.0"
-description = "Arti sidecar for reedwire: onion streams and onion services behind an Erlang port."
+description = "Arti sidecar for pondline: onion streams and onion services behind an Erlang port."
 publish = false
 
 [dependencies]

@@ -42,7 +42,7 @@ pub type Rule {
   /// swallowed everything.
   CatchAll
 
-  /// R4. `panic` or `let assert` outside tests. Reedwire policy forbids both in
+  /// R4. `panic` or `let assert` outside tests. Pondline policy forbids both in
   /// `src/` (CLAUDE.md, gleam-style Part IV).
   PanicInSource
 
@@ -117,7 +117,7 @@ pub type Rule {
   /// the state space before the code that moves through it.
   StateFirst
 
-  /// R16. An unqualified import of a function from one of Reedwire's own
+  /// R16. An unqualified import of a function from one of Pondline's own
   /// modules. The qualifier says which domain a call belongs to — the
   /// closest thing Gleam has to a method receiver (issue loom#593, 3).
   QualifiedDomainCall
@@ -324,7 +324,7 @@ pub fn rules() -> List(Rule) {
 /// was kept only after its findings in this tree were real state machines.
 ///
 /// **R16** was two, both constants, and is zero. An import either names a
-/// lowercase value from a Reedwire module or it does not. The rule protects what
+/// lowercase value from a Pondline module or it does not. The rule protects what
 /// a qualifier tells a reader — which domain a call belongs to — and that is
 /// lost one convenient unqualified import at a time, which is the shape of
 /// property this list exists to hold.
