@@ -1,4 +1,4 @@
-import Reedwire.Bytes
+import Pondline.Bytes
 
 /-
 A transcription of `limits.padded_size` and of `envelope.pad`, `unpad` and
@@ -7,7 +7,7 @@ A transcription of `limits.padded_size` and of `envelope.pad`, `unpad` and
 scheme rests on.
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-- `limits.max_ciphertext_bytes`. -/
 def maxCiphertextBytes : Nat := 262144
@@ -153,4 +153,4 @@ theorem fromWire_spec (bytes : Bytes) :
   unfold fromWire
   split <;> simp_all
 
-end Reedwire
+end Pondline

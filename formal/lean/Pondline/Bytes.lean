@@ -12,7 +12,7 @@ big-endian. `valBE` reads a byte string back as a big-endian number, which is
 what a pattern `<<value:size(8 * n), rest:bits>>` binds.
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-- `if_pos`, under a name this toolchain does not deprecate. -/
 theorem ifT {α : Sort _} {c : Prop} [Decidable c] (h : c) {a b : α} :
@@ -134,4 +134,4 @@ theorem valBE_take_writeBE (n v : Nat) (rest : Bytes) (hv : v < 256 ^ n) :
 theorem drop_writeBE (n v : Nat) (rest : Bytes) : (writeBE n v ++ rest).drop n = rest :=
   List.drop_left' (length_writeBE n v)
 
-end Reedwire
+end Pondline

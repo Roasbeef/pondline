@@ -1,4 +1,4 @@
-import Reedwire
+import Pondline
 
 /-
 Writes the conformance vectors `packages/core/test/core/formal_vectors_test.gleam`
@@ -28,7 +28,7 @@ runs, comma-separated. Errors are `truncated`, `nonminimal`,
 `invalidfield.<tag>` and `invalidvalue`.
 -/
 
-open Reedwire
+open Pondline
 
 /-! ## Rendering -/
 

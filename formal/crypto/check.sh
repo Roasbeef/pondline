@@ -89,7 +89,7 @@ ticket  | ticket_leak_nc_no_commit    | LEAK_TICKET NONCOMMITTING_AEAD NO_COMMIT
 EOF
 )
 
-out=$(mktemp -d "${TMPDIR:-/tmp}/reedwire-formal-crypto.XXXXXX")
+out=$(mktemp -d "${TMPDIR:-/tmp}/pondline-formal-crypto.XXXXXX")
 if [ "$keep" = 1 ]; then
   out="$here/out"
   rm -rf "$out"

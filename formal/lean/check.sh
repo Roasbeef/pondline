@@ -30,7 +30,7 @@ case "${1:-}" in
 	;;
 esac
 
-sources=(Reedwire.lean Reedwire/*.lean GenVectors.lean Axioms.lean)
+sources=(Pondline.lean Pondline/*.lean GenVectors.lean Axioms.lean)
 
 echo "== escape hatches"
 if grep -nE '\bsorry\b|\badmit\b|^[[:space:]]*(private[[:space:]]+)?axiom[[:space:]]|native_decide|implemented_by|@\[extern' \

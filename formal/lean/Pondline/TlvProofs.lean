@@ -1,4 +1,4 @@
-import Reedwire.Tlv
+import Pondline.Tlv
 
 /-
 Theorems about the TLV transcription: BigSize round trips both ways, the
@@ -13,7 +13,7 @@ proof (each record consumes at least two bytes), so it returns on every
 input.
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-! ## BigSize -/
 
@@ -259,4 +259,4 @@ theorem parse_encode (recs : Records) (maxBytes : Int) (h : RecsOk (-1) recs)
   rw [ifF (by omega)]
   exact parseRecords_encode recs (-1) h
 
-end Reedwire
+end Pondline

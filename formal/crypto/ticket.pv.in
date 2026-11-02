@@ -1,4 +1,4 @@
-(* Reedwire invitation tickets (ADR-009, docs/crypto-profile-v1.md section
+(* Pondline invitation tickets (ADR-009, docs/crypto-profile-v1.md section
  * 11), modelled as packages/core/src/core/ticket.gleam seals and opens them.
  *
  * A ticket is a mailbox endpoint and a 32-byte secret K that reaches the
@@ -46,11 +46,11 @@ free c: channel.
 table tickets(bitstring).
 
 const version: bitstring.
-const label_locator: bitstring.     (* Reedwire_TicketLocator_v1 *)
-const label_capability: bitstring.  (* Reedwire_TicketCapability_v1 *)
-const label_key: bitstring.         (* Reedwire_TicketKey_v1 *)
-const label_commitment: bitstring.  (* Reedwire_TicketCommitment_v1 *)
-const label_blob: bitstring.        (* Reedwire_TicketBlob_v1 *)
+const label_locator: bitstring.     (* Pondline_TicketLocator_v1 *)
+const label_capability: bitstring.  (* Pondline_TicketCapability_v1 *)
+const label_key: bitstring.         (* Pondline_TicketKey_v1 *)
+const label_commitment: bitstring.  (* Pondline_TicketCommitment_v1 *)
+const label_blob: bitstring.        (* Pondline_TicketBlob_v1 *)
 
 (* HKDF-Extract under the ticket salt followed by HKDF-Expand under one
  * label, as one keyed one-way function of K and the label. *)

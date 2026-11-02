@@ -1,4 +1,4 @@
-import Reedwire.Bytes
+import Pondline.Bytes
 
 /-
 A transcription of `retention.offers` (`packages/core/src/core/retention.gleam`)
@@ -9,7 +9,7 @@ Instants are Gleam `Int` seconds, so they are `Int` here. The mailbox's rule
 `now` and no later than its `now + message_retention_seconds`.
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-- `limits.message_retention_seconds`. -/
 def messageRetentionSeconds : Int := 604800
@@ -276,4 +276,4 @@ theorem copy_first_offer_is_expiry_prod (sealedAt life stored copy : Int)
     (offers (sealedAt + life) copy).1 = sealedAt + life :=
   copy_first_offer_is_expiry _ _ _ _ sealedAt life stored copy slack_le_window hlife hseal hcopy
 
-end Reedwire
+end Pondline

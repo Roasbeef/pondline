@@ -1,4 +1,4 @@
-import Reedwire.Bytes
+import Pondline.Bytes
 
 /-
 A transcription of `packages/core/src/core/tlv.gleam`.
@@ -15,7 +15,7 @@ reach every error `locate` and `run` produce. `items`, `sequence`, `nested`
 and `text` are not transcribed.
 -/
 
-namespace Reedwire
+namespace Pondline
 
 /-- `tlv.TlvError`, without `TooManyItems` (only `sequence` raises it). -/
 inductive TlvError where
@@ -236,4 +236,4 @@ def decode (spec : List Entry) (bytes : Bytes) (maxBytes : Int) :
   | .error e => .error e
   | .ok recs => runStream spec recs
 
-end Reedwire
+end Pondline

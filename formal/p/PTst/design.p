@@ -103,7 +103,7 @@ machine DrvBoundReplay {
 
 test tcBoundReplay [main=DrvBoundReplay]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvBoundReplay });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvBoundReplay });
 
 // Transient process failures at both daemons, enough to quarantine one
 // envelope on each side (two spoils), with a crash.
@@ -216,47 +216,47 @@ machine DrvThreeSpoils {
 
 test tcHappy [main=DrvHappy]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvHappy });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvHappy });
 
 test tcNetwork [main=DrvNetwork]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvNetwork });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvNetwork });
 
 test tcCrash [main=DrvCrash]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCrash });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCrash });
 
 test tcMailbox [main=DrvMailbox]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvMailbox });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvMailbox });
 
 test tcReplay [main=DrvReplay]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvReplay });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvReplay });
 
 test tcQuarantine [main=DrvQuarantine]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvQuarantine });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvQuarantine });
 
 test tcForger [main=DrvForger]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvForger });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvForger });
 
 test tcH2Off [main=DrvH2Off]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvH2Off });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvH2Off });
 
 test tcExpiry [main=DrvExpiry]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvExpiry });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvExpiry });
 
 test tcAll [main=DrvAll]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvAll });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvAll });
 
 test tcThreeSpoils [main=DrvThreeSpoils]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvThreeSpoils });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvThreeSpoils });
 
 // ------------------------------------------------------------ controls
 //
@@ -371,24 +371,24 @@ machine DrvCtlTwoLosses {
 
 test tcCtlTwoLosses [main=DrvCtlTwoLosses]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCtlTwoLosses });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCtlTwoLosses });
 
 test tcCtlNoRetransmit [main=DrvCtlNoRetransmit]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCtlNoRetransmit });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCtlNoRetransmit });
 
 test tcCtlNoFingerprint [main=DrvCtlNoFingerprint]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCtlNoFingerprint });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCtlNoFingerprint });
 
 test tcCtlPreH2 [main=DrvCtlPreH2]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCtlPreH2 });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCtlPreH2 });
 
 test tcCtlNoImplicitAccept [main=DrvCtlNoImplicitAccept]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCtlNoImplicitAccept });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCtlNoImplicitAccept });
 
 test tcCtlNoReack [main=DrvCtlNoReack]:
   assert AtMostOnceDelivery, NoSendBeforeCommit, NoAckBeforeCommit, ReceiptOnlyForStored,
-    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Reedwire, { DrvCtlNoReack });
+    NoExpiredDelivery, DeliveredAndReceipted, QueuesDrain in (union Pondline, { DrvCtlNoReack });

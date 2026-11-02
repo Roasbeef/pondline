@@ -1,7 +1,7 @@
 // The world every test case runs: one mailbox with both queues, a timer, a
 // clock, and the two daemons. A test case is a configuration.
 
-module Reedwire = { Daemon, Mailbox, Timer, Clock };
+module Pondline = { Daemon, Mailbox, Timer, Clock };
 
 // The design as it stands: every ruling on, every mutant off, no faults.
 // Two messages, two retransmits and two process attempts before quarantine
