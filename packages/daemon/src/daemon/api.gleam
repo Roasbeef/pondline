@@ -127,7 +127,7 @@ pub opaque type Daemon {
 /// who also wants it, and the ticket's text, a `Secret` because it is the
 /// authority to fetch and open the invitation.
 pub type IssuedTicket {
-  IssuedTicket(file: BitArray, ticket: Secret)
+  IssuedTicket(file: Secret, ticket: Secret)
 }
 
 /// Why a call did not do what was asked.
@@ -404,7 +404,7 @@ fn await_file(
       every: poll.Fixed(invite_poll_ms),
       attempt: fn() {
         case engine.invitation_file(daemon.engine, invitation) {
-          Ok(Some(bytes)) -> poll.Done(bytes)
+          Ok(Some(file)) -> poll.Done(file)
 
           // Until the queue exists the offer is not exportable.
           Ok(None) -> poll.Retry
@@ -416,7 +416,7 @@ fn await_file(
 
   // A wait that runs out is the engine being too slow, which the caller retries.
   case waited {
-    poll.Answered(bytes) -> Ok(bytes)
+    poll.Answered(file) -> Ok(secret.expose(file))
     poll.Failed(error) -> Error(error)
     poll.Expired -> Error(Unavailable)
   }
@@ -452,7 +452,7 @@ pub fn accept(
 ///
 /// ```gleam
 /// api.invite_ticket(daemon, "vendor support", offer.OperatorApproves, 10)
-/// // -> Ok(IssuedTicket(file: <<...>>, ticket: secret))
+/// // -> Ok(IssuedTicket(file: file, ticket: secret))
 /// ```
 pub fn invite_ticket(
   daemon: Daemon,
@@ -492,7 +492,7 @@ pub fn invite_ticket(
     )
   use Nil <- result.try(store_blob(daemon, inbox, request))
 
-  Ok(IssuedTicket(file:, ticket: ticket.encode(made)))
+  Ok(IssuedTicket(file: secret.new(file), ticket: ticket.encode(made)))
 }
 
 /// Redeems a ticket: fetches the sealed invitation from the mailbox it
@@ -771,7 +771,7 @@ pub fn send(
   daemon: Daemon,
   contact: Id(Contact),
   content_type: String,
-  payload: BitArray,
+  payload: Secret,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), ApiError) {
   engine.send(daemon.engine, contact, None, content_type, payload, in_reply_to)
@@ -797,7 +797,7 @@ pub fn send_with_key(
   contact: Id(Contact),
   key: String,
   content_type: String,
-  payload: BitArray,
+  payload: Secret,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), ApiError) {
   engine.send(

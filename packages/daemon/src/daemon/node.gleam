@@ -83,6 +83,7 @@ import gleam/option.{None, Some}
 import gleam/otp/static_supervisor
 import gleam/result
 import simplifile
+import telemetry/log
 import weft/poll
 
 /// The file name of the database inside the state directory.
@@ -167,8 +168,10 @@ fn start_with(
   use provision <- result.try(check_config(config))
   use Nil <- result.try(prepare_directory(config))
   use Nil <- result.try(probe(config))
+  use daemon <- result.try(launch(config, network, provision))
 
-  launch(config, network, provision)
+  log.info("node", "started", [])
+  Ok(daemon)
 }
 
 /// Checks what needs no process: the mailbox against the carrier policy and

@@ -128,8 +128,8 @@ import core/plan.{type EnvelopeRef, type Plan, EnvelopeRef}
 import core/relationship.{type Relationship}
 import core/retransmit
 import core/route.{type Inbox}
+import core/secret.{type Secret}
 import core/time.{type Instant}
-import daemon/log
 import daemon/mail.{type Handle}
 import daemon/store.{type Store}
 import gleam/erlang/process.{type Name, type Subject}
@@ -138,6 +138,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import telemetry/field as log_field
+import telemetry/log
 import weft/actor
 
 /// How long a caller waits for the engine before the call is reported
@@ -167,7 +169,9 @@ pub type Handled {
   Fresh
 
   /// The envelope was already processed under the same identifier and
-  /// digest. Nothing changed; the fetcher only acknowledges.
+  /// digest. Nothing of the relationship changed; its processed row is
+  /// marked unacknowledged again, so the fetcher's next round names it to
+  /// the mailbox even if an earlier round already had.
   Repeat
 }
 
@@ -483,20 +487,23 @@ pub fn invite(
 ///
 /// ```gleam
 /// engine.invitation_file(name, invitation)
-/// // -> Ok(Some(<<...>>))
+/// // -> Ok(Some(file))
 /// ```
 pub fn invitation_file(
   name: Handle(Message),
   invitation: Id(InvitationKind),
-) -> Result(Option(BitArray), Failure) {
+) -> Result(Option(Secret), Failure) {
   run(name, InvitationFile, fn(state) {
     use found <- result.try(
       fault(store.invitation_file(state.store, invitation)),
     )
 
-    // The phase decides whether the file may leave the daemon.
+    // The phase decides whether the file may leave the daemon. The file
+    // holds the offer's append capability and prekeys, and this answer is
+    // a message to another process, so it travels as a `Secret`
+    // (ADR-012).
     case found {
-      store.FileReady(bytes:) -> Ok(Some(bytes))
+      store.FileReady(bytes:) -> Ok(Some(secret.new(bytes)))
       store.FileNotYet -> Ok(None)
       store.FileGone -> Error(NotFound)
     }
@@ -777,19 +784,23 @@ pub fn send(
   contact: Id(Contact),
   key: Option(String),
   content_type: String,
-  payload: BitArray,
+  payload: Secret,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), Failure) {
   run(name, Send, fn(state) {
     let suite = state.suite
     let clock = state.clock
+
+    // The plaintext leaves its `Secret` only here, inside the job, for the
+    // core to seal and to digest; it never rides in a message or a state
+    // a crash report could print (ADR-012).
     let step = fn(current) {
       relationship.send(
         suite,
         current,
         clock(),
         content_type,
-        payload,
+        secret.expose(payload),
         in_reply_to,
         None,
       )
@@ -807,7 +818,12 @@ pub fn send(
 
       Some(key) -> {
         let digest =
-          request_digest(state.suite, content_type, payload, in_reply_to)
+          request_digest(
+            state.suite,
+            content_type,
+            secret.expose(payload),
+            in_reply_to,
+          )
         keyed_send(state, contact, key, digest, step)
       }
     }
@@ -988,9 +1004,10 @@ pub fn expire_offers(name: Handle(Message)) -> Result(Nil, Failure) {
 /// Processes one fetched envelope and commits its outcome.
 ///
 /// An envelope already processed under the same identifier and digest is a
-/// `Repeat`. Everything else runs through the core, and whatever the core
-/// refuses is committed as dropped. `Ok` means the outcome is durable and the
-/// fetcher may acknowledge it; an error means nothing was committed.
+/// `Repeat`, and is owed an acknowledgement again. Everything else runs
+/// through the core, and whatever the core refuses is committed as dropped.
+/// `Ok` means the outcome is durable and the fetcher may acknowledge it; an
+/// error means nothing was committed.
 ///
 /// ## Examples
 ///
@@ -1028,12 +1045,40 @@ fn handle_envelope(
   case known {
     Some(stored) ->
       case state.suite.constant_time_equal(stored, digest) {
-        True -> Ok(Repeat)
+        True -> repeat(state, ref)
         False -> attempt(state, ref, padded)
       }
 
     None -> attempt(state, ref, padded)
   }
+}
+
+/// Answers an envelope the store already processed by owing the mailbox
+/// its acknowledgement again (ADR-010, addendum).
+///
+/// A mailbox serves a processed envelope in two ways. Before the
+/// acknowledgement, it is the batch the next round acknowledges anyway,
+/// and the row is still unacknowledged. After it, the mailbox brought the
+/// envelope back: restored from a backup taken before the acknowledgement,
+/// or stored again by the sender's retry once the tombstone's retention
+/// deadline passed, which can be up to `limits.retention_slack_seconds`
+/// before the sender stops retrying. The fetcher acknowledges only what
+/// `store.unacked` lists, so an envelope whose row stayed acknowledged was
+/// never named again: it sat at the head of the queue until retention, and
+/// a queue of them hid every envelope behind it.
+///
+/// Marking the row unacknowledged keeps the fetcher's one rule, acknowledge
+/// exactly what the store says is committed and unacknowledged, and covers
+/// both cases. The row and its digest stay, so the envelope is never
+/// processed or delivered twice; no attempt is counted, since nothing
+/// failed; and a queue that retires before the next round still has an
+/// unacknowledged row, so the fetch manager drains it.
+fn repeat(state: State, ref: EnvelopeRef) -> Result(Handled, Failure) {
+  use _ <- result.try(
+    fault(store.mark_unacked(state.store, ref.queue, ref.envelope)),
+  )
+
+  Ok(Repeat)
 }
 
 /// Counts this attempt durably, then processes the envelope, or quarantines
@@ -1564,14 +1609,22 @@ fn fault(outcome: Result(a, store.Error)) -> Result(a, Failure) {
     Ok(value) -> Ok(value)
 
     Error(store.Conflict) -> {
-      log.line("engine", "a state write lost its version check")
+      log.warning("engine", "version_conflict", [])
       Error(Unavailable)
     }
 
-    Error(store.Sql(_))
-    | Error(store.FutureSchema(..))
-    | Error(store.Corrupt(_)) -> {
-      log.line("engine", "a storage operation failed")
+    // SQLite's error code is an enum (`busy`, `constraint`, `ioerr`), so
+    // its tag says what failed; the message beside it is not read.
+    Error(store.Sql(error)) -> {
+      log.warning("engine", "storage_failed", [
+        log_field.tag("reason", store.Sql(error)),
+        log_field.tag("code", error.code),
+      ])
+      Error(Unavailable)
+    }
+
+    Error(store.FutureSchema(..) as error) | Error(store.Corrupt(_) as error) -> {
+      log.warning("engine", "storage_failed", [log_field.tag("reason", error)])
       Error(Unavailable)
     }
   }

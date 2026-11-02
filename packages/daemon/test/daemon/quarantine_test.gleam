@@ -69,7 +69,8 @@ pub fn a_poison_envelope_is_quarantined_and_its_retransmit_delivered_test() {
     "CREATE TRIGGER poison BEFORE INSERT ON deliveries
      BEGIN SELECT RAISE(ABORT, 'poisoned'); END;",
   )
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"once":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"once":utf8>>), None)
 
   // B fails it the bounded number of times, then sets it aside: the
   // incident names the count and the queue drains.

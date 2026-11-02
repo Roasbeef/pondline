@@ -14,11 +14,14 @@ monitor is tripped by a mutant, four historical bugs are recovered by
 restoring the rule each fix replaced, the fault budget under which liveness
 is claimed is shown to be tight, and each recall has a control that passes.
 
-The model found one defect in the current design: **an envelope the
+The model found one defect in the design as it stood: **an envelope the
 receiver already acknowledged, served again by the mailbox under the same
-identifier and bytes, is never acknowledged again**. The receiver's fetcher
-then fetches it forever, and enough of them at the head of a queue block
-the queue until their retention deadlines. It is described in full under
+identifier and bytes, was never acknowledged again**. The receiver's
+fetcher then fetched it forever, and enough of them at the head of a queue
+blocked the queue until their retention deadlines. It is fixed (ADR-010,
+addendum): the engine answers such an envelope `Repeat` and marks its
+processed row unacknowledged, so the next round names it to the mailbox.
+It is described in full under
 [The counterexample](#the-counterexample-an-acknowledged-envelope-served-again).
 
 ## Running it
@@ -220,10 +223,10 @@ Design cases (`PTst/design.p`, run by `check.sh`), budgets per scheduler:
 | `tcCtlNoFingerprint` | fingerprint lookup off; the same faults | 600 |
 | `tcCtlPreH2` | H2 and quarantine off, honest peer; drop 2, loss 1, crash B 1 | 600 |
 | `tcCtlNoImplicitAccept` | implicit accept off; no faults | 200 |
-| `tcCtlNoReack` | the code's Repeat handling; every fault but restore and early sweep | 1000 |
+| `tcCtlNoReack` | the pre-fix Repeat handling; every fault but restore and early sweep | 1000 |
 
 Every design case asserts all seven monitors. All but `tcCtlNoReack`
-run with `reackRepeat` on, the one place the model departs from the code
+run with `reackRepeat` on, which is the code's behaviour since the fix
 (see the counterexample). The `tcCtl*` cases are controls for the judge:
 each keeps a rule the judge restores and drops the fault that breaks it.
 
@@ -373,6 +376,9 @@ checked (one or two messages, `maxRetx` of 2 and 3):
 
 ### The counterexample: an acknowledged envelope served again
 
+This section describes the defect as the model found it, in the code as it
+stood before the fix; the fix and how it is tested follow at the end.
+
 **Claim.** If a mailbox serves an envelope the receiver has already
 acknowledged, under the same identifier and with the same bytes, the
 receiver never acknowledges it again. The mailbox keeps serving it until
@@ -420,35 +426,30 @@ two messages, no pairing, one restore, a batch of one):
    message 1 are appended behind E too. A runs out of copies, and message 1
    is never delivered: `DeliveredAndReceipted` reports it.
 
-**The same in the code.**
+**The same in the code, before the fix** (`8b290bd`). `handle_envelope`
+answered a processed record with the same digest `Ok(Repeat)` and
+committed nothing. `ack_pending` in `daemon/fetcher.gleam` acknowledges
+only what `engine.unacked` returns, the processed rows with `acked = 0`
+(`Unacked` in `daemon/sql/inbound.sql`), and `mark_acked` set the flag to
+1 for good; `process_batch` discards the `Handled` value, so a `Repeat`
+was never acknowledged on the spot either. `polled` starts the next round
+at once after a finished one ("the long poll is what paces a quiet
+queue"), and a queue holding a zombie is never quiet. On the mailbox side:
 
-- `engine.gleam:1008` (`handle_envelope`): a processed record with the same
-  digest returns `Ok(Repeat)` at `engine.gleam:991` (`Repeat`) and commits
-  nothing.
-- `fetcher.gleam:373` (`ack_pending`) acknowledges only what
-  `engine.unacked` returns; `daemon/store.gleam:1706` (`unacked`) runs the
-  query at `daemon/sql/inbound.sql:14` (`Unacked`), `WHERE ... acked = 0`,
-  and `daemon/store.gleam:1733` (`mark_acked`) sets it to 1 for good.
-  `fetcher.gleam:447` (`process_batch`) discards the `Handled` value, so a
-  `Repeat` is never acknowledged on the spot either.
-- `fetcher.gleam:285` (`polled`): "A round that finished starts the next at
-  once; the long poll is what paces a quiet queue." A queue holding a
-  zombie is never quiet.
 - `mailbox/sql/envelopes.sql:18` (`LiveEnvelopes`) returns the oldest
   `limits.fetch_batch_envelopes` (16) live envelopes `ORDER BY seq`, so
   sixteen zombies at the head (a restored backup puts them back at their
   old positions) hide everything behind them.
-- `mailbox/service.gleam:352` (`append_to`) answers a repeat from the
+- `mailbox/service.gleam:358` (`append_to`) answers a repeat from the
   stored envelope or the tombstone, and otherwise inserts;
-  `mailbox/store.gleam:825` (`sweep`) deletes tombstones past their
+  `mailbox/store.gleam:828` (`sweep`) deletes tombstones past their
   deadline (`DeleteStaleTombstones`).
-- The pure simulation does not show this: `core/world.gleam:1035` (`ack`)
+- The pure simulation does not show this: `core/world.gleam:1036` (`ack`)
   acknowledges every stored envelope whose processed record matches, with
   no acknowledged flag, so its honest shell is more forgiving than the
-  daemon's. The shell DST in `packages/sim` runs the real fetcher, but none
-  of the fault classes in `docs/dst/plan.md` (item 5) serves an
-  acknowledged envelope again under its own identifier; a mailbox restore
-  is the fault it would need.
+  daemon's. The shell DST in `packages/sim` ran the real fetcher, but none
+  of its fault classes served an acknowledged envelope again under its own
+  identifier; the `restore` class now does (below).
 
 **Consequences.** Safety holds: nothing is delivered twice. Liveness does
 not. After a mailbox restore, every queue with an acknowledged envelope in
@@ -461,15 +462,36 @@ path needs a sender that got no answer for about a week, and costs one
 zombie for at most `retention_slack_seconds`; it matters because it needs
 no operator action.
 
-**How the model carries it.** `reackRepeat` (in `tCfg`) is the model of a
-fix: a `Repeat` whose envelope is already marked acknowledged clears the
-mark, so the next round names it again and the mailbox, holding it, deletes
-it and writes a fresh tombstone. Every design case except `tcCtlNoReack`
-runs with it on; `cxRestore`, `cxBlock`, `cxLateRetry` and `cxGeneric` run
-the code's behaviour and must fail. Production code is unchanged. Clearing
-`acked` on a `Repeat` in `engine.handle_envelope`, or having the fetcher
-acknowledge every `Repeat` it handled, are two shapes the fix could take;
-the choice is the owner's.
+**The fix** (ADR-010, addendum). `engine.gleam:1048` (`repeat`) answers
+a `Repeat` by marking the envelope's processed row unacknowledged
+(`daemon/store.gleam:1769`, `mark_unacked`; `MarkUnacked` in
+`daemon/sql/inbound.sql`), so the next round's `ack_pending` names it and
+the mailbox deletes it and writes a fresh tombstone. The fetcher keeps its
+one rule, acknowledge exactly what the store says is committed and
+unacknowledged. The processed row and its digest stay, so nothing is
+delivered twice; a repeat counts no quarantine attempt; and a queue that
+retires between the repeat and the next round still owes the
+acknowledgement, so the fetch manager drains it. Acknowledging every
+`Repeat` from the fetched batch was the other shape; it would give the
+fetcher a second source of acknowledgements, and a fetcher that retired or
+crashed before naming the repeat would leave it at the mailbox.
+
+**How the model carries it.** `reackRepeat` (in `tCfg`) is the fix: a
+`Repeat` whose envelope is already marked acknowledged clears the mark, so
+the next round names it again. It is on in `Base()` and in every design
+case except `tcCtlNoReack`, which runs the pre-fix handling under every
+fault but the two that serve an acknowledged envelope again, as the
+control. `cxRestore`, `cxBlock`, `cxLateRetry` and `cxGeneric` stay in the
+judge as recall cases with the flag off: they document the defect and
+must keep failing.
+
+**Tested in the code.** `test/daemon/reack_test.gleam` in `packages/daemon`
+stages both paths against a real mailbox with a full batch of sixteen
+zombies and a seventeenth message behind them; both time out without the
+fix. The shell DST's `restore` fault class (`sim/restore`) restores every
+acknowledged envelope from a backup the mailbox's own database keeps; on
+the pre-fix code the swarm finds the defect blind (`queues_drained`, and
+the runner's livelock check on the fetcher's spin).
 
 ## Open gaps
 

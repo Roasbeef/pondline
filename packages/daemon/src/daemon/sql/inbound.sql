@@ -18,6 +18,14 @@ WHERE queue = sqlc.arg(queue) AND acked = 0 LIMIT sqlc.arg(max);
 -- name: MarkAcked :exec
 UPDATE processed SET acked = 1 WHERE queue = ? AND envelope = ?;
 
+-- A mailbox served an envelope again after it was acknowledged: restored
+-- from a backup, or stored again by a sender's late retry once its
+-- tombstone was swept. The processed row is owed an acknowledgement once
+-- more, so the fetcher's next round names it (ADR-010, addendum).
+
+-- name: MarkUnacked :exec
+UPDATE processed SET acked = 0 WHERE queue = ? AND envelope = ?;
+
 -- name: PutFingerprint :exec
 INSERT OR REPLACE INTO fingerprints
   (contact, digest, message_id, expires_at, receipts)

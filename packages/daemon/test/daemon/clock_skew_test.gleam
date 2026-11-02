@@ -11,6 +11,7 @@
 
 import core/limits
 import core/offer
+import core/secret
 import core/time
 import daemon/api
 import daemon/config
@@ -78,7 +79,8 @@ fn stored_deadline(a: api.Daemon, b: api.Daemon, settings_b, at_a) {
   })
   node.stop(b)
 
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"skew":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"skew":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
   })
@@ -133,7 +135,8 @@ pub fn a_row_no_offer_fits_waits_for_the_clock_to_be_corrected_test() {
   // The mailbox's clock falls thirty days behind: every offer is past its
   // window, so each attempt ends in `BadDeadline` after the last offer.
   support.shift_clock(shift, -30 * 86_400)
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"late":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"late":utf8>>), None)
 
   // The row is retried, not failed: it stays queued across attempts.
   process.sleep(3000)
