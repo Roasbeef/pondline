@@ -273,10 +273,10 @@ mirrors, with its line. The tables below give the same map, against main at
 | `Handle`, Finished | the `Finished` arm (`scheduler.gleam:401`), for the `Finished` an expired row is sent (`scheduler.gleam:461`) |
 | `Handle`, outcome with an attempt | `settle` (`scheduler.gleam:610`), `settlement` (`scheduler.gleam:641`), `conclude` (`scheduler.gleam:666`), `finish` (`scheduler.gleam:708`) |
 | `Handle`, outcome NeverStarted | in `conclude`, the `Unattempted` arm (`scheduler.gleam:675`): the claim is deleted whatever it is |
-| `Handle`, end or lost marker | `settle`'s `AllDelivered` and `RunLost` arms (`scheduler.gleam:628`), `close` (`scheduler.gleam:689`) |
+| `Handle`, end or lost marker | `settle`'s `AllDelivered` and `RunLost` arms (`scheduler.gleam:635`), `close` (`scheduler.gleam:689`) |
 | `Handle`, restart | `supervised` (`scheduler.gleam:267`), `builder` with `continuing(Tick)` (`scheduler.gleam:286`) |
 | `Dispatch` operator | `dispatch` (`scheduler.gleam:440`), reading `due_outbox` (`scheduler.gleam:445`), and `start_batch` (`scheduler.gleam:476`) |
-| `Finish` macro | `finish` (`scheduler.gleam:708`), whose `Held` insert is at `scheduler.gleam:736`; `record_send` (`engine.gleam:1428`), `answer` (`engine.gleam:425`) |
+| `Finish` macro | `finish` (`scheduler.gleam:708`), whose `Held` insert is at `scheduler.gleam:742`; `record_send` (`engine.gleam:1439`), `answer` (`engine.gleam:425`) |
 | `Run`, complete | `send_row` (`scheduler.gleam:543`) and `classify` (`scheduler.gleam:337`); `Crashed` and `Failed` settle as Transient (`settlement`, `scheduler.gleam:641`) |
 | `Run`, end | the relay's `AllDelivered` after the scope's `Done` (`start_relayed` in weft) |
 | `Run`, deadline | `send_batch` (`scheduler.gleam:504`) with `weft.deadline`: running tasks are `Abandoned` |
@@ -294,14 +294,14 @@ mirrors, with its line. The tables below give the same map, against main at
 | `Machine`, Acked | `acked` (`fetcher.gleam:271`), then `after_ack` (`fetcher.gleam:262`) with `liveness` (`fetcher.gleam:361`), then `begin_poll` (`fetcher.gleam:306`) |
 | `Machine`, Polled | `polled` (`fetcher.gleam:288`), which begins the next round |
 | `Fail` macro | `failed` (`fetcher.gleam:319`) and its state timeout |
-| `Worker`, unacked | `ack_pending` (`fetcher.gleam:376`), `unacked` (`engine.gleam:1447`) |
+| `Worker`, unacked | `ack_pending` (`fetcher.gleam:376`), `unacked` (`engine.gleam:1458`) |
 | `Worker`, call | `acknowledge` (`fetcher.gleam:396`), the mailbox `Ack` |
-| `Worker`, mark | `mark_acked` (`engine.gleam:1462`), then `ack_pending` repeats |
+| `Worker`, mark | `mark_acked` (`engine.gleam:1473`), then `ack_pending` repeats |
 | `Worker`, fetch | `fetch_batch` (`fetcher.gleam:423`) |
-| `Worker`, process | `process_batch` (`fetcher.gleam:450`), `process` (`engine.gleam:1004`); a repeat's `repeat` (`engine.gleam:1062`) and a poison envelope's `attempt` (`engine.gleam:1079`) |
+| `Worker`, process | `process_batch` (`fetcher.gleam:450`), `process` (`engine.gleam:1015`); a repeat's `repeat` (`engine.gleam:1076`) and a poison envelope's `attempt` (`engine.gleam:1079`) |
 | `Worker`, abandon | `start_run` (`fetcher.gleam:327`) with its deadline, and `RunLost`, both read by `step_result` (`fetcher.gleam:345`) as a failed step |
 | `Timer` | the state timeout armed in `failed` (`fetcher.gleam:319`) |
-| `Manager` | `reconcile` (`fetch_manager.gleam:150`) and `draining_inboxes` (`engine.gleam:1383`) |
+| `Manager` | `reconcile` (`fetch_manager.gleam:150`) and `draining_inboxes` (`engine.gleam:1394`) |
 
 ## Abstractions, and what each could hide
 

@@ -6,18 +6,18 @@
 (*                                                                         *)
 (* The scheduler is one actor. Every message it handles (Nudge, Tick, its  *)
 (* own Finished, and what a run's relay pushes) is one atomic step here,   *)
-(* ending in `dispatch` exactly as `handle` (scheduler.gleam:395) does.    *)
+(* ending in `dispatch` exactly as `handle` (scheduler.gleam:396) does.    *)
 (* The engine asks inside a handler (`due_outbox`, `record_send`,          *)
 (* `retransmit`) are serialised by the engine actor and touch only the row *)
 (* they name, so folding them into the handler's step commutes with every  *)
 (* other engine client in this model.                                      *)
 (*                                                                         *)
-(* A run (`send_batch`, scheduler.gleam:504) is a process per run slot. It *)
+(* A run (`send_batch`, scheduler.gleam:507) is a process per run slot. It *)
 (* starts tasks, completes them with a verdict, hits its deadline, or is   *)
 (* lost, and it pushes each outcome and then exactly one end marker into   *)
 (* the scheduler's single FIFO mailbox (weft `start_relayed`). One         *)
 (* mailbox is what Erlang gives: the selector (`listening`,                *)
-(* scheduler.gleam:426) matches every subject of a live run, so messages   *)
+(* scheduler.gleam:429) matches every subject of a live run, so messages   *)
 (* are taken in arrival order and no source can starve another.           *)
 (*                                                                         *)
 (* Mutation switches, each reintroducing a hazard commit 3035697 fixed:    *)
@@ -41,7 +41,7 @@ CONSTANTS
     LateRows,       \* Rows the engine commits later, with or without a Nudge.
     CopyRows,       \* Rows a Tick's `retransmit` may commit as copies.
     Slots,          \* Run identities (a run's subject), recycled once closed.
-    MaxInFlight,    \* `max_in_flight` (scheduler.gleam:133).
+    MaxInFlight,    \* `max_in_flight` (scheduler.gleam:134).
     MaxAttempts,    \* Attempts after which a row is past its deadline.
     MaxRecordFails, \* Budget of `record_send` calls that answer Error.
     MaxRunFaults,   \* Budget of RunLost markers and NeverStarted deadlines.
@@ -60,7 +60,7 @@ Readable == IF ReadMode = "store" THEN {"queued"} ELSE {"queued", "absent"}
 
 Rows == InitRows \cup LateRows \cup CopyRows
 
-\* The `Claim` type (scheduler.gleam:220) plus "none" for an absent key.
+\* The `Claim` type (scheduler.gleam:221) plus "none" for an absent key.
 NoClaim == [kind |-> "none", run |-> 0]
 Expiring == [kind |-> "expiring", run |-> 0]
 HeldClaim == [kind |-> "held", run |-> 0]
@@ -107,10 +107,10 @@ DeadlineSeq(s, S, v) ==
 Claimed(c) == {r \in Rows : c[r].kind # "none"}
 
 (***************************************************************************)
-(* `dispatch` (scheduler.gleam:440) and `start_batch` (:476) as one pure   *)
+(* `dispatch` (scheduler.gleam:443) and `start_batch` (:479) as one pure   *)
 (* function of the state after the handler's own change. The run slot is  *)
 (* the lowest free one; with no free slot the dispatch is skipped, which   *)
-(* is what the real code does when `due_outbox` answers Error (:470).      *)
+(* is what the real code does when `due_outbox` answers Error (:473).      *)
 (***************************************************************************)
 Dispatch(c, st, du, at, rn, m) ==
     LET room == MaxInFlight - Cardinality(Claimed(c))
@@ -178,11 +178,11 @@ define
     NudgeQueued == \E i \in 1..Len(mq) : mq[i].type = "nudge"
 
     \* `record_send`'s answer: Ok, Error before the write, or Error after it
-    \* (engine.gleam:425 `answer`, ApplyThenFail).
+    \* (engine.gleam:427 `answer`, ApplyThenFail).
     Fates == IF recFails < MaxRecordFails
              THEN {"apply", "before", "after"} ELSE {"apply"}
 
-    \* The copy a Tick's `retransmit_due` (scheduler.gleam:411) may commit:
+    \* The copy a Tick's `retransmit_due` (scheduler.gleam:412) may commit:
     \* none, or the lowest unused copy row once some row is stored.
     CopyChoice ==
         LET unused == {r \in CopyRows : status[r] = "absent"}
@@ -202,7 +202,7 @@ macro Commit(c1, st1, at1, du1, rn1, m1, hp1) begin
     end with;
 end macro;
 
-\* `finish` (scheduler.gleam:708): record the verdict through the engine,
+\* `finish` (scheduler.gleam:711): record the verdict through the engine,
 \* end the claim on Ok, hold it on Error, then dispatch.
 macro Finish(row_, ver_, mq_) begin
     with fate \in Fates,
@@ -229,8 +229,8 @@ begin
 Handle:
     while TRUE do
         either
-            \* Tick (scheduler.gleam:400): `release_held` (:527), then
-            \* `retransmit_due` (:411), then `dispatch`.
+            \* Tick (scheduler.gleam:401): `release_held` (:530), then
+            \* `retransmit_due` (:412), then `dispatch`.
             await mq # <<>> /\ Head(mq).type = "tick";
             with cp \in CopyChoice,
                  c1 = [r \in Rows |-> IF claim[r].kind = "held"
@@ -243,12 +243,12 @@ Handle:
                        [r \in Rows |-> FALSE]);
             end with;
         or
-            \* Nudge (scheduler.gleam:399): `dispatch`.
+            \* Nudge (scheduler.gleam:400): `dispatch`.
             await mq # <<>> /\ Head(mq).type = "nudge";
             Commit(claim, status, attempts, due, run, Tail(mq), heldPending);
         or
             \* Finished(row, Refused), sent to itself by `dispatch` for an
-            \* expired row (scheduler.gleam:460): `finish`.
+            \* expired row (scheduler.gleam:463): `finish`.
             await mq # <<>> /\ Head(mq).type = "finished";
             Finish(Head(mq).row, "ref", Tail(mq));
         or
@@ -295,13 +295,13 @@ Handle:
     end while;
 end process;
 
-\* One weft run of sends (`send_batch`, scheduler.gleam:504), relayed.
+\* One weft run of sends (`send_batch`, scheduler.gleam:507), relayed.
 fair process Run \in Slots
 begin
 Work:
     while TRUE do
         either
-            \* A send ends: `classify` (:337) gives Accepted, Refused or
+            \* A send ends: `classify` (:338) gives Accepted, Refused or
             \* Transient. A crashed or failed task is Transient too
             \* (`settlement` :641), so it is the same step.
             with r \in {x \in Rows : run[self].task[x] = "sending"},
@@ -356,7 +356,7 @@ Work:
     end while;
 end process;
 
-\* `actor.periodic(every: tick_ms, sending: Tick)` (scheduler.gleam:291).
+\* `actor.periodic(every: tick_ms, sending: Tick)` (scheduler.gleam:292).
 \* Firing is also the clock advancing: a retry's `next_attempt_at` passes
 \* (backoff is at least two ticks, so never sooner), and the per-period
 \* counters restart.
