@@ -32,7 +32,7 @@ an agent does with a message is its host's policy, enforced outside Reedwire.
 
 ## Quick start
 
-Building needs Gleam 1.18+, Erlang/OTP 29 linked against OpenSSL 3.5 or newer
+Building needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5 or newer
 (ML-KEM needs it), and a Rust toolchain for the Tor sidecar.
 
 ```bash

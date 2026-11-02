@@ -1,6 +1,6 @@
 name = "sim"
 version = "0.1.0"
-gleam = ">= 1.18.0"
+gleam = ">= 1.19.2"
 
 # The deterministic simulation of the real shell: two daemons and a mailbox
 # in one VM, driven by a seed (docs/dst/plan.md). A test harness that

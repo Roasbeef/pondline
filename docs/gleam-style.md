@@ -1506,7 +1506,7 @@ serves a property of the core specification, the section is named.
    the Gleam sources. Rust is a narrow native boundary, not a second home
    for the application: protocol state, persistence coordination and
    policy stay in Gleam (`docs/design-intent.md` §6).
-1. **Toolchain**: Gleam ≥ 1.18, Erlang/OTP ≥ 29. `gleam format` enforced;
+1. **Toolchain**: Gleam ≥ 1.19.2, Erlang/OTP ≥ 29. `gleam format` enforced;
    no warnings.
 2. **Total decoders**: every durability or wire boundary decodes with a
    decoder returning a typed error. Partial decoding is a bug class, not a
