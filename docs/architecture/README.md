@@ -11,8 +11,9 @@ on GitHub.
 - [mailbox.md](mailbox.md): the mailbox service, from an HTTP request to
   a committed SQLite row, the long poll, the envelope and ticket blob
   lifecycles and the schema.
-- [sim.md](sim.md): the deterministic simulation of the daemon and mailbox
-  trees.
+- [sim.md](sim.md): the shell DST, from a seed to a verdict: the runner's
+  event loop, the seams, the faults, the oracle, and the recall, mutation
+  and coverage measurements that judge it.
 
 Other places to look, so this directory does not repeat them:
 
