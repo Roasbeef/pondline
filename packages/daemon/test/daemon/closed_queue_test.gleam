@@ -10,6 +10,7 @@
 //// them and stops.
 
 import core/offer
+import core/secret
 import daemon/api
 import daemon/config
 import daemon/engine
@@ -70,7 +71,8 @@ fn closed_in_one_batch() {
   })
   node.stop(b)
 
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"bye":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"bye":utf8>>), None)
   let assert Ok(Nil) = api.close(a, at_a)
   support.eventually(15_000, fn() {
     support.when(list.length(support.stored_in(inbox_b)) == 2)

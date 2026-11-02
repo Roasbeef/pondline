@@ -101,7 +101,8 @@ pub fn a_ticket_pairs_two_daemons_and_a_message_crosses_test() {
   // nothing, and `accept` is idempotent per invitation (ADR-011).
   assert api.accept_ticket(b, issued.ticket, "inviter") == Ok(at_b)
 
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hi":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"hi":utf8>>), None)
   let delivered =
     support.eventually(15_000, fn() {
       let assert Ok(found) = api.receive(b, None, 10)

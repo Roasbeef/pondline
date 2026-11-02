@@ -41,9 +41,9 @@ pub fn pairing_and_messages_both_ways_test() {
 
   // Messages in both directions.
   let assert Ok(from_a) =
-    api.send(a, at_a, "text/plain", <<"hello b":utf8>>, None)
+    api.send(a, at_a, "text/plain", secret.new(<<"hello b":utf8>>), None)
   let assert Ok(from_b) =
-    api.send(b, at_b, "text/plain", <<"hello a":utf8>>, None)
+    api.send(b, at_b, "text/plain", secret.new(<<"hello a":utf8>>), None)
 
   let at_b_inbox =
     support.eventually(15_000, fn() {
@@ -119,8 +119,10 @@ pub fn the_inbound_budget_holds_messages_until_it_is_raised_test() {
   let at_a = contact_in(a, api.Active)
   let at_b = contact_in(b, api.Active)
 
-  let assert Ok(first) = api.send(b, at_b, "text/plain", <<"1":utf8>>, None)
-  let assert Ok(second) = api.send(b, at_b, "text/plain", <<"2":utf8>>, None)
+  let assert Ok(first) =
+    api.send(b, at_b, "text/plain", secret.new(<<"1":utf8>>), None)
+  let assert Ok(second) =
+    api.send(b, at_b, "text/plain", secret.new(<<"2":utf8>>), None)
 
   // One is delivered and one is held, whichever the mailbox handed over
   // first.

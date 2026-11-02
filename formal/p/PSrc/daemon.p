@@ -533,10 +533,11 @@ machine Daemon {
     var fp: tFp;
 
     // The processed rule: same identifier and digest is a Repeat, and
-    // nothing is committed. engine.gleam answers it Ok(Repeat) and the
-    // fetcher acknowledges only rows with acked = 0, so an envelope that
-    // was already acknowledged and is served again is never acknowledged
-    // again. reackRepeat models the fix.
+    // nothing of the relationship is committed. The fetcher acknowledges
+    // only rows with acked = 0, so engine.repeat marks an envelope that
+    // was already acknowledged, and is served again, unacknowledged: the
+    // next round names it (ADR-010, addendum). reackRepeat off is the code
+    // before that fix, which never acknowledged such an envelope again.
     if (env in processed && processed[env] == ct) {
       if (cfg.reackRepeat && env in acked) {
         acked -= (env);

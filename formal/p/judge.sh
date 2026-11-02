@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # The judge for the P model: every mutant, recall, calibration and
-# counterexample test case (PTst/judge.p) must make the checker report a
-# bug, and the bug must come from the expected monitor. Exits non-zero if
+# counterexample test case (PTst/judge.p; the cx* cases run the code before
+# the fix for the counterexample, and are recall cases now) must make the
+# checker report a bug, and the bug must come from the expected monitor. Exits non-zero if
 # any case survives its budget or trips the wrong monitor.
 #
 # Prints, per case, the schedule on which the first bug was found (the

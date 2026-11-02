@@ -124,7 +124,8 @@ pub fn a_repeated_message_id_is_ignored_and_the_queue_moves_on_test() {
   let assert Ok([inbox_b]) = engine.live_inboxes(api.engine_handle(b))
 
   // An honest first message, delivered and receipted.
-  let assert Ok(first) = api.send(a, at_a, "text/plain", <<"first":utf8>>, None)
+  let assert Ok(first) =
+    api.send(a, at_a, "text/plain", secret.new(<<"first":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, first) == Ok(api.ReceivedByPeer))
   })
@@ -159,7 +160,7 @@ pub fn a_repeated_message_id_is_ignored_and_the_queue_moves_on_test() {
   // forged one, is delivered.
   let assert Ok(a) = node.start(settings_a)
   let assert Ok(second) =
-    api.send(a, at_a, "text/plain", <<"second":utf8>>, None)
+    api.send(a, at_a, "text/plain", secret.new(<<"second":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, second) == Ok(api.ReceivedByPeer))
   })

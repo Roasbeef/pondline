@@ -262,6 +262,26 @@ pub fn tombstones(connection: Connection) -> List(Stored) {
   )
 }
 
+/// The envelopes the mailbox's backup holds that it has tombstoned since,
+/// oldest first: what a restore from the backup brings back
+/// (`sim/restore`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// tables.restorable(mailbox_keeper)
+/// ```
+pub fn restorable(connection: Connection) -> List(Stored) {
+  read(
+    connection,
+    "SELECT b.queue_id, b.envelope_id FROM sim_backup AS b
+     JOIN tombstones AS t
+       ON t.queue_id = b.queue_id AND t.envelope_id = b.envelope_id
+     ORDER BY b.seq",
+    stored(),
+  )
+}
+
 /// A `(queue, envelope)` row.
 fn stored() -> decode.Decoder(Stored) {
   use queue <- decode.field(0, decode.bit_array)

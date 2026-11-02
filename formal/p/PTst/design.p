@@ -333,7 +333,8 @@ machine DrvCtlNoImplicitAccept {
   }
 }
 
-// The code's Repeat handling, every fault except a restore and the sweep.
+// The pre-fix Repeat handling, every fault except a restore and the sweep:
+// the control for the cx* recall cases.
 machine DrvCtlNoReack {
   start state S {
     entry {

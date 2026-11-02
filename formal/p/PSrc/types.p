@@ -122,10 +122,10 @@ type tCfg = (
   mIgnoreExpiry: bool,
   mTightAnswers: bool,
 
-  // Not a ruling: the model of a fix for the counterexample in
-  // docs/formal/p.md ("An acknowledged envelope served again"). True
-  // re-acknowledges a Repeat whose envelope was already acknowledged; false
-  // is the code as it stands.
+  // The fix for the counterexample in docs/formal/p.md ("An acknowledged
+  // envelope served again"; ADR-010, addendum). True re-acknowledges a
+  // Repeat whose envelope was already acknowledged, as engine.repeat does;
+  // false is the code before the fix, kept for the cx* recall cases.
   reackRepeat: bool
 );
 

@@ -92,7 +92,7 @@ pub fn summary(report: Report) -> String {
 ///
 /// ```gleam
 /// list.length(sim.corpus())
-/// // -> 17
+/// // -> 18
 /// ```
 pub fn corpus() -> List(String) {
   [
@@ -137,6 +137,12 @@ pub fn corpus() -> List(String) {
     // on that queue waited behind it; the core now ignores the repeat and
     // records it as an incident.
     "00000103000850040108500000000108500201020008501000000008c0",
+    // The P model's counterexample (ADR-010, addendum): the mailbox is
+    // restored from a backup and serves envelopes B already acknowledged.
+    // B answered each Repeat and never acknowledged it again, so its
+    // fetcher spun on them and the mailbox held them until retention; a
+    // repeat now marks its row unacknowledged and the next round names it.
+    "00001003000850040108500000000108500201020008501400000008c0",
   ]
 }
 

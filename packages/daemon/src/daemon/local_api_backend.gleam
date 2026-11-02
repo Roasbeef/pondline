@@ -14,6 +14,7 @@
 //// that choice is made.
 
 import core/endpoint.{type Endpoint, Loopback, Onion, TorOnly, TorOrLoopback}
+import core/secret
 import daemon/api
 import daemon/build
 import daemon/cli.{type DaemonOptions}
@@ -114,7 +115,7 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     },
     invite_ticket: fn(description, approval, budget) {
       api.invite_ticket(daemon, description, approval, budget)
-      |> result.map(fn(issued) { #(issued.file, issued.ticket) })
+      |> result.map(fn(issued) { #(secret.expose(issued.file), issued.ticket) })
       |> map_error
     },
     accept: fn(file, description) {

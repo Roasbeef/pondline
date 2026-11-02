@@ -13,6 +13,7 @@ import daemon/internal/ffi_local_system
 import gleam/io
 import gleam/option
 import gleam/result
+import telemetry/handler
 
 /// The entry point for `gleam run -m reedwire`.
 pub fn main() -> Nil {
@@ -26,11 +27,25 @@ pub fn main() -> Nil {
     })
     |> option.from_result
 
-  // A parsed command runs, and a usage error is reported with the usage text.
-  case cli.parse(argv.load().arguments, environment) {
-    Ok(command) -> emit(cli_run.run(command))
+  // The handler goes in before anything can crash: a daemon's crash report,
+  // and a command's, holds payloads and keys that only the scrubbed
+  // formatter on standard error keeps out of the output (ADR-012). Standard
+  // output stays the command's own. A VM that cannot install it does not
+  // run.
+  let installed = handler.install_from_env()
 
-    Error(message) ->
+  // A parsed command runs, and a usage error is reported with the usage text.
+  case installed, cli.parse(argv.load().arguments, environment) {
+    Error(Nil), _ ->
+      emit(cli_run.Outcome(
+        cli.exit_local,
+        <<>>,
+        "reedwire: the log handler could not be installed",
+      ))
+
+    Ok(_), Ok(command) -> emit(cli_run.run(command))
+
+    Ok(_), Error(message) ->
       emit(cli_run.Outcome(
         cli.exit_usage,
         <<>>,

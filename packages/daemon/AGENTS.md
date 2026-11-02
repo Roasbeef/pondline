@@ -30,7 +30,7 @@ processes.
 Depends on `core` (the state machines, codec, typed protocol, snapshots,
 endpoints and limits), `primitives` (the real `Suite`), `tor` (the sidecar and
 onion streams, wrapped as a `transport.Connection` only in `daemon/carrier`),
-`sqlight`, `simplifile`, `gleam_json` (the
+`telemetry` (logging, ADR-012), `sqlight`, `simplifile`, `gleam_json` (the
 local API), `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and `mug` (loopback
 TCP). Dev: `parrot` generates `daemon/sql` under `make gen-sql`, which imports
 the trimmed copy of its runtime in `daemon/internal/sql_param` instead
@@ -109,7 +109,8 @@ this before changing any of them.
   runs each operation as a job: load state, run the pure transition with the
   real `Suite` and injected clock, commit, then call `notify`. It never touches
   the network. `process` applies the id-and-digest rule before opening a
-  frame, then counts the attempt (`store.count_attempt`, its own
+  frame (a repeat marks its processed row unacknowledged,
+  `store.mark_unacked`), then counts the attempt (`store.count_attempt`, its own
   transaction) and quarantines an envelope past
   `limits.max_process_attempts` (`store.Quarantined`: dropped, acknowledged,
   an incident; ADR-010). It looks a `Ratchet` frame's fingerprint up before
@@ -202,7 +203,12 @@ this before changing any of them.
   that carries the `Name` and, in a simulation only, an interceptor) stays
   hand-written because weft has no monitored, non-panicking call against a
   pre-existing pid. Known weft gap.
-- `daemon/config`, `daemon/log` and `daemon/internal/ffi_runtime_clock`.
+- `daemon/config` and `daemon/internal/ffi_runtime_clock`. Logging is
+  `telemetry/log` (ADR-012): `engine` (`version_conflict`,
+  `storage_failed` with the store error's and SQLite code's tags),
+  `scheduler` (`retransmit_failed`, `record_failed` with the envelope's id
+  prefix), `provisioner` (`queue_refused` with the queue's id prefix and
+  the refusal's tag), all `warning`, and `node started` at `info`.
 
 Traffic: the engine tells the shell through `notify` after each commit
 (`Transmit` to the scheduler, `CreateQueue` to the provisioner, a topology
@@ -236,6 +242,15 @@ Invariants:
   code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
+- A repeat is owed an acknowledgement: `process` marks its processed row
+  unacknowledged, so an envelope the mailbox serves again after it was
+  acknowledged (a restored backup, a sender's retry stored again once its
+  tombstone was swept) is named in the next round's `Ack` and leaves the
+  queue, without a second delivery or a counted attempt (ADR-010,
+  addendum; found by the P model, `docs/formal/p.md`).
+  `test/daemon/reack_test.gleam` stages both paths with sixteen zombies
+  and a message behind them. Mutation-checked: answering `Repeat` without
+  the unack fails both tests (the seventeenth message never arrives).
 - A repeated message identifier from an authenticated peer is ignored, not
   delivered, and recorded as an incident, and the queue moves on
   (`test/daemon/dedup_test.gleam`, two real daemons and a real mailbox, the
@@ -284,10 +299,24 @@ Invariants:
 - One daemon per state directory: `lock.db` holds an exclusive SQLite
   transaction, released by the OS when the process dies. The directory is
   `0700`, the database and lock `0600`.
-- No log line carries a value: `daemon/log` is given fixed phrases, and
-  `test/daemon/secrets_test.gleam` searches a whole exchange's stderr for
-  capabilities, the invitation, the payload, and a ticket with its `K` and
-  derived keys.
+- No log line or crash report carries a secret (ADR-012). Our lines take
+  only `telemetry/field`'s typed kinds; `reedwire.main` installs the
+  `telemetry` handler before anything runs, for every command, so OTP's
+  reports reach standard error rebuilt from their shape.
+  `test/daemon/secrets_test.gleam` searches a whole exchange's stderr, and a
+  run with injected crashes in the engine (mid-send), the scheduler and a
+  mailbox request process, for the payload, the sealing key, capabilities,
+  the invitation, and a ticket with its `K` and derived keys, in every
+  spelling (text, decimal byte list, hex).
+  `test/daemon/crash_report_test.gleam` is the reproduction: an engine whose
+  seal raises from OpenSSL printed the key and the plaintext in its crash
+  and supervisor reports before the handler; installing OTP's
+  `logger_formatter` instead fails it.
+- The send payload is a `Secret` from the local API's decode
+  (`local_api.parse_send`) through `Backend.send`, `api.send` and
+  `send_with_key` to `engine.send`, exposed only inside the job for the
+  core to seal and digest; `engine.invitation_file` answers with a
+  `Secret`. Delivered payloads were already `Secret`s.
 - Pairing by ticket is tested end to end against a real mailbox
   (`test/daemon/ticket_test.gleam`): pairing and a message; a mailbox
   answering with another ticket's invitation refused; an expired ticket,

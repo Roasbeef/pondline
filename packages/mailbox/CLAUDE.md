@@ -46,7 +46,8 @@ process.
   armed once in the builder) asks the coordinator to sweep.
 - `mailbox/http`: `start(node, Config(interface, port))` returns a `Server`
   with the bound port (port 0 is ephemeral); the mist handler, routing,
-  bounded body read and one log line per request.
+  bounded body read and one `info` line per request (`telemetry/log`,
+  `component=http event=request method= status= response= elapsed_ms=`).
 - `mailbox` (`gleam run -m mailbox -- ...`): `main`, `parse` and the two
   subcommands, `serve --db <path> --port <n> [--tor-bin <path> --tor-state
   <dir>]` (prints `listening 127.0.0.1:<port>`; with the Tor options it then
@@ -66,8 +67,9 @@ process.
 
 ## Relationships
 
-Depends on `core` (protocol, ids, capabilities, envelopes, limits, time)
-and `primitives` (`sha256`, `constant_time_equal`), plus `sqlight` (esqlite,
+Depends on `core` (protocol, ids, capabilities, envelopes, limits, time),
+`primitives` (`sha256`, `constant_time_equal`) and `telemetry` (logging,
+ADR-012), plus `sqlight` (esqlite,
 Apache-2.0), `gleam_otp` and `gleam_erlang`, `weft` (the sibling checkout
 as a path dependency while its run timer source is unreleased), `mist` 6.0.3 (with `glisten`, Apache-2.0),
 `gleam_http` 4.5.0, `argv` 1.1.0 and `simplifile` 2.7.0. and `tor` (only to host the
@@ -133,8 +135,12 @@ the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
 - A long poll registers with the notifier before its last look at the
   database, so an append between the look and the wait is not missed.
 - No secret reaches an error, a log or a message. Refusals carry no request
-  data. A request logs only method, path, status, response kind and duration
-  (spec §12.4); `grant` never prints the capability, and writes it to a file
+  data. A request logs only method, status, response kind and duration,
+  each a typed field (spec §12.4, ADR-012): the method and response kind
+  are constructor tags, and the client-chosen path is not logged (a wrong
+  one is `response=not_found`). `mailbox.main` installs the `telemetry`
+  handler first, for every command, so OTP's reports (a request handler's
+  crash included) reach standard error rebuilt from their shape; `grant` never prints the capability, and writes it to a file
   created exclusively and restricted to 0600 before the bytes go in.
 - The Tor options are given both or neither. The onion service starts only
   after the HTTP server is listening, the `onion` line follows the

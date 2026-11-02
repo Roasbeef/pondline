@@ -150,7 +150,7 @@ type Call {
     contact: Id(Contact),
     key: Option(String),
     content_type: String,
-    payload: BitArray,
+    payload: Secret,
     in_reply_to: Option(Id(Message)),
   )
   Receive(contact: Option(Id(Contact)), max: Int, wait_ms: Int)
@@ -594,7 +594,16 @@ fn parse_send(args: Dynamic) -> Result(Call, Failure) {
           <> " bytes",
       ))
 
-    False -> Ok(Send(contact:, key:, content_type:, payload:, in_reply_to:))
+    // From here to the engine's seal the plaintext is a `Secret`, so no
+    // report or rendering of this call can print it (ADR-012).
+    False ->
+      Ok(Send(
+        contact:,
+        key:,
+        content_type:,
+        payload: secret.new(payload),
+        in_reply_to:,
+      ))
   }
 }
 
