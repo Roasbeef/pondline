@@ -37,7 +37,7 @@ simulator, so build ProVerif 2.05 from the source tarball instead:
   `opam switch create default 5.2.1`), run `./build` in the unpacked
   directory.
 - Keep the directory anywhere and put it on `PATH` for the command, for
-  example `/Users/roasbeef/tools/proverif-2.05`.
+  example `~/tools/proverif-2.05`.
 
 Tamarin was considered and not used: the queries are trace properties
 (secrecy, injective agreement, equalities between event arguments) over a
@@ -47,7 +47,7 @@ its attack traces come out of the same run as the proofs, which is what
 the broken variants need.
 
 ```sh
-PATH=/Users/roasbeef/tools/proverif-2.05:$PATH formal/crypto/check.sh   # about 23 min at -j 2
+PATH=~/tools/proverif-2.05:$PATH formal/crypto/check.sh   # about 23 min at -j 2
 formal/crypto/check.sh -j 4 -k        # four provers, keep logs in formal/crypto/out
 formal/crypto/check.sh base leak      # named rows only
 cd packages/primitives && gleam test  # the vectors, with the rest of the suite

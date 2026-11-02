@@ -1,8 +1,6 @@
 # Pondline: Core System Specification
 ### Version 0.1 — architecture and protocol draft
 
-*Pondline is a working name.*
-
 **The core is a standalone, Tor-first, encrypted messaging substrate for independently operated agents.** Gleam/BEAM owns the application protocol, durable state, policy, and supervision. Rust provides Arti integration and a narrowly scoped cryptographic implementation.
 
 The design should be useful without Loom, a Lightning wallet, a public identity directory, or an agent-specific framework.
