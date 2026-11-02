@@ -1,12 +1,12 @@
 # Telemetry Architecture
 
-The `telemetry` package is Reedwire's only logging layer, and it enforces the rule that no log line carries a secret (spec §12.4). It has two halves. A typed call path renders Reedwire's own lines from fields that cannot hold free-form text. A `logger` handler with a custom formatter rebuilds every line that OTP or a library writes into the same VM from the event's shape, never from its contents. Both halves write logfmt to standard error. This document describes the call path, the handler, and the formatter's rebuild rule. It reflects the code at `632db2f`.
+The `telemetry` package is Pondline's only logging layer, and it enforces the rule that no log line carries a secret (spec §12.4). It has two halves. A typed call path renders Pondline's own lines from fields that cannot hold free-form text. A `logger` handler with a custom formatter rebuilds every line that OTP or a library writes into the same VM from the event's shape, never from its contents. Both halves write logfmt to standard error. This document describes the call path, the handler, and the formatter's rebuild rule. It reflects the code at `632db2f`.
 
 The decision, the reproduction that motivated it and the list of covered report shapes are in [ADR-012](../../docs/adr/012-logging-and-crash-reports.md). The rule the package enforces is in [spec.md](../../docs/spec.md) §5.4 and §12.4 and in `docs/gleam-style.md` Part IV §4 and §7. The package's short reference is [CLAUDE.md](CLAUDE.md).
 
 ## Components
 
-Reedwire's own lines and foreign events share one handler but take different paths into it. A call from Reedwire code is rendered to text in the caller's process before `logger` sees it. A foreign event reaches the formatter as an Erlang term and is rebuilt there.
+Pondline's own lines and foreign events share one handler but take different paths into it. A call from Pondline code is rendered to text in the caller's process before `logger` sees it. A foreign event reaches the formatter as an Erlang term and is rebuilt there.
 
 ```mermaid
 flowchart TB
@@ -63,8 +63,8 @@ flowchart TB
 | `telemetry/log` | The four calls `debug`, `info`, `warning` and `error`, and the level gate. | Handler setup. A program that never installed the handler still logs through OTP's default handler. |
 | `telemetry/logfmt` | The single escaping rule: `word` for keys and `quote` for values. | Which values are allowed. |
 | `telemetry/level` | The four levels, their names, `parse`, and the policy for what goes at which level. | The threshold in force, which belongs to `logger`. |
-| `telemetry/handler` | Installing the handler and reading `REEDWIRE_LOG_LEVEL`. Only an entry point calls it. | Formatting. |
-| `telemetry/internal/ffi_logger`, `telemetry_ffi.erl` | The bindings to `logger`, `os:getenv` and the term-inspection primitives, and the formatter. | The wording of Reedwire's own lines. |
+| `telemetry/handler` | Installing the handler and reading `PONDLINE_LOG_LEVEL`. Only an entry point calls it. | Formatting. |
+| `telemetry/internal/ffi_logger`, `telemetry_ffi.erl` | The bindings to `logger`, `os:getenv` and the term-inspection primitives, and the formatter. | The wording of Pondline's own lines. |
 
 ## The typed call path
 
@@ -85,7 +85,7 @@ flowchart LR
     en{"ffi_logger.enabled(level)<br/>logger:allow(Level, telemetry@log)"}
     drop["return Nil,<br/>nothing rendered"]
     render["line.render:<br/>component=word event=word<br/>field.render per field"]
-    emit["ffi_logger.emit:<br/>logger:log(Level, #{reedwire => Line},<br/>#{domain => [reedwire]})"]
+    emit["ffi_logger.emit:<br/>logger:log(Level, #{pondline => Line},<br/>#{domain => [pondline]})"]
     h["handler process<br/>format/2 prints Line as given"]
 
     entry --> en
@@ -95,14 +95,14 @@ flowchart LR
 
 1. **Gate.** `log.emit` asks `logger` whether it would pass an event at this level before it renders anything (`src/telemetry/log.gleam:83`). The check is `logger:allow/2`, so it agrees with the handler's threshold.
 2. **Render.** `line.render` joins `component=<word>` and `event=<word>` with the rendered fields (`src/telemetry/line.gleam:26`). `logfmt.word` replaces any character outside `[a-z0-9_]` with `_` (`src/telemetry/logfmt.gleam:25`), so a mistyped key cannot break the line. A tag value goes through `logfmt.quote`, which leaves a bare token as it is and otherwise quotes it, escaping `"`, `\` and control characters (`src/telemetry/logfmt.gleam:51`).
-3. **Emit.** The line is sent as a report under the single key `reedwire` (`src/telemetry_ffi.erl:83`), so nothing between the call and the formatter can reinterpret it as a format string. The call runs in the caller's process; the handler process does the writing.
-4. **Format.** `body/2` matches `{report, #{reedwire := Line}}` and prints `Line` unchanged (`src/telemetry_ffi.erl:130`). The line carries no timestamp of its own: `format/2` adds `time=` from `logger`'s event time and `level=` (`src/telemetry_ffi.erl:120`), so a log call reads no clock.
+3. **Emit.** The line is sent as a report under the single key `pondline` (`src/telemetry_ffi.erl:83`), so nothing between the call and the formatter can reinterpret it as a format string. The call runs in the caller's process; the handler process does the writing.
+4. **Format.** `body/2` matches `{report, #{pondline := Line}}` and prints `Line` unchanged (`src/telemetry_ffi.erl:130`). The line carries no timestamp of its own: `format/2` adds `time=` from `logger`'s event time and `level=` (`src/telemetry_ffi.erl:120`), so a log call reads no clock.
 
 Levels are exactly `logger`'s atoms `debug`, `info`, `warning` and `error` (`src/telemetry/level.gleam:35`). `level.parse` accepts `warn` and `err` and ignores case and surrounding space (`level.gleam:77`). The module documentation of `telemetry/level` is the level policy that call sites follow.
 
 ## Installing the handler
 
-Only a program's entry point installs the handler. The daemon calls `handler.install_from_env` first (`packages/daemon/src/reedwire.gleam:35`) and so does the mailbox (`packages/mailbox/src/mailbox.gleam:102`). A library that reconfigured `logger` would change the VM of whatever embedded it, and the simulation, which silences `logger` around its runs, would be undone by a node start.
+Only a program's entry point installs the handler. The daemon calls `handler.install_from_env` first (`packages/daemon/src/pondline.gleam:35`) and so does the mailbox (`packages/mailbox/src/mailbox.gleam:102`). A library that reconfigured `logger` would change the VM of whatever embedded it, and the simulation, which silences `logger` around its runs, would be undone by a node start.
 
 ```mermaid
 flowchart TB
@@ -125,19 +125,19 @@ flowchart TB
     rm -- "not ok" --> err
 ```
 
-`install` replaces OTP's `default` handler with `logger_std_h` writing to standard error (`src/telemetry_ffi.erl:42`). Standard output is a protocol channel in these programs: the mailbox prints `listening` and `onion` lines a launcher parses, and `reedwire receive --raw` writes payload bytes there (`handler.gleam:14`). `logger` cannot change a running handler's device, so a handler that is not already ours is removed and added again. One that is ours keeps running and has only its formatter and filters replaced, so a second install (a second test) loses no line.
+`install` replaces OTP's `default` handler with `logger_std_h` writing to standard error (`src/telemetry_ffi.erl:42`). Standard output is a protocol channel in these programs: the mailbox prints `listening` and `onion` lines a launcher parses, and `pondline receive --raw` writes payload bytes there (`handler.gleam:14`). `logger` cannot change a running handler's device, so a handler that is not already ours is removed and added again. One that is ours keeps running and has only its formatter and filters replaced, so a second install (a second test) loses no line.
 
-`filters/1` always stops events from a remote group leader, as OTP's default does, and below `debug` also stops progress reports (`src/telemetry_ffi.erl:72`). `handler.install` returns `Error(Nil)` if `logger` refuses the handler, and the entry point should refuse to start, because the alternative is OTP's unscrubbed formatter. `install_from_env` reads `REEDWIRE_LOG_LEVEL` (`handler.gleam:34`) and falls back to `info` for a missing or unrecognised value (`handler.gleam:83`).
+`filters/1` always stops events from a remote group leader, as OTP's default does, and below `debug` also stops progress reports (`src/telemetry_ffi.erl:72`). `handler.install` returns `Error(Nil)` if `logger` refuses the handler, and the entry point should refuse to start, because the alternative is OTP's unscrubbed formatter. `install_from_env` reads `PONDLINE_LOG_LEVEL` (`handler.gleam:34`) and falls back to `info` for a missing or unrecognised value (`handler.gleam:83`).
 
 ## The formatter's rebuild-from-shape rule
 
-`format/2` is the callback `logger` invokes in the handler's process (`src/telemetry_ffi.erl:109`). For any event that is not one of Reedwire's own lines, it builds the output from the event's structure and does not print the event as given. OTP's own formatter prints a crashed process's mailbox and dictionary, the arguments in a stack frame, a `gen_server`'s state and last message, and the data inside every reason. A BIF or NIF that raises puts its whole argument list in the frame, which for `crypto` is the key and the plaintext. Any of these can hold a payload, a key or a capability, so none is read.
+`format/2` is the callback `logger` invokes in the handler's process (`src/telemetry_ffi.erl:109`). For any event that is not one of Pondline's own lines, it builds the output from the event's structure and does not print the event as given. OTP's own formatter prints a crashed process's mailbox and dictionary, the arguments in a stack frame, a `gen_server`'s state and last message, and the data inside every reason. A BIF or NIF that raises puts its whole argument list in the frame, which for `crypto` is the key and the plaintext. Any of these can hold a payload, a key or a capability, so none is read.
 
 ```mermaid
 flowchart TB
     ev["format(Event, Config)"]
     body["body(Msg, Meta)"]
-    ours["report #{reedwire := Line}<br/>print Line"]
+    ours["report #{pondline := Line}<br/>print Line"]
     rep["report map:<br/>report/2 by label"]
     txt["string:<br/>text/2"]
     fmt["Format and Args:<br/>formatted/3"]
@@ -184,7 +184,7 @@ The package has no processes of its own. A log call executes in its caller: `log
 | --- | --- |
 | Caller of `log.*` | The gate check and the rendering of its own line. |
 | `logger` and the `default` handler process | Event ordering, overload protection (stock `logger_std_h`), the formatter call and the write to standard error. |
-| Entry point (`reedwire.main`, `mailbox.main`) | The decision to install the handler. |
+| Entry point (`pondline.main`, `mailbox.main`) | The decision to install the handler. |
 
 Installing is a VM-wide change. A host that embeds the daemon without calling `handler.install` keeps OTP's formatter and loses the scrubbing; the `Secret` wrapping of values that cross processes is what remains then (ADR-012). Two paths bypass the handler entirely: the sidecar's stderr diagnostics reach the terminal directly from the Rust process, and a failure of the program's main process is printed by Gleam's generated entry module (ADR-012).
 

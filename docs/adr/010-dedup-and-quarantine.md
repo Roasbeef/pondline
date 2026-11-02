@@ -52,7 +52,7 @@ kind (`repeated_message` or `quarantined`), queue, envelope, the contact and
 repeated message identifier when known, the failure count for a quarantine,
 and a time. Never a payload. `api.incidents` lists them newest first,
 `api.health` counts them, the local API has an operator-only `incidents`
-op and the CLI `reedwire incidents [--limit N]`.
+op and the CLI `pondline incidents [--limit N]`.
 
 ## Why
 
@@ -232,3 +232,7 @@ the repeat leaves it at the mailbox.
 - The P model's `reackRepeat` is on in `Base()`, so every design case runs
   the fixed rule; the `cx*` cases keep it off and stay in the judge as
   recall cases.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

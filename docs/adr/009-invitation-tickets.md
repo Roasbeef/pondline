@@ -7,7 +7,7 @@
 **A ticket.** `invite create --ticket` prints a string such as
 
 ```text
-rw1q0x7vvfgcfvz3jjt4c29kddntq35l0aj4d7c6cvvf57d5phdr9u0jz3crqpg88nlchnwdxp6qxla0x2u0hahqymxe23aefrlxk9utlqsq662klmqgan6g959vd0p6z3
+pl1q0x7vvfgcfvz3jjt4c29kddntq35l0aj4d7c6cvvf57d5phdr9u0jz3crqpg88nlchnwdxp6qxla0x2u0hahqymxe23aefrlxk9utlqsq662klmqgan6g959vd0p6z3
 ```
 
 130 characters for an onion mailbox, 74 for a loopback one (tests and the
@@ -16,7 +16,7 @@ demo). It holds the inviter mailbox's endpoint and a fresh 32-byte secret
 `--stdin`. The invitation file stays supported: `--out` still writes it,
 with or without `--ticket`, and `invite accept --file` still reads one.
 
-**Text form** (`core/ticket`, `core/codex32`). `rw1`, then data symbols in
+**Text form** (`core/ticket`, `core/codex32`). `pl1`, then data symbols in
 the bech32 alphabet, then a fifteen-symbol checksum. The first data symbol
 is the format: 0 onion, 1 loopback; any other is refused. The payload is
 regrouped as 5-bit symbols, most significant bit first, its padding bits
@@ -53,18 +53,18 @@ other. The cost is nine characters over bech32m.
 **Derivations** (`core/ticket.keys`):
 
 ```text
-PRK        = HKDF-Extract(salt = "Reedwire_Ticket_v1", ikm = K)
-locator    = HKDF-Expand(PRK, "Reedwire_TicketLocator_v1", 16)     the blob's name
-retrieve   = HKDF-Expand(PRK, "Reedwire_TicketCapability_v1", 32)  fetches it
-key, nonce = HKDF-Expand(PRK, "Reedwire_TicketKey_v1", 44)         32 then 12
-commit_key = HKDF-Expand(PRK, "Reedwire_TicketCommitment_v1", 32)
+PRK        = HKDF-Extract(salt = "Pondline_Ticket_v1", ikm = K)
+locator    = HKDF-Expand(PRK, "Pondline_TicketLocator_v1", 16)     the blob's name
+retrieve   = HKDF-Expand(PRK, "Pondline_TicketCapability_v1", 32)  fetches it
+key, nonce = HKDF-Expand(PRK, "Pondline_TicketKey_v1", 44)         32 then 12
+commit_key = HKDF-Expand(PRK, "Pondline_TicketCommitment_v1", 32)
 ```
 
 **The sealed blob**:
 
 ```text
 blob       = 0x01 || commitment (32) || ChaCha20-Poly1305(key, nonce,
-               aad = "Reedwire_TicketBlob_v1" || locator, invitation file)
+               aad = "Pondline_TicketBlob_v1" || locator, invitation file)
 commitment = HMAC-SHA-256(commit_key, invitation file)
 ```
 
@@ -235,3 +235,7 @@ What is implemented and tested:
 - Revisit if invitations need to be redeemable while the inviter's
   mailbox is down, if a mailbox operator objects to holding invitation
   ciphertext, or if a second implementation needs a different checksum.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

@@ -1,6 +1,6 @@
 # Daemon Architecture
 
-The `daemon` package is the part of Reedwire that runs on an agent's machine. It keeps the agent's durable relationship state in step with the mailboxes that carry its ciphertext: it commits every protocol transition to SQLite first, and only then sends, acknowledges or announces anything. This document describes the processes that do that work, who owns which state, and how a command or an envelope moves from its entry point to a durable result. It reflects the code at `632db2f`.
+The `daemon` package is the part of Pondline that runs on an agent's machine. It keeps the agent's durable relationship state in step with the mailboxes that carry its ciphertext: it commits every protocol transition to SQLite first, and only then sends, acknowledges or announces anything. This document describes the processes that do that work, who owns which state, and how a command or an envelope moves from its entry point to a durable result. It reflects the code at `632db2f`.
 
 The protocol itself is pure and lives in `packages/core` (`transition(model, event)`, [spec §10.1](../../docs/spec.md)). This package supplies the effects the core may not have: sockets, SQLite, clocks and processes. Process primitives (`weft/actor`, `weft/state_machine`, `weft/poll`, `weft` runs) are described in [weft.md](../../docs/weft.md). The mailbox service on the other end of every call is in [architecture/mailbox.md](../../docs/architecture/mailbox.md). Package-level invariants and the test that checks each one are in [CLAUDE.md](CLAUDE.md). Two of the processes here, the scheduler and the fetcher, have exhaustively checked models; see [formal/tla.md](../../docs/formal/tla.md).
 
@@ -10,9 +10,9 @@ A running daemon is a `static_supervisor` tree of eight children (`node.launch`,
 
 ```mermaid
 flowchart TB
-    subgraph CLI["reedwire (cli_run.gleam, local_api.gleam)"]
+    subgraph CLI["pondline (cli_run.gleam, local_api.gleam)"]
         direction TB
-        cmd["reedwire client command<br/>cli.parse, cli_run.attempt"]
+        cmd["pondline client command<br/>cli.parse, cli_run.attempt"]
         srv["local_api accept_loop<br/>one process per connection"]
         hub["wake hub<br/>local_api.hub_message"]
     end
@@ -147,7 +147,7 @@ A send returns once the ciphertext and the advanced session are durable. Reachin
 
 ```mermaid
 flowchart LR
-    cmd["reedwire send<br/>local_api execute Send"]
+    cmd["pondline send<br/>local_api execute Send"]
     be["api.send, send_with_key<br/>engine.send"]
     commit["store.commit Revised or KeyedSend<br/>outbox row queued,<br/>sent_messages locally_queued"]
     nudge["notify Nudge Transmit<br/>scheduler.nudge"]
@@ -441,7 +441,7 @@ Line framing is `recv_line` in the Erlang shim (`daemon_local_ffi.erl`), because
 
 A `receive` with a wait registers with the wake hub before its first read. The hub (`hub_message`) holds the list of waiters and the daemon's single `api.subscribe` subscription, and wakes every waiter on `MessagesReady`. A waiter re-reads and decides for itself whether the event was for its contact. `poll_for_wake` is `poll.until_on` with a clock whose rest is a wait on the waiter's subject, so a delivery announced between the read and the wait leaves a wake in the waiter's mailbox and is not lost. A wait that expires with nothing ready is an empty answer, not a failure.
 
-`local_api_backend.from_daemon` is the only module that maps `daemon/api` onto the `Backend` record. `start_node` turns the CLI's options into a runtime `Config`: `--carrier tor` selects `TorOnly` with the sidecar binary, and `--carrier loopback` selects `TorOrLoopback` with no sidecar. The CLI is three modules and an entry point. `cli` is pure: it parses arguments into a `Command`, builds the request, and defines the exit codes (0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused, invalid or too large, 6 unavailable). `cli_run` does the effects, `cli_render` prints, and `reedwire.main` installs the `telemetry` handler before anything else runs. A client command reads its credential from `--credential-file`, `REEDWIRE_CREDENTIAL_FILE` or `<state-dir>/operator.cred`, and a payload or ticket only from `--file` or `--stdin`, so no secret reaches argv. `invite create` and a ticket accept wait `invitation_timeout_ms` (130,000 ms, `cli.gleam:813`), at least the daemon's own bounds. `invite create --out` refuses an existing file before the daemon is asked and writes the invitation with mode `0600`.
+`local_api_backend.from_daemon` is the only module that maps `daemon/api` onto the `Backend` record. `start_node` turns the CLI's options into a runtime `Config`: `--carrier tor` selects `TorOnly` with the sidecar binary, and `--carrier loopback` selects `TorOrLoopback` with no sidecar. The CLI is three modules and an entry point. `cli` is pure: it parses arguments into a `Command`, builds the request, and defines the exit codes (0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused, invalid or too large, 6 unavailable). `cli_run` does the effects, `cli_render` prints, and `pondline.main` installs the `telemetry` handler before anything else runs. A client command reads its credential from `--credential-file`, `PONDLINE_CREDENTIAL_FILE` or `<state-dir>/operator.cred`, and a payload or ticket only from `--file` or `--stdin`, so no secret reaches argv. `invite create` and a ticket accept wait `invitation_timeout_ms` (130,000 ms, `cli.gleam:813`), at least the daemon's own bounds. `invite create --out` refuses an existing file before the daemon is asked and writes the invitation with mode `0600`.
 
 ## Storage
 
@@ -574,7 +574,7 @@ The simulation seams (`Config.timer`, `poll_clock`, `dialer`, `database`, `store
 - `invite` waits at most 30,000 ms for the queue, and a timed-out offer opens later unexported. Queue rotation at accept is not implemented, and there are no metrics.
 - The local API's acceptor and connection processes are not supervised. A connection process that crashes leaves its socket open until the acceptor exits, and a Unix socket path is limited to about 100 bytes, so a long state directory fails at `listen`.
 - `mailbox_client` opens one connection per call with no keep-alive pool, and the loopback carrier cannot bound a single read by `max_bytes`.
-- The `TorOnly` path with the real sidecar runs only under `REEDWIRE_TOR_NETWORK=1` and was not exercised in preparing this document.
+- The `TorOnly` path with the real sidecar runs only under `PONDLINE_TOR_NETWORK=1` and was not exercised in preparing this document.
 - This document was written from the source without building or running it. Every constant is quoted from the code at `632db2f`, but behavior that depends on weft internals (run `limit`, `NeverStarted` and `Abandoned` ordering, `start_relayed` end markers) is described as the code in this package relies on it, not re-derived from weft.
 - `docs/formal/tla.md` gives line numbers for `scheduler.gleam` and `engine.gleam` against `48bdacb`; some of them are a few lines off at `632db2f` (for example `dispatch` is at `scheduler.gleam:443`, and the table says 440).
 - The fetch manager's `periodic` tick and `node.wait_for_lock`'s `Retry` arm have no test, as `CLAUDE.md` records.

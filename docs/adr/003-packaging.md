@@ -7,7 +7,7 @@ written down below but was not run, so the Linux half is an assumption.
 
 ## Decision
 
-A release is one directory (`reedwire-mailbox/`, tarred per platform) built
+A release is one directory (`pondline-mailbox/`, tarred per platform) built
 by `scripts/release.sh`, which `make release` runs. It needs no Erlang,
 Gleam, Rust, Tor or OpenSSL on the target machine. The build uses no tool
 beyond the ones the repository already needs (`gleam`, `erl`, `cargo`,
@@ -17,10 +17,10 @@ No `rebar3`, `relx` or `reltool`.
 Layout:
 
 ```
-reedwire-mailbox/
+pondline-mailbox/
   bin/mailbox            launcher (sh): sets the VM environment, checks OpenSSL, execs
   bin/start_clean.boot   OTP's own boot script, loads kernel and stdlib only
-  bin/reedwire-tor       the Arti sidecar
+  bin/pondline-tor       the Arti sidecar
   bin/lib/liblzma.5.dylib   a library the sidecar links (see below)
   erts-17.0.5/bin/       erlexec, beam.smp, erl_child_setup, inet_gethost
   lib/<otp app>-<vsn>/   kernel stdlib crypto ssl public_key asn1 (ebin, priv only)
@@ -73,7 +73,7 @@ application with its own ERTS, OpenSSL at least 3.5 and the sidecar, on a
 machine with none of the build toolchain. On macOS arm64 it can, with
 four findings the plan did not anticipate:
 
-1. **The sidecar links a Homebrew library.** `reedwire-tor` links
+1. **The sidecar links a Homebrew library.** `pondline-tor` links
    `/opt/homebrew/opt/xz/lib/liblzma.5.dylib`. A release that copied only
    the binary would fail to start on a machine without Homebrew xz. The
    script now bundles any non-system dylib the sidecar names into
@@ -102,9 +102,9 @@ Clean build, from an empty `build/release`:
 $ rm -rf build/release; make release
 ==> sidecar
 ==> gleam shipment
-==> assemble .../build/release/darwin-arm64/reedwire-mailbox
+==> assemble .../build/release/darwin-arm64/pondline-mailbox
 OpenSSL 3.6.3 9 Jun 2026
-beam.smp ... txt REG ... .../reedwire-mailbox/lib/crypto-5.9.2/priv/lib/libcrypto.3.dylib
+beam.smp ... txt REG ... .../pondline-mailbox/lib/crypto-5.9.2/priv/lib/libcrypto.3.dylib
 ==> size:  46M
 make_exit=0
 ```
@@ -114,16 +114,16 @@ Scrubbed run of the bundled release. `env -i` leaves only `HOME` and
 by name:
 
 ```
-$ env -i HOME=$T PATH=/usr/bin:/bin reedwire-mailbox/bin/mailbox grant \
+$ env -i HOME=$T PATH=/usr/bin:/bin pondline-mailbox/bin/mailbox grant \
       --db $T/m.db --queues 3 --out $T/g.cap
 $T/g.cap                                    (exit 0, g.cap mode 0600, 32 bytes)
 
-$ env -i HOME=$T PATH=/usr/bin:/bin reedwire-mailbox/bin/mailbox serve \
+$ env -i HOME=$T PATH=/usr/bin:/bin pondline-mailbox/bin/mailbox serve \
       --db $T/m.db --port 0
 listening 127.0.0.1:49600                   (0.29 s from exec, includes the version check)
 ```
 
-`reedwire-tor` also starts in the same scrubbed environment (it printed its
+`pondline-tor` also starts in the same scrubbed environment (it printed its
 usage line, exit 0), so the repointed liblzma resolves.
 
 The libcrypto proof. `serve` does not load `crypto` until something uses
@@ -217,10 +217,10 @@ Assumed, not tested:
 
 ### One tree, two programs
 
-The release is now `build/release/<platform>/reedwire/`, and it carries
-the daemon beside the mailbox: `bin/reedwire` (the CLI and `reedwire
+The release is now `build/release/<platform>/pondline/`, and it carries
+the daemon beside the mailbox: `bin/pondline` (the CLI and `pondline
 daemon`) and `bin/mailbox`, over one ERTS, one bundled libcrypto and one
-`reedwire-tor`. `scripts/release.sh` exports both Gleam shipments and
+`pondline-tor`. `scripts/release.sh` exports both Gleam shipments and
 merges them into one `lib/`; it fails the build if the two resolved any
 package to different versions, and if the two packages' `gleam.toml`
 versions differ. The assembly steps of the original decision are
@@ -239,10 +239,10 @@ the mailbox becomes a separately versioned service.
 Layout additions:
 
 ```
-reedwire/
+pondline/
   BUILD                  version=, commit=, platform= (what install.sh and the smoke test read)
   install.sh             the installer, so an unpacked tarball installs itself
-  bin/reedwire           launcher for the daemon package's `reedwire` module
+  bin/pondline           launcher for the daemon package's `pondline` module
   bin/mailbox            launcher for the mailbox
   bin/no_dot_erlang.boot replaces start_clean.boot
 ```
@@ -251,7 +251,7 @@ reedwire/
 
 - **One boot, not two.** The OpenSSL floor is checked inside the
   program's own VM, as the first expression of its `-eval`, instead of in
-  a separate VM before it. `reedwire --version` takes 0.10 s from exec to
+  a separate VM before it. `pondline --version` takes 0.10 s from exec to
   exit, where the old launcher spent 0.15 to 0.2 s on the check alone. A
   crypto library that fails to load is refused with exit 78 and one
   line, where it used to crash the boot. Checked by raising the floor to
@@ -274,7 +274,7 @@ reedwire/
 - **No crash dumps by default.** A dump is every process heap, keys and
   credentials included, written to the working directory. The launcher
   sets `ERL_CRASH_DUMP_SECONDS=0` unless the operator set it.
-- **`-noinput`** for both programs, so `reedwire send --stdin`, which
+- **`-noinput`** for both programs, so `pondline send --stdin`, which
   reads `/dev/stdin` directly, is the only reader of standard input.
 
 ### Build identity
@@ -283,23 +283,23 @@ The version is the packages' `gleam.toml` version. The commit is
 `scripts/build-commit.sh`: `git rev-parse HEAD`, with `-dirty` appended
 when a tracked file differs from it (untracked files are not build
 inputs), or `unknown` outside a git tree. `release.sh` writes both into
-each launcher, which exports them as `REEDWIRE_BUILD_VERSION` and
-`REEDWIRE_BUILD_COMMIT`, and into `BUILD`. They are baked in rather than
+each launcher, which exports them as `PONDLINE_BUILD_VERSION` and
+`PONDLINE_BUILD_COMMIT`, and into `BUILD`. They are baked in rather than
 read at run time because a release runs on machines with no checkout.
 `daemon/build` and `mailbox/build` read them back (two small copies,
 since the packages share nothing but the pure `core`, which reads no
-environment); `reedwire --version` prints `reedwire 0.1.0 (commit <sha>)`,
+environment); `pondline --version` prints `pondline 0.1.0 (commit <sha>)`,
 `mailbox --version` the same with `mailbox`, and `health` gains `version`
 and `commit` fields. A build run from source reports `dev` and `unknown`.
 
 ### Install layout (`make install`, `scripts/install.sh`)
 
 ```
-$PREFIX/bin/reedwire          -> ../lib/reedwire/current/bin/reedwire
-$PREFIX/bin/reedwire-mailbox  -> ../lib/reedwire/current/bin/mailbox
-$PREFIX/lib/reedwire/current  -> 0.1.0-<commit12>[-dirty]-darwin-arm64
-$PREFIX/lib/reedwire/0.1.0-<commit12>[-dirty]-darwin-arm64/   the release tree
-$PREFIX/lib/reedwire/.reedwire-install                        ownership marker
+$PREFIX/bin/pondline          -> ../lib/pondline/current/bin/pondline
+$PREFIX/bin/pondline-mailbox  -> ../lib/pondline/current/bin/mailbox
+$PREFIX/lib/pondline/current  -> 0.1.0-<commit12>[-dirty]-darwin-arm64
+$PREFIX/lib/pondline/0.1.0-<commit12>[-dirty]-darwin-arm64/   the release tree
+$PREFIX/lib/pondline/.pondline-install                        ownership marker
 ```
 
 `PREFIX` defaults to `$HOME/.local`. The commands are relative symlinks:
@@ -310,7 +310,7 @@ rename. A tree a running process uses (its physical path is on the VM's
 command line) is never replaced or pruned, and `uninstall` refuses while
 one runs; `$PREFIX/lib` is compared by its physical path, since a VM
 names its tree that way. The script refuses to replace a `bin/` entry that is not
-exactly its own link, or a `lib/reedwire` without its marker, and checks
+exactly its own link, or a `lib/pondline` without its marker, and checks
 both before changing anything. Reinstalling a clean commit keeps its
 tree (a `-dirty` or `unknown` one is recopied when its files differ): a
 rebuild is not byte-identical (the sqlite NIF is re-linked, and
@@ -318,7 +318,7 @@ the bundled liblzma is whatever Homebrew has that day; it changed between
 two builds minutes apart while this was written). State directories and
 mailbox databases are never under the prefix and never touched.
 
-`make dist` writes `dist/reedwire-<version>-<platform>.tar.gz` (25 MB,
+`make dist` writes `dist/pondline-<version>-<platform>.tar.gz` (25 MB,
 688 entries) and a `.sha256` beside it; the archive unpacks into one
 directory of that name, whose `install.sh` installs it.
 
@@ -329,7 +329,7 @@ sidecar already built, then runs `scripts/release-smoke.sh`: everything
 under `env -i PATH=/usr/bin:/bin`, the tree free of `parrot`,
 `gleam_httpc` and `inets`, both `--version`s equal to `BUILD`, the sidecar
 started and stopped, an ML-KEM-1024 round trip in the bundled VM, a
-mailbox granted and served on loopback, two `reedwire daemon --carrier
+mailbox granted and served on loopback, two `pondline daemon --carrier
 loopback`, `health` reporting the identity, invite, accept and approve,
 one payload sent from stdin and received byte for byte, and all three VMs
 stopped by SIGTERM, with no process left that names the run's directory.
@@ -357,3 +357,7 @@ trusted; the glibc floor of `beam.smp` and the sidecar is still unchecked.
 `install.sh` and `release-smoke.sh` use POSIX tools plus `mv -T` or
 `mv -h`, whichever the platform's `mv` accepts, and are expected to work
 there unchanged; that is also unverified.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

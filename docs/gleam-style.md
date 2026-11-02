@@ -1,12 +1,12 @@
-# Gleam for Reedwire — style, idiom, and a brief language tour
+# Gleam for Pondline — style, idiom, and a brief language tour
 
 *This guide distills conventions observed across the official `gleam-lang`
 repositories (stdlib, otp, erlang, json, http, gleeunit, the language tour,
 and the official [conventions, patterns, and anti-patterns
 document](https://gleam.run/documentation/conventions-patterns-and-anti-patterns/))
-into the house style for Reedwire. Gleam
+into the house style for Pondline. Gleam
 is a new language for most contributors, so Part I is a compact feature tour;
-Parts II–III are the style and idiom rules; Part IV is Reedwire-specific
+Parts II–III are the style and idiom rules; Part IV is Pondline-specific
 policy layered on top (`docs/spec.md` §10 is the architecture it serves).
 The guide was carried over from loom, whose history the issue and commit
 references in it point at.*
@@ -366,7 +366,7 @@ functions and on private helpers above that line threshold.
 
 ### Plain comments: the literate register
 
-Comment liberally, in a literate register. The reader of a Reedwire module
+Comment liberally, in a literate register. The reader of a Pondline module
 should be able to follow the *story* of the code from its comments alone:
 long modules open sections with a short banner comment saying what the
 section owns; non-obvious function bodies open with a sentence or two of
@@ -646,23 +646,23 @@ and the rule stands guard over that. It is a census because a helper called from
 single right position, and moving one to please the count would hurt four
 callers to help one.
 
-**3. Call domain functions qualified.** Import a Reedwire module and write
+**3. Call domain functions qualified.** Import a Pondline module and write
 `session_channel.tick(...)`, not
 `import session_view/session_channel.{tick}` and a bare `tick(...)`. This
-is the Imports rule above, enforced for Reedwire modules. A bare `tick` or
+is the Imports rule above, enforced for Pondline modules. A bare `tick` or
 `apply` in the middle of a body could be this module's own function or
 another's, and the reader dropped in from "go to definition" answers that
 by scrolling to the imports. Qualified, `lane_fold.apply_channel_update`
 names the module that owns the step without leaving the line. R16 flags an
-unqualified import of a Reedwire function and gates.
+unqualified import of a Pondline function and gates.
 
-The rule reaches only Reedwire's own modules, those whose first path segment
+The rule reaches only Pondline's own modules, those whose first path segment
 is a package root under `packages/*/src` (`qualified.project_roots`, which a
 test holds to the tree). The standard library and dependencies follow the
 Imports section above, where `type Option, None, Some` stay unqualified.
 Types and constructors are never findings, because a constructor names
 itself, and neither is a type. Qualification is not free, so the rule also
-has an allow list (`qualified.allowed`) for a Reedwire function whose bare
+has an allow list (`qualified.allowed`) for a Pondline function whose bare
 name reads better, the way a `use <- or_fault(...)` continuation combinator
 might. It is empty, as loom's was after its census. What the rule refuses is the
 call a reader cannot place, a function that does domain work.
@@ -1152,7 +1152,7 @@ Use the maintained core packages — `gleam_stdlib`, `gleam_erlang`,
 replicating what they provide; they are the ecosystem's shared foundation.
 `gleam_http` also models the official **sans-io pattern** for API surfaces:
 a package of pure types plus request-builder and response-parser functions,
-with the actual I/O supplied by the caller. Reedwire's protocol core is this
+with the actual I/O supplied by the caller. Pondline's protocol core is this
 pattern writ large — `transition(model, event)` in `core`, effects only in
 the processes around it (`docs/spec.md` §10.1) — so prefer sans-io shapes
 for any protocol code.
@@ -1177,7 +1177,7 @@ tuple-lists and `json.array(items, of: encoder)`; `Option` maps to null via
 
 ### Processes, actors, supervision
 
-Reedwire is OTP-shaped, so the `gleam_otp`/`gleam_erlang` idioms are our bread
+Pondline is OTP-shaped, so the `gleam_otp`/`gleam_erlang` idioms are our bread
 and butter:
 
 - **Message types: one variant per message, labelled fields, replies carry a
@@ -1227,7 +1227,7 @@ pub type Message(element) {
 ### FFI
 
 FFI is the guarded escape hatch — both in official guidance ("most projects
-won't use any at all") and in Reedwire's security model, where a native
+won't use any at all") and in Pondline's security model, where a native
 crash takes the whole VM with it (`docs/spec.md` §10.5):
 
 - **Design the Gleam API first**; never mirror the foreign API's shape.
@@ -1496,7 +1496,7 @@ cases because a seed's meaning changes whenever the generator does.
 
 ---
 
-## Part IV — Reedwire-specific policy
+## Part IV — Pondline-specific policy
 
 These rules tighten the ecosystem defaults for this repository. Where one
 serves a property of the core specification, the section is named.

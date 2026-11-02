@@ -2,8 +2,8 @@
 
 ## Purpose
 
-Tor for Reedwire: outbound onion streams and onion-service hosting through
-`reedwire-tor`, a separate OS process running Arti (`native/reedwire-tor`).
+Tor for Pondline: outbound onion streams and onion-service hosting through
+`pondline-tor`, a separate OS process running Arti (`native/pondline-tor`).
 The sidecar replaces the NIF of spec §10.3. A crash in Arti cannot take the
 BEAM down, and because stream bytes cross a real socket, the BEAM's
 passive-mode socket buffers give backpressure end to end, so this package
@@ -23,7 +23,7 @@ builds no read-credit machinery (spec §10.4).
   clearnet host.
 - `tor/internal/codec`: the control protocol, requests out and events back,
   with total decoding. The wire format is documented in its module doc and
-  in `native/reedwire-tor/src/frame.rs`.
+  in `native/pondline-tor/src/frame.rs`.
 - `tor/internal/ffi_port`, `tor/internal/ffi_socket`, `src/tor_ffi.erl`:
   the externals and the one Erlang shim; every function catches every
   exception.
@@ -32,10 +32,10 @@ builds no read-credit machinery (spec §10.4).
 
 Depends on `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and `weft`
 (pinned `== 0.4.6`; `docs/weft.md`). Does not depend on
-`core` or any other Reedwire package. Consumed later by the mailbox
+`core` or any other Pondline package. Consumed later by the mailbox
 (hosting) and the delivery path (outbound streams). The binary it drives is
-`native/reedwire-tor` (`make sidecar`); the tests find it through
-`REEDWIRE_TOR_BIN`, defaulting to the release build in the repository.
+`native/pondline-tor` (`make sidecar`); the tests find it through
+`PONDLINE_TOR_BIN`, defaulting to the release build in the repository.
 
 ## The port owner
 

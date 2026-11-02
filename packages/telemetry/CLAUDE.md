@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Structured logging for every Reedwire program, and the rule that no log
+Structured logging for every Pondline program, and the rule that no log
 line carries a secret (spec §12.4, `docs/gleam-style.md` Part IV §7),
 enforced rather than asked for (ADR-012). Two halves: a typed API for our
 own lines, which admits no free-form value, and a `logger` formatter that
@@ -29,11 +29,11 @@ stream on standard error.
 - `telemetry/log.{debug, info, warning, error}(component, event, fields)`:
   the call sites. Component and event are literal words.
 - `telemetry/handler`: `install(level) -> Result(Nil, Nil)`,
-  `install_from_env()` (reads `REEDWIRE_LOG_LEVEL`, default `info`),
+  `install_from_env()` (reads `PONDLINE_LOG_LEVEL`, default `info`),
   `threshold_named`, `level_variable`. Entry points only.
 - `telemetry/internal/ffi_logger` over `src/telemetry_ffi.erl`: `install`,
   `enabled` (`logger:allow/2`), `emit` (`logger:log/3` with the report
-  `#{reedwire => Line}`), `constructor_name`, `getenv`; and `format/2`,
+  `#{pondline => Line}`), `constructor_name`, `getenv`; and `format/2`,
   the handler's formatter.
 
 ## Relationships
@@ -41,7 +41,7 @@ stream on standard error.
 Depends on `core` (`core/id` for the typed identifier field) and
 `gleam_stdlib`. Dev: `gleeunit`, `gleam_erlang`, `gleam_otp`, `weft` (the
 tests crash real actors, runs and supervisors). Depended on by `daemon` and
-`mailbox`, whose entry points (`reedwire.main`, `mailbox.main`) install the
+`mailbox`, whose entry points (`pondline.main`, `mailbox.main`) install the
 handler; `tor` does not log and does not depend on it.
 
 ## Traffic

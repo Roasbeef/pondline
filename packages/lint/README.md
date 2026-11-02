@@ -1,6 +1,6 @@
 # lint
 
-Reedwire's own lint: the house rules that `gleam check` and `gleam format`
+Pondline's own lint: the house rules that `gleam check` and `gleam format`
 do not know about. Gleam ships no lint command. The compiler checks types,
 the formatter lays out bytes, and neither has an opinion on whether an
 eagerly evaluated fallback is expensive, how deep a `case` may nest,
@@ -17,7 +17,7 @@ architecture document in [`docs/architecture/mailbox.md`](../../docs/architectur
 is the format reference for this one.
 
 The package is a developer tool, not part of any plane. It depends on no
-Reedwire package and no Reedwire package depends on it.
+Pondline package and no Pondline package depends on it.
 [`scripts/lint.sh`](../../scripts/lint.sh) runs it, and `make lint` and
 `make check` call that script. Nothing here is a security control.
 
@@ -71,7 +71,7 @@ the values in `policy.default` (`policy.gleam:169`).
 | R13 | `flow-spine` | a module of 1000 lines or more with no `//// ## Flow` section, or a Flow section naming a function the module lacks | error |
 | R14 | `transition-table` | a `<!-- transitions: ... -->` table whose rows differ from the named type's constructors | error |
 | R15 | `state-first` | a state-space type defined after the module's first function | error |
-| R16 | `qualified-domain-call` | an unqualified value import from one of Reedwire's own modules | error |
+| R16 | `qualified-domain-call` | an unqualified value import from one of Pondline's own modules | error |
 | R17 | `flow-order` | a module where more than 50 per cent of at least 10 private helpers sit above their first caller | warning |
 | R18 | `unnamed-helper` | a one-caller private function of at most 6 lines whose name the module doc never uses | warning |
 | R19 | `stdout-skip` | a `SKIP` diagnostic printed to stdout from a test | error |

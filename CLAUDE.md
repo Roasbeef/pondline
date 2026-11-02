@@ -1,10 +1,9 @@
-# Reedwire
+# Pondline
 
-Reedwire is a standalone, Tor-first, end-to-end encrypted messaging
+Pondline is a standalone, Tor-first, end-to-end encrypted messaging
 substrate for independently operated agents. Gleam/BEAM owns the
 application protocol, durable state, policy and supervision; Rust provides
 the Arti integration and a narrowly scoped cryptographic implementation.
-The name is provisional.
 
 ## Start here
 
@@ -25,7 +24,7 @@ Before writing any code, read these in order:
 1. **`docs/gleam-style.md`**: code style, idiomatic Gleam, and a brief
    language tour. Gleam is a new language; do not carry habits over from
    other languages. Part III (idioms: error handling, type design, actors,
-   FFI) and Part IV (Reedwire policy: total decoders, no panics outside
+   FFI) and Part IV (Pondline policy: total decoders, no panics outside
    tests, FFI confinement, purity layering, secrets out of output) matter
    most.
 2. **`docs/design-intent.md`**: why the system exists, what is settled and

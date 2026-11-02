@@ -1,7 +1,7 @@
-# Reedwire: Core System Specification
+# Pondline: Core System Specification
 ### Version 0.1 — architecture and protocol draft
 
-*Reedwire is a working name.*
+*Pondline is a working name.*
 
 **The core is a standalone, Tor-first, encrypted messaging substrate for independently operated agents.** Gleam/BEAM owns the application protocol, durable state, policy, and supervision. Rust provides Arti integration and a narrowly scoped cryptographic implementation.
 
@@ -196,7 +196,7 @@ An invitation is a bearer credential. Whoever obtains it may attempt to redeem i
 
 The human-readable description is informational, not independently verified identity.
 
-*Added by ADR-009.* An invitation may also travel as a **ticket**: a checksummed `rw1` string of 130 characters (74 for a loopback mailbox) carrying only the inviter mailbox's endpoint and a fresh 32-byte secret `K`. The invitation itself is stored at that mailbox sealed under keys derived from `K` (ChaCha20-Poly1305 plus an HMAC commitment to the plaintext), named by a locator and fetched with a capability also derived from `K`; the mailbox sees only the locator, the capability's hash and ciphertext. The joiner MUST check the AEAD and the commitment, and that the invitation names the ticket's mailbox, before using it. A ticket is a bearer credential exactly as the file is, and MUST NOT appear in argv, logs or errors. `docs/adr/009-invitation-tickets.md` has the format and `docs/crypto-profile-v1.md` §11 the derivations.
+*Added by ADR-009.* An invitation may also travel as a **ticket**: a checksummed `pl1` string of 130 characters (74 for a loopback mailbox) carrying only the inviter mailbox's endpoint and a fresh 32-byte secret `K`. The invitation itself is stored at that mailbox sealed under keys derived from `K` (ChaCha20-Poly1305 plus an HMAC commitment to the plaintext), named by a locator and fetched with a capability also derived from `K`; the mailbox sees only the locator, the capability's hash and ciphertext. The joiner MUST check the AEAD and the commitment, and that the invitation names the ticket's mailbox, before using it. A ticket is a bearer credential exactly as the file is, and MUST NOT appear in argv, logs or errors. `docs/adr/009-invitation-tickets.md` has the format and `docs/crypto-profile-v1.md` §11 the derivations.
 
 ## 4.3 Establishment flow
 
@@ -276,7 +276,7 @@ The cryptographic component must support asynchronous session establishment, aut
 
 The proposed reference construction is **PQXDH followed by an established ratcheting protocol**, rather than a custom handshake or custom symmetric-key schedule.
 
-PQXDH strengthens initial confidentiality against quantum adversaries but its specified authentication still relies on classical assumptions. Reedwire's profile does not inherit that: every authentication step MUST require both a classical and a post-quantum proof, with identity bindings, prekey signatures and an initiator transcript signature each made with Ed25519 and ML-DSA-65 together (`docs/adr/005-hybrid-authentication.md`, `docs/crypto-profile-v1.md`). A classical Double Ratchet alone does not provide continuous post-quantum recovery after compromise; Signal documents separate post-quantum and hybrid ratchets for that purpose. [Signal Messenger](https://signal.org/docs/specifications/pqxdh/)
+PQXDH strengthens initial confidentiality against quantum adversaries but its specified authentication still relies on classical assumptions. Pondline's profile does not inherit that: every authentication step MUST require both a classical and a post-quantum proof, with identity bindings, prekey signatures and an initiator transcript signature each made with Ed25519 and ML-DSA-65 together (`docs/adr/005-hybrid-authentication.md`, `docs/crypto-profile-v1.md`). A classical Double Ratchet alone does not provide continuous post-quantum recovery after compromise; Signal documents separate post-quantum and hybrid ratchets for that purpose. [Signal Messenger](https://signal.org/docs/specifications/pqxdh/)
 
 The product must describe the guarantees of the selected profile accurately, rather than label the whole system simply “post-quantum.”
 
@@ -599,23 +599,23 @@ Local administration is a separate privilege.
 Illustrative commands:
 
 ```sh
-reedwire daemon
+pondline daemon
 
-reedwire invite create --profile support --out session.invite
-reedwire invite accept --file session.invite
+pondline invite create --profile support --out session.invite
+pondline invite accept --file session.invite
 
-reedwire contacts list --json
-reedwire send --contact customer --file diagnostics.json
-reedwire receive --contact customer --wait --json
-reedwire acknowledge --delivery <delivery-id>
+pondline contacts list --json
+pondline send --contact customer --file diagnostics.json
+pondline receive --contact customer --wait --json
+pondline acknowledge --delivery <delivery-id>
 
-reedwire status --message <message-id>
-reedwire contact close --contact customer
+pondline status --message <message-id>
+pondline contact close --contact customer
 ```
 
 Secrets should be passed through protected files, descriptors, or standard input—not exposed in command-line arguments.
 
-*Added by ADR-009.* `reedwire invite create ... --ticket` prints a ticket on standard output (and still writes the file with `--out`); `reedwire invite accept --ticket (--file F | --stdin)` redeems one. `--ticket` is a flag and never takes the ticket as a value.
+*Added by ADR-009.* `pondline invite create ... --ticket` prints a ticket on standard output (and still writes the file with `--out`); `pondline invite accept --ticket (--file F | --stdin)` redeems one. `--ticket` is a flag and never takes the ticket as a value.
 
 Machine-readable output and stable exit/error categories are required.
 

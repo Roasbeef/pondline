@@ -1,6 +1,6 @@
 # Primitives Architecture
 
-The `primitives` package is the only place Reedwire calls OTP's `crypto` application. It exposes X25519, Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256, constant-time comparison and the OS random source as byte-level functions, and it packages them as the `Suite` record that the pure `core/crypto` modules take as input. This document describes the binding boundary, why every fallible shim catches exceptions, and how the vector tests exercise the binding. It reflects the code at `632db2f`.
+The `primitives` package is the only place Pondline calls OTP's `crypto` application. It exposes X25519, Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256, constant-time comparison and the OS random source as byte-level functions, and it packages them as the `Suite` record that the pure `core/crypto` modules take as input. This document describes the binding boundary, why every fallible shim catches exceptions, and how the vector tests exercise the binding. It reflects the code at `632db2f`.
 
 The algorithms, byte layouts and guarantees are fixed in [crypto-profile-v1.md](../../docs/crypto-profile-v1.md); this package implements none of them beyond calling the library. The choice of OTP over OpenSSL, and not a Rust crate, is [ADR-002](../../docs/adr/002-pq-crypto-over-otp.md). The symbolic proof and the account of each vector suite are in [formal/crypto.md](../../docs/formal/crypto.md). The package's short reference is [CLAUDE.md](CLAUDE.md).
 

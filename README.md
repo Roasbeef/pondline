@@ -1,6 +1,6 @@
-# Reedwire
+# Pondline
 
-Reedwire is an end-to-end encrypted, Tor-first messaging system for software
+Pondline is an end-to-end encrypted, Tor-first messaging system for software
 agents run by different people on different machines. Two agents pair once,
 with a short ticket or an invitation file, and from then on they can exchange
 messages while either side is offline, through a mailbox that stores only
@@ -9,9 +9,9 @@ padded ciphertext.
 Agents working across trust boundaries need a way to reach each other that
 doesn't require a shared account at a hosted relay, keeps working when one
 side is asleep, and doesn't ask anyone to trust the relay with plaintext.
-Reedwire treats a message as a durable, replay-aware delivery, not a remote
+Pondline treats a message as a durable, replay-aware delivery, not a remote
 procedure call. An incoming message is never permission to do anything: what
-an agent does with a message is its host's policy, enforced outside Reedwire.
+an agent does with a message is its host's policy, enforced outside Pondline.
 
 - **Post-quantum from the first message.** Pairing uses hybrid
   [PQXDH](https://signal.org/docs/specifications/pqxdh/) with ML-KEM-1024, and
@@ -36,10 +36,10 @@ Building needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5 or newer
 (ML-KEM needs it), and a Rust toolchain for the Tor sidecar.
 
 ```bash
-git clone https://github.com/Roasbeef/reedwire.git
-cd reedwire
+git clone https://github.com/Roasbeef/pondline.git
+cd pondline
 make install                        # PREFIX defaults to ~/.local
-reedwire --version
+pondline --version
 ```
 
 To see the whole system run once, `make demo` starts a mailbox, two daemons and
@@ -60,12 +60,12 @@ comes back in on standard input, never as a command-line argument, and the same
 holds for payloads:
 
 ```bash
-reedwire invite create --state-dir ./a --description "agent A" --budget 10 --ticket > a.ticket
-reedwire invite accept --state-dir ./b --ticket --stdin < a.ticket
-reedwire contact approve --state-dir ./a --contact <hex>
-reedwire send --state-dir ./b --credential-file ./b/agent.cred --contact <hex> \
+pondline invite create --state-dir ./a --description "agent A" --budget 10 --ticket > a.ticket
+pondline invite accept --state-dir ./b --ticket --stdin < a.ticket
+pondline contact approve --state-dir ./a --contact <hex>
+pondline send --state-dir ./b --credential-file ./b/agent.cred --contact <hex> \
     --content-type application/json --file task.json
-reedwire receive --state-dir ./a --credential-file ./a/agent.cred --wait 25 --json
+pondline receive --state-dir ./a --credential-file ./a/agent.cred --wait 25 --json
 ```
 
 ## How it works
@@ -86,7 +86,7 @@ approves the contact (or the invitation was minted to approve automatically),
 and the relationship becomes active.
 
 The bundle makes an invitation file about 14 KB, too much to paste into a chat.
-So an invitation can also travel as a _ticket_, a 130-character `rw1...` string
+So an invitation can also travel as a _ticket_, a 130-character `pl1...` string
 that carries only the mailbox address and a random secret. The invitation waits
 at that mailbox, sealed under keys derived from the secret, and the joiner's
 daemon fetches and checks it ([ADR-009](docs/adr/009-invitation-tickets.md)). A
@@ -106,9 +106,9 @@ protocol logic is pure: every pairing and messaging step is a
 `transition(state, event)` that returns the new state plus the rows to commit,
 and the shell sends only what it reads back from the committed store. Tor is
 [Arti](https://gitlab.torproject.org/tpo/core/arti) in a separate
-`reedwire-tor` process driven over an Erlang port, so a crash in the Tor stack
+`pondline-tor` process driven over an Erlang port, so a crash in the Tor stack
 can't take the VM with it. The primitives come from OTP's `crypto` over OpenSSL;
-Reedwire has no crypto NIF of its own.
+Pondline has no crypto NIF of its own.
 [docs/architecture/system.md](docs/architecture/system.md) follows one message
 through all of this.
 
@@ -128,7 +128,7 @@ These properties are held by types or checked by tests, not by convention:
   operator raises it, so a contact can't turn into an unlimited prompt-injection
   channel. Every application message lands in an audit log the operator can read.
 
-Reedwire doesn't claim to be metadata-free. The mailbox sees queue identifiers,
+Pondline doesn't claim to be metadata-free. The mailbox sees queue identifiers,
 padded sizes and timing, and queues provisioned from one account can be linked
 to each other. Ratchet headers aren't encrypted, and post-compromise recovery is
 classical (each ratchet step is X25519). The joiner's signed first message isn't
@@ -137,7 +137,7 @@ is protected by file permissions only.
 [docs/crypto-profile-v1.md](docs/crypto-profile-v1.md) specifies the
 cryptography byte for byte, along with these limits.
 
-Reedwire hasn't had an independent security review, and the wire format and
+Pondline hasn't had an independent security review, and the wire format and
 profile aren't frozen. Please weigh that before relying on it for anything
 sensitive.
 
@@ -188,10 +188,10 @@ packages.
 | [`packages/core`](packages/core) | The pure protocol: TLV codec, mailbox protocol, PQXDH and the ratchet, invitations, the relationship state machine. No I/O. |
 | [`packages/primitives`](packages/primitives) | OTP `crypto` bindings, and the `Suite` that feeds them to `core`. |
 | [`packages/mailbox`](packages/mailbox) | The mailbox service: SQLite store, single-writer coordinator, long poll, HTTP binding. |
-| [`packages/daemon`](packages/daemon) | The client daemon: store, engine, delivery scheduler, fetchers, local API, and the `reedwire` CLI. |
+| [`packages/daemon`](packages/daemon) | The client daemon: store, engine, delivery scheduler, fetchers, local API, and the `pondline` CLI. |
 | [`packages/telemetry`](packages/telemetry) | Typed logging, and the formatter that keeps secrets out of OTP's crash reports. |
 | [`packages/tor`](packages/tor) | The BEAM side of the Tor sidecar. |
-| [`native/reedwire-tor`](native/reedwire-tor) | The Arti sidecar, in Rust. |
+| [`native/pondline-tor`](native/pondline-tor) | The Arti sidecar, in Rust. |
 | [`packages/sim`](packages/sim) | The deterministic simulation harness. |
 | [`packages/lint`](packages/lint) | The house lint, which `make lint` runs. |
 | [`formal`](formal) | Lean, P, TLA+ and ProVerif models. |

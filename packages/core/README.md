@@ -1,6 +1,6 @@
 # core Architecture
 
-`core` is the pure protocol package of Reedwire. It defines the domain
+`core` is the pure protocol package of Pondline. It defines the domain
 types, the wire and storage codecs, the cryptographic protocols, and the
 state machines for invitations, relationships, retention deadlines and
 retransmission. Every state machine is a function from the current value and

@@ -4,7 +4,7 @@
 
 ## Decision
 
-Tor is provided by `reedwire-tor` (`native/reedwire-tor`), a Rust binary on
+Tor is provided by `pondline-tor` (`native/pondline-tor`), a Rust binary on
 `arti-client` that runs as a separate OS process. The BEAM starts it from an
 Erlang port (`{packet, 4}`, binary, `exit_status`) owned by one actor in the
 `tor` package (`packages/tor`), and the sidecar exits when its stdin reaches
@@ -40,7 +40,7 @@ buffer fills, the sidecar's write waits, `copy_bidirectional` stops reading
 from Arti, and Arti's stream window stops granting the far end credit.
 
 Evidence from the spike, run on the development machine (macOS, Rust 1.98,
-OTP 29) against the live Tor network, with `REEDWIRE_TOR_NETWORK=1 gleam test`
+OTP 29) against the live Tor network, with `PONDLINE_TOR_NETWORK=1 gleam test`
 in `packages/tor` (passed on both runs; the second run, with all events
 logged, is the source of the numbers below, and the first run agreed on the
 rest):
@@ -75,7 +75,7 @@ with no network.
 ## Consequences
 
 - **Packaging**: the release bundle carries a second binary (16.9 MB). The
-  Gleam tests need it built (`make sidecar`, or `REEDWIRE_TOR_BIN`).
+  Gleam tests need it built (`make sidecar`, or `PONDLINE_TOR_BIN`).
 - **State directory**: holds Arti's keystore, so it is the secret. It is
   created mode 0700, must be unique per sidecar, and must be short enough
   for a unix socket path (about 100 bytes on macOS). Onion service identity
@@ -102,3 +102,7 @@ with no network.
   onion-service API changes shape, or if the 16.9 MB binary or 40 MB idle
   footprint matters for the target deployments. A NIF is not an option to
   return to without a separate process-level crash story.
+
+## Addendum: 2026-11-02
+
+The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.

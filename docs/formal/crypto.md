@@ -1,6 +1,6 @@
 # Verifying CryptoProfileV1: a symbolic proof and standard vectors
 
-Reedwire's cryptography is checked at two layers here. The pairing
+Pondline's cryptography is checked at two layers here. The pairing
 handshake, as `core/crypto/pqxdh` runs it, is modelled in ProVerif and its
 security properties are proved under four adversary scenarios, with a
 leaked invitation, and against a set of deliberately broken variants that
@@ -312,7 +312,7 @@ What the rows say, in protocol terms:
   inviter's fingerprint, which never crosses the network; with the
   invitation leaked as well (`fs_prekeys_leak`) it falls too. PQXDH without
   one-time prekeys has no better answer; what makes
-  Reedwire's SK forward secret is that the bundle is single-use and
+  Pondline's SK forward secret is that the bundle is single-use and
   `offer.consume` drops the `Stock` holding both prekey secrets when it
   moves to `Consumed` (`offer.gleam:82`), and that `respond`'s decryption
   of the first message takes the DH ratchet step that replaces the SPK
@@ -380,7 +380,7 @@ no_ad_leak:       RESULT inj-event(JoinerActive(j,r,sk)) ==> inj-event(InviterSe
 A variant that drops the KEM ciphertext from the KDF input, the mutation
 the PQXDH analysis would suggest, has no faithful form here: the code's
 KDF never took CT (`derive_shared`, `pqxdh.gleam:605`). What binds CT in
-Reedwire is the transcript signature, so the variant that answers the
+Pondline is the transcript signature, so the variant that answers the
 question is `no_ct_weak_kem`, and `no_ct_weak_kem_kdf` shows the KDF would
 bind it just as well.
 
@@ -542,7 +542,7 @@ would want to know them.
    the transcript signature does** (low, design). Signal's PQXDH
    revision 3 section 4.12 binds `PQPKB` into AD for a generic KEM and
    relies on Kyber incorporating the public key for ML-KEM; the USENIX
-   2024 analysis is where that requirement came from. Reedwire binds CT
+   2024 analysis is where that requirement came from. Pondline binds CT
    through the hybrid transcript signature and PQSPK through the signed
    bundle commitment inside it, which the model shows is sufficient in
    every hybrid scenario (`weak_kem` all true, `leak_weak_kem` false only
@@ -587,7 +587,7 @@ would want to know them.
    the inviter's public identity, which never crosses the network
    (`no_ad` is fully proved; `no_ad_leak` is attacked). Leaked invitations
    are in scope (spec section 4.4), so AD stays; the point is that
-   Reedwire's handshake hides the inviter's identity from the mailbox
+   Pondline's handshake hides the inviter's identity from the mailbox
    entirely, which Signal's does not, and the profile could claim it.
    Evidence: rows `no_ad` (all true) and `no_ad_leak` (Q7, Q8, Q9 false).
 5. **The sealed invitation's commitment is load-bearing in one case

@@ -23,7 +23,7 @@ as a classical one.
 
 | Artefact | Signer | Over | Who holds it | What a judge learns from it | Transferable |
 | --- | --- | --- | --- | --- | --- |
-| Identity binding | each party, over its own keys | `"Reedwire_IdentityBinding_v1"`, its three public keys | the peer; for the joiner, also the inviter's mailbox (the `InitialMessage` fixed part is in the clear, profile §7) | that someone holding these keys created this identity. Names no counterparty. | yes, but it proves nothing about participation |
+| Identity binding | each party, over its own keys | `"Pondline_IdentityBinding_v1"`, its three public keys | the peer; for the joiner, also the inviter's mailbox (the `InitialMessage` fixed part is in the clear, profile §7) | that someone holding these keys created this identity. Names no counterparty. | yes, but it proves nothing about participation |
 | Prekey signatures (`spk`, `pqspk`) | inviter | each prekey, labelled | the joiner (inside the invitation) | that `IK_resp` issued a bundle, which is to say an invitation. Not that anyone redeemed it. | yes |
 | Transcript signature | joiner | `version`, both full public identities, `bundle_commitment`, `EK`, `CT`, the first ratchet message | the inviter; the inviter's mailbox (in the clear) | that the holder of `IK_init`'s two signing keys began a PQXDH handshake with `IK_resp`'s bundle and produced this exact first ciphertext | yes |
 | Every later message | neither | AEAD under ratchet keys | both | nothing a judge can check: either party could have produced it | no |
@@ -69,7 +69,7 @@ The vocabulary, so the claims below are precise:
   the PKI model with adaptive corruptions, even with secure erasure.
   Signal does not claim it; PQXDH §4.4 says that a party collaborating
   with a third party during the protocol "will be able to provide proof".
-  Reedwire cannot have it either, and nothing below tries: an inviter who
+  Pondline cannot have it either, and nothing below tries: an inviter who
   lets a judge choose `SPK` has handed over a proof whatever the joiner
   signs.
 
@@ -110,7 +110,7 @@ produces for itself.
 
 ## 4. The threat model: agents whose operators keep audit logs
 
-Reedwire's parties are agents. The design review's ruling (2026-10-31)
+Pondline's parties are agents. The design review's ruling (2026-10-31)
 that pairing grants a bounded message budget or an operator-readable
 plaintext audit log means each operator already holds plaintext of
 everything its agent said and heard. The question deniability answers is
@@ -134,7 +134,7 @@ without a knob.
 ## 5. What the signature is actually doing
 
 Before choosing a fix it is worth stating what the signature
-authenticates in Reedwire's specialisation, since the answer narrows the
+authenticates in Pondline's specialisation, since the answer narrows the
 options. The joiner's identity is fresh and pairwise: the inviter sees
 `IK_init` for the first time in the `InitialMessage` and has no prior
 expectation of it. The invitation is a bearer credential (spec §4.2) and
@@ -204,7 +204,7 @@ state of that line.
 | Residual of §5 (bearer plus quantum plus fingerprint check) | closed | open | closed | closed |
 | Change class | | profile version, invitation format | profile version, identity layout, `Accept` layout | both |
 
-B's "assured one message later" costs nothing in Reedwire's flow: the
+B's "assured one message later" costs nothing in Pondline's flow: the
 inviter already withholds the relationship until local approval and sends
 `Accept` before anything else, and the joiner already waits for `Accept`
 before presenting the relationship as active (spec §4.3 step 5). The
@@ -219,7 +219,7 @@ deferral.
 
 1. **Keep V1 for the first release unless the owner wants the knob.** The
    loss is bounded: one message per relationship, naming a pairwise key,
-   with online deniability never on the table. The operators Reedwire
+   with online deniability never on the table. The operators Pondline
    serves first already log plaintext, and in the compromised-agent case
    the proof is evidence they may want. The issue's "acceptable for now"
    holds. What this note adds to the record is §1's two points: the first
@@ -247,7 +247,7 @@ deferral.
 
 4. **Triggers that would reopen it regardless:** a public-identity or
    directory mode (the pairwise mitigation disappears and the bearer
-   argument for A with it); a dispute model in which Reedwire is expected
+   argument for A with it); a dispute model in which Pondline is expected
    to produce evidence, which argues for keeping the signature and
    exposing it as policy; or a standardised post-quantum ring or
    designated-verifier signature with an OTP binding, which would make D
@@ -257,7 +257,7 @@ deferral.
    possession is the authenticator and that A + B gives offline
    deniability under Fiedler and Janson's model for both parties,
    including against a quantum judge in Katsumata et al.'s sense. The
-   PQXDH analyses were done for Signal's layout; Reedwire's departures
+   PQXDH analyses were done for Signal's layout; Pondline's departures
    (embedded bundle, no one-time prekeys, fingerprint `AD`, and under V2
    the MAC and the `Accept` encapsulation) would each need to be carried
    through.
