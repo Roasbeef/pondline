@@ -12,6 +12,7 @@ import core/envelope
 import core/id
 import core/offer
 import core/route.{type Inbox, Inbox, Route}
+import core/secret
 import core/time.{Instant}
 import daemon/api
 import daemon/carrier
@@ -212,7 +213,8 @@ pub fn an_acknowledgement_that_hangs_is_abandoned_and_retried_test() {
     support.when(support.stored_in(before) == [])
   })
   node.stop(b)
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hi":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"hi":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
   })
@@ -277,7 +279,8 @@ pub fn a_mailbox_that_comes_back_gets_the_sends_and_the_fetches_test() {
   // The mailbox goes away. The send commits locally and fails on the
   // network, so it is retried by the periodic scan, not by any nudge.
   support.stop_listener(mailbox)
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"late":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"late":utf8>>), None)
   process.sleep(1500)
   assert api.status(a, sent) == Ok(api.LocallyQueued)
 

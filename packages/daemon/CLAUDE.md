@@ -30,7 +30,7 @@ processes.
 Depends on `core` (the state machines, codec, typed protocol, snapshots,
 endpoints and limits), `primitives` (the real `Suite`), `tor` (the sidecar and
 onion streams, wrapped as a `transport.Connection` only in `daemon/carrier`),
-`sqlight`, `simplifile`, `gleam_json` (the
+`telemetry` (logging, ADR-012), `sqlight`, `simplifile`, `gleam_json` (the
 local API), `gleam_stdlib`, `gleam_erlang`, `gleam_otp` and `mug` (loopback
 TCP). Dev: `parrot` generates `daemon/sql` under `make gen-sql`, which imports
 the trimmed copy of its runtime in `daemon/internal/sql_param` instead
@@ -192,7 +192,12 @@ this before changing any of them.
   that carries the `Name` and, in a simulation only, an interceptor) stays
   hand-written because weft has no monitored, non-panicking call against a
   pre-existing pid. Known weft gap.
-- `daemon/config`, `daemon/log` and `daemon/internal/ffi_runtime_clock`.
+- `daemon/config` and `daemon/internal/ffi_runtime_clock`. Logging is
+  `telemetry/log` (ADR-012): `engine` (`version_conflict`,
+  `storage_failed` with the store error's and SQLite code's tags),
+  `scheduler` (`retransmit_failed`, `record_failed` with the envelope's id
+  prefix), `provisioner` (`queue_refused` with the queue's id prefix and
+  the refusal's tag), all `warning`, and `node started` at `info`.
 
 Traffic: the engine tells the shell through `notify` after each commit
 (`Transmit` to the scheduler, `CreateQueue` to the provisioner, a topology
@@ -274,9 +279,23 @@ Invariants:
 - One daemon per state directory: `lock.db` holds an exclusive SQLite
   transaction, released by the OS when the process dies. The directory is
   `0700`, the database and lock `0600`.
-- No log line carries a value: `daemon/log` is given fixed phrases, and
-  `test/daemon/secrets_test.gleam` searches a whole exchange's stderr for
-  capabilities, the invitation and the payload.
+- No log line or crash report carries a secret (ADR-012). Our lines take
+  only `telemetry/field`'s typed kinds; `reedwire.main` installs the
+  `telemetry` handler before anything runs, for every command, so OTP's
+  reports reach standard error rebuilt from their shape.
+  `test/daemon/secrets_test.gleam` searches a whole exchange's stderr, and a
+  run with injected crashes in the engine (mid-send), the scheduler and a
+  mailbox request process, for the payload, the sealing key, capabilities
+  and the invitation in every spelling (text, decimal byte list, hex).
+  `test/daemon/crash_report_test.gleam` is the reproduction: an engine whose
+  seal raises from OpenSSL printed the key and the plaintext in its crash
+  and supervisor reports before the handler; installing OTP's
+  `logger_formatter` instead fails it.
+- The send payload is a `Secret` from the local API's decode
+  (`local_api.parse_send`) through `Backend.send`, `api.send` and
+  `send_with_key` to `engine.send`, exposed only inside the job for the
+  core to seal and digest; `engine.invitation_file` answers with a
+  `Secret`. Delivered payloads were already `Secret`s.
 - Known gaps: nothing in the state directory is encrypted (permissions only);
   `invite` waits at most `api.invite_wait_ms` for the queue and a timed-out
   offer opens later unexported; a supervisor that fails to start takes its

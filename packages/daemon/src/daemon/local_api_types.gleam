@@ -141,7 +141,7 @@ pub type Backend {
     decline: fn(Id(Contact)) -> Result(Nil, ApiError),
     close: fn(Id(Contact)) -> Result(Nil, ApiError),
     raise_budget: fn(Id(Contact), Int) -> Result(Nil, ApiError),
-    send: fn(Id(Contact), Option(String), String, BitArray, Option(Id(Message))) ->
+    send: fn(Id(Contact), Option(String), String, Secret, Option(Id(Message))) ->
       Result(Id(Message), ApiError),
     receive: fn(Option(Id(Contact)), Int) -> Result(List(Delivery), ApiError),
     acknowledge: fn(Id(Message)) -> Result(Nil, ApiError),

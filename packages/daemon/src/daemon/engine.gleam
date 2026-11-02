@@ -128,8 +128,8 @@ import core/plan.{type EnvelopeRef, type Plan, EnvelopeRef}
 import core/relationship.{type Relationship}
 import core/retransmit
 import core/route.{type Inbox}
+import core/secret.{type Secret}
 import core/time.{type Instant}
-import daemon/log
 import daemon/mail.{type Handle}
 import daemon/store.{type Store}
 import gleam/erlang/process.{type Name, type Subject}
@@ -138,6 +138,8 @@ import gleam/option.{type Option, None, Some}
 import gleam/otp/supervision
 import gleam/result
 import gleam/string
+import telemetry/field as log_field
+import telemetry/log
 import weft/actor
 
 /// How long a caller waits for the engine before the call is reported
@@ -483,20 +485,23 @@ pub fn invite(
 ///
 /// ```gleam
 /// engine.invitation_file(name, invitation)
-/// // -> Ok(Some(<<...>>))
+/// // -> Ok(Some(file))
 /// ```
 pub fn invitation_file(
   name: Handle(Message),
   invitation: Id(InvitationKind),
-) -> Result(Option(BitArray), Failure) {
+) -> Result(Option(Secret), Failure) {
   run(name, InvitationFile, fn(state) {
     use found <- result.try(
       fault(store.invitation_file(state.store, invitation)),
     )
 
-    // The phase decides whether the file may leave the daemon.
+    // The phase decides whether the file may leave the daemon. The file
+    // holds the offer's append capability and prekeys, and this answer is
+    // a message to another process, so it travels as a `Secret`
+    // (ADR-012).
     case found {
-      store.FileReady(bytes:) -> Ok(Some(bytes))
+      store.FileReady(bytes:) -> Ok(Some(secret.new(bytes)))
       store.FileNotYet -> Ok(None)
       store.FileGone -> Error(NotFound)
     }
@@ -777,19 +782,23 @@ pub fn send(
   contact: Id(Contact),
   key: Option(String),
   content_type: String,
-  payload: BitArray,
+  payload: Secret,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), Failure) {
   run(name, Send, fn(state) {
     let suite = state.suite
     let clock = state.clock
+
+    // The plaintext leaves its `Secret` only here, inside the job, for the
+    // core to seal and to digest; it never rides in a message or a state
+    // a crash report could print (ADR-012).
     let step = fn(current) {
       relationship.send(
         suite,
         current,
         clock(),
         content_type,
-        payload,
+        secret.expose(payload),
         in_reply_to,
         None,
       )
@@ -807,7 +816,12 @@ pub fn send(
 
       Some(key) -> {
         let digest =
-          request_digest(state.suite, content_type, payload, in_reply_to)
+          request_digest(
+            state.suite,
+            content_type,
+            secret.expose(payload),
+            in_reply_to,
+          )
         keyed_send(state, contact, key, digest, step)
       }
     }
@@ -1564,14 +1578,22 @@ fn fault(outcome: Result(a, store.Error)) -> Result(a, Failure) {
     Ok(value) -> Ok(value)
 
     Error(store.Conflict) -> {
-      log.line("engine", "a state write lost its version check")
+      log.warning("engine", "version_conflict", [])
       Error(Unavailable)
     }
 
-    Error(store.Sql(_))
-    | Error(store.FutureSchema(..))
-    | Error(store.Corrupt(_)) -> {
-      log.line("engine", "a storage operation failed")
+    // SQLite's error code is an enum (`busy`, `constraint`, `ioerr`), so
+    // its tag says what failed; the message beside it is not read.
+    Error(store.Sql(error)) -> {
+      log.warning("engine", "storage_failed", [
+        log_field.tag("reason", store.Sql(error)),
+        log_field.tag("code", error.code),
+      ])
+      Error(Unavailable)
+    }
+
+    Error(store.FutureSchema(..) as error) | Error(store.Corrupt(_) as error) -> {
+      log.warning("engine", "storage_failed", [log_field.tag("reason", error)])
       Error(Unavailable)
     }
   }

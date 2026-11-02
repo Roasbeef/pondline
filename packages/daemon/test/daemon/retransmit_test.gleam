@@ -11,6 +11,7 @@
 
 import core/limits
 import core/offer
+import core/secret
 import daemon/api
 import daemon/config
 import daemon/engine
@@ -80,7 +81,8 @@ pub fn a_message_the_mailbox_corrupted_is_delivered_once_test() {
   })
   node.stop(b)
 
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"once":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"once":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
   })
@@ -131,7 +133,8 @@ pub fn a_lost_receipt_is_regenerated_by_the_retransmit_test() {
     support.when(support.stored_in(inbox_b) == [])
   })
   node.stop(b)
-  let assert Ok(sent) = api.send(a, at_a, "text/plain", <<"hi":utf8>>, None)
+  let assert Ok(sent) =
+    api.send(a, at_a, "text/plain", secret.new(<<"hi":utf8>>), None)
   support.eventually(15_000, fn() {
     support.when(api.status(a, sent) == Ok(api.StoredByMailbox))
   })

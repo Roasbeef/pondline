@@ -350,7 +350,7 @@ fn await_file(
       every: poll.Fixed(invite_poll_ms),
       attempt: fn() {
         case engine.invitation_file(daemon.engine, invitation) {
-          Ok(Some(bytes)) -> poll.Done(bytes)
+          Ok(Some(file)) -> poll.Done(file)
 
           // Until the queue exists the offer is not exportable.
           Ok(None) -> poll.Retry
@@ -362,7 +362,7 @@ fn await_file(
 
   // A wait that runs out is the engine being too slow, which the caller retries.
   case waited {
-    poll.Answered(bytes) -> Ok(bytes)
+    poll.Answered(file) -> Ok(secret.expose(file))
     poll.Failed(error) -> Error(error)
     poll.Expired -> Error(Unavailable)
   }
@@ -472,7 +472,7 @@ pub fn send(
   daemon: Daemon,
   contact: Id(Contact),
   content_type: String,
-  payload: BitArray,
+  payload: Secret,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), ApiError) {
   engine.send(daemon.engine, contact, None, content_type, payload, in_reply_to)
@@ -498,7 +498,7 @@ pub fn send_with_key(
   contact: Id(Contact),
   key: String,
   content_type: String,
-  payload: BitArray,
+  payload: Secret,
   in_reply_to: Option(Id(MessageKind)),
 ) -> Result(Id(MessageKind), ApiError) {
   engine.send(

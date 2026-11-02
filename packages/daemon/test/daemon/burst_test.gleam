@@ -12,6 +12,7 @@ import core/id
 import core/mailbox/protocol
 import core/offer
 import core/route
+import core/secret
 import core/time
 import daemon/api
 import daemon/mailbox_client
@@ -56,7 +57,13 @@ fn send_burst(daemon: api.Daemon, contact, count: Int) -> Nil {
     list.repeat(Nil, count) |> list.index_map(fn(_, i) { i + 1 }),
     fn(n) {
       let assert Ok(_) =
-        api.send(daemon, contact, "text/plain", <<int.to_string(n):utf8>>, None)
+        api.send(
+          daemon,
+          contact,
+          "text/plain",
+          secret.new(<<int.to_string(n):utf8>>),
+          None,
+        )
     },
   )
 }

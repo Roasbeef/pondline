@@ -106,7 +106,14 @@ pub fn a_retried_accept_and_a_retried_keyed_send_happen_once_test() {
   // the message the first one queued.
   set(switch, Lossy)
   let send = fn(payload) {
-    api.send_with_key(b, contact, "order-17", "text/plain", payload, None)
+    api.send_with_key(
+      b,
+      contact,
+      "order-17",
+      "text/plain",
+      secret.new(payload),
+      None,
+    )
   }
   assert send(<<"once":utf8>>) == Error(api.Unavailable)
   assert send(<<"once":utf8>>) == Error(api.Unavailable)
@@ -137,7 +144,7 @@ pub fn an_idempotency_key_is_bounded_and_scoped_to_its_send_test() {
   })
 
   let keyed = fn(key, payload) {
-    api.send_with_key(b, contact, key, "text/plain", payload, None)
+    api.send_with_key(b, contact, key, "text/plain", secret.new(payload), None)
   }
 
   // An empty key and one past the bound are refused before anything

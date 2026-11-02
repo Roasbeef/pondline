@@ -3,6 +3,7 @@
 //// directories, and a bounded wait built on `weft/poll`.
 
 import core/capability
+import core/crypto/suite.{type Suite, Suite}
 import core/endpoint
 import core/envelope
 import core/id
@@ -14,15 +15,20 @@ import daemon/config.{type Config}
 import daemon/mailbox_client
 import daemon/node
 import daemon/transport
+import gleam/bit_array
 import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/int
+import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/string
 import mailbox/http as mailbox_http
+import mailbox/mail as mailbox_mail
 import mailbox/node as mailbox_node
 import mailbox/service
 import mailbox/store as mailbox_store
 import primitives
+import primitives/suite as primitive_suite
 import simplifile
 import sqlight
 import weft/poll
@@ -62,6 +68,14 @@ pub fn start_mailbox() -> Mailbox {
 /// Starts a mailbox with a large provisioning allowance that reads `clock`,
 /// for tests that set the mailbox's clock apart from a daemon's.
 pub fn start_mailbox_on(clock: fn() -> time.Instant) -> Mailbox {
+  start_mailbox_with(clock, None)
+}
+
+/// Starts a mailbox whose node routes its calls through `interceptor`.
+pub fn start_mailbox_with(
+  clock: fn() -> time.Instant,
+  interceptor: Option(mailbox_mail.Interceptor),
+) -> Mailbox {
   let path = fresh("mailbox") <> ".db"
   let assert Ok(db) = mailbox_store.open(path)
   let assert Ok(provision) =
@@ -78,7 +92,7 @@ pub fn start_mailbox_on(clock: fn() -> time.Instant) -> Mailbox {
       clock:,
       names: mailbox_node.new_names(),
       timer: timer.WallClock,
-      interceptor: None,
+      interceptor:,
       store_faults: None,
     ))
   let assert Ok(server) =
@@ -338,3 +352,75 @@ pub fn capture_start() -> Nil
 /// Stops collecting and returns what was written since `capture_start`.
 @external(erlang, "daemon_test_ffi", "capture_stop")
 pub fn capture_stop() -> BitArray
+
+/// What has been captured so far, without stopping the capture.
+@external(erlang, "daemon_test_ffi", "capture_peek")
+pub fn capture_peek() -> BitArray
+
+/// Captured bytes as text, with the spaces and newlines a pretty printer
+/// puts inside a long byte list removed, so `spellings` find a value
+/// however OTP's formatter wrapped it.
+pub fn flatten(captured: BitArray) -> String {
+  let text = case bit_array.to_string(captured) {
+    Ok(text) -> text
+    Error(Nil) -> ""
+  }
+
+  text
+  |> string.replace(" ", "")
+  |> string.replace("\n", "")
+}
+
+/// Every way a crash report could spell `bytes`: as text, as Erlang's
+/// decimal byte list, and as lowercase hex.
+pub fn spellings(bytes: BitArray) -> List(String) {
+  let decimal =
+    byte_list(bytes)
+    |> list.map(int.to_string)
+    |> string.join(",")
+  let text = case bit_array.to_string(bytes) {
+    Ok(text) -> [text]
+    Error(Nil) -> []
+  }
+
+  [decimal, string.lowercase(bit_array.base16_encode(bytes)), ..text]
+}
+
+fn byte_list(bytes: BitArray) -> List(Int) {
+  case bytes {
+    <<byte, rest:bytes>> -> [byte, ..byte_list(rest)]
+    _ -> []
+  }
+}
+
+/// The real suite, except that sealing a plaintext that holds `marker`
+/// raises from OpenSSL with a key one byte short, so the exception's stack
+/// frame carries the key and the plaintext as arguments.
+pub fn crashing_suite(marker: BitArray) -> Suite {
+  let real = primitive_suite.suite()
+  Suite(..real, aead_seal: fn(key, nonce, aad, plaintext) {
+    seal_or_crash(key, nonce, aad, plaintext, marker)
+  })
+}
+
+@external(erlang, "daemon_test_ffi", "seal_or_crash")
+fn seal_or_crash(
+  key: BitArray,
+  nonce: BitArray,
+  aad: BitArray,
+  plaintext: BitArray,
+  marker: BitArray,
+) -> Result(BitArray, Nil)
+
+/// The key `crashing_suite` handed OpenSSL when it crashed.
+@external(erlang, "daemon_test_ffi", "sealing_key")
+pub fn sealing_key() -> BitArray
+
+/// Arms one crash for `role`: the next `crash_if_armed(role)` raises from a
+/// BIF with `secret` as an argument and disarms it.
+@external(erlang, "daemon_test_ffi", "arm_crash")
+pub fn arm_crash(role: String, secret: BitArray) -> Nil
+
+/// Raises if a crash is armed for `role`, in the calling process.
+@external(erlang, "daemon_test_ffi", "crash_if_armed")
+pub fn crash_if_armed(role: String) -> Nil

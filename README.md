@@ -71,8 +71,12 @@ convention:
   loopback port (for tests and the offline demo, only when the operator
   asks for it); there's no constructor for a public host.
 - _Secrets don't print._ Keys, capabilities, payloads and ratchet state
-  live in closures, which the BEAM renders as `#Fun<..>` in logs and
-  crash reports.
+  live in closures, which the BEAM renders as `#Fun<..>`. A log line can
+  only hold typed fields (identifier prefixes, counts, durations,
+  constructor names), and OTP's crash reports are rebuilt from their
+  shape, without the state, mailbox or call arguments in which a key or a
+  payload would otherwise show up
+  ([ADR-012](docs/adr/012-logging-and-crash-reports.md)).
 - _Bounded inbound work._ Each pairing carries a message budget; past
   it, messages are held until the operator raises it, so a contact can't
   turn into an unlimited prompt-injection channel. Every application
@@ -112,6 +116,7 @@ anything that matters yet.
 | `packages/primitives` | OTP `crypto` bindings, and the `Suite` that feeds them to `core`. |
 | `packages/mailbox` | The mailbox service: SQLite store, single-writer coordinator, long poll, HTTP binding, `serve` and `grant`. |
 | `packages/daemon` | The client daemon: store, engine, delivery scheduler, fetchers, local API over a Unix socket, and the `reedwire` CLI. |
+| `packages/telemetry` | Logging: typed log lines, and the `logger` formatter that keeps secrets out of OTP's crash reports. |
 | `packages/tor` | The BEAM side of the Tor sidecar: an actor that owns the port and restarts it. |
 | `native/reedwire-tor` | The Arti sidecar, in Rust. |
 | `packages/lint` | The house lint, which `make lint` runs. |
@@ -154,6 +159,22 @@ mailbox, and `make dist` packs it into a tarball with a SHA-256, which
 installs itself with `PREFIX=... ./install.sh` once unpacked. Releases are
 built and tested on macOS on Apple silicon only; the Linux recipe in
 [ADR-003](docs/adr/003-packaging.md) is written but has never been run.
+
+### Logs
+
+Both programs log to standard error, one logfmt line per event, and keep
+standard output for their own output (`listening`, `ready`, payloads):
+
+```
+time=2026-11-01T23:43:27.890Z level=info component=http event=request method=post status=200 response=queue_created elapsed_ms=8
+time=2026-11-01T23:43:28.004Z level=error component=otp event=crash_report process=daemon_engine$4614 class=error reason=badarg at=crypto:crypto_one_time_aead/7:1783,...
+```
+
+`REEDWIRE_LOG_LEVEL` sets the threshold: `debug`, `info` (the default),
+`warning` or `error`. `info` is the lifecycle and the mailbox's access
+log; `warning` is something degraded that will be retried; `error` is a
+crash or something nothing will retry. Redirect standard error to keep
+them (`reedwire daemon ... 2>>daemon.log`).
 
 Installed, the walkthrough below is the same with `reedwire` and
 `reedwire-mailbox` in place of `gleam run -m reedwire --` and `gleam run

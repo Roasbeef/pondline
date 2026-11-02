@@ -36,8 +36,12 @@
 ////
 //// ## Logging
 ////
-//// A request logs method, path, status, response kind and duration, and
-//// nothing else (spec §12.4). Capabilities, ciphertext, request bodies and
+//// A request logs one `info` line: method, status, response kind and
+//// duration, and nothing else (spec §12.4, ADR-012). Each is a typed field
+//// (`telemetry/field`): the method and the response kind are constructor
+//// tags, so an unknown method is `other` and never its text, and the path,
+//// which a client chooses, is not logged at all; a wrong one is the
+//// response kind `not_found`. Capabilities, ciphertext, request bodies and
 //// queue identifiers never reach a log line.
 ////
 //// ## Flow
@@ -55,13 +59,14 @@ import gleam/http.{Post}
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/int
-import gleam/io
 import gleam/otp/actor
 import gleam/otp/static_supervisor
 import gleam/result
 import mailbox/internal/ffi_system
 import mailbox/node.{type Node}
 import mist.{type Connection, type ResponseData}
+import telemetry/field
+import telemetry/log
 
 /// The media type of every request and response body.
 pub const media_type = "application/vnd.reedwire.mailbox+tlv"
@@ -144,30 +149,55 @@ pub fn start(node: Node, config: Config) -> Result(Server, StartError) {
 /// Answers one HTTP request, logging its outcome.
 fn serve(node: Node, req: Request(Connection)) -> Response(ResponseData) {
   let started = ffi_system.monotonic_ms()
-  let #(response, kind) = route(node, req)
+  let #(response, outcome) = route(node, req)
   let elapsed = ffi_system.monotonic_ms() - started
 
-  io.println_error(
-    http.method_to_string(req.method)
-    <> " "
-    <> req.path
-    <> " "
-    <> int.to_string(response.status)
-    <> " "
-    <> kind
-    <> " "
-    <> int.to_string(elapsed)
-    <> "ms",
-  )
+  log.info("http", "request", [
+    field.tag("method", req.method),
+    field.count("status", response.status),
+    response_field(outcome),
+    field.millis("elapsed", elapsed),
+  ])
 
   response
+}
+
+/// How a request ended, for its log line. Every constructor name is the
+/// word the line prints.
+type Outcome {
+  /// The protocol answered; the line names the answer's kind.
+  Answered(answer: Answer)
+
+  /// Another path.
+  NotFound
+
+  /// Another method on the route.
+  MethodNotAllowed
+
+  /// The declared or actual body exceeded the limit.
+  TooLarge
+
+  /// The request could not be framed.
+  BadRequest
+}
+
+/// The `response` field: the protocol answer's constructor when there is
+/// one, else the HTTP outcome's. Only constructor names are read, never
+/// what a response carries.
+fn response_field(outcome: Outcome) -> field.Field {
+  // An answered request names the protocol's own response kind.
+  case outcome {
+    Answered(answer:) -> field.tag("response", answer)
+    NotFound | MethodNotAllowed | TooLarge | BadRequest ->
+      field.tag("response", outcome)
+  }
 }
 
 /// Selects by path and then method, and names the outcome for the log.
 fn route(
   node: Node,
   req: Request(Connection),
-) -> #(Response(ResponseData), String) {
+) -> #(Response(ResponseData), Outcome) {
   // The path decides first, so a wrong method on the route is a 405 and
   // anything else is a 404 whatever its method.
   case req.path, req.method {
@@ -175,10 +205,10 @@ fn route(
 
     "/v1/mailbox", _ -> #(
       empty(405) |> response.set_header("allow", "POST"),
-      "method_not_allowed",
+      MethodNotAllowed,
     )
 
-    _, _ -> #(empty(404), "not_found")
+    _, _ -> #(empty(404), NotFound)
   }
 }
 
@@ -186,22 +216,22 @@ fn route(
 fn exchange(
   node: Node,
   req: Request(Connection),
-) -> #(Response(ResponseData), String) {
+) -> #(Response(ResponseData), Outcome) {
   let limit = codec.max_request_bytes()
 
   // A length over the limit is refused before the body is touched; any
   // other usable length is read under the same bound.
   case declared_length(req) {
-    Ok(length) if length > limit -> #(empty(413), "too_large")
+    Ok(length) if length > limit -> #(empty(413), TooLarge)
 
     Ok(_) ->
       case mist.read_body(req, max_body_limit: limit) {
         Ok(body) -> answer(node, body.body)
-        Error(mist.ExcessBody) -> #(empty(413), "too_large")
-        Error(mist.MalformedBody) -> #(empty(400), "bad_request")
+        Error(mist.ExcessBody) -> #(empty(413), TooLarge)
+        Error(mist.MalformedBody) -> #(empty(400), BadRequest)
       }
 
-    Error(Nil) -> #(empty(400), "bad_request")
+    Error(Nil) -> #(empty(400), BadRequest)
   }
 }
 
@@ -226,7 +256,7 @@ fn declared_length(req: Request(Connection)) -> Result(Int, Nil) {
 
 /// Decodes the body and answers it. A body that does not decode is a
 /// protocol refusal, not an HTTP error.
-fn answer(node: Node, body: BitArray) -> #(Response(ResponseData), String) {
+fn answer(node: Node, body: BitArray) -> #(Response(ResponseData), Outcome) {
   // A decode failure becomes the protocol's own refusal, so the client
   // reads one kind of answer whether or not its bytes were understood.
   let result = case codec.decode_request(body) {
@@ -241,7 +271,7 @@ fn answer(node: Node, body: BitArray) -> #(Response(ResponseData), String) {
     |> response.set_header("connection", "close")
     |> response.set_body(mist.Bytes(body))
 
-  #(http_response, kind(result))
+  #(http_response, Answered(result))
 }
 
 /// An answer that is only a status.
@@ -249,16 +279,4 @@ fn empty(status: Int) -> Response(ResponseData) {
   response.new(status)
   |> response.set_header("connection", "close")
   |> response.set_body(mist.Bytes(bytes_tree.new()))
-}
-
-/// The response's variant name, safe to log because it carries no data.
-fn kind(answer: Answer) -> String {
-  case answer {
-    protocol.QueueCreated(..) -> "queue_created"
-    protocol.Appended(..) -> "appended"
-    protocol.Batch(..) -> "batch"
-    protocol.Acked -> "acked"
-    protocol.QueueDeleted -> "queue_deleted"
-    protocol.Refused(..) -> "refused"
-  }
 }

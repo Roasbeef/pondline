@@ -241,7 +241,7 @@ pub fn backend(fake: Fake) -> Backend {
         <> " "
         <> content_type
         <> " "
-        <> bit_array.base16_encode(payload)
+        <> bit_array.base16_encode(secret.expose(payload))
         <> " "
         <> string.inspect(option.map(reply, id.to_hex))
         <> keyed,

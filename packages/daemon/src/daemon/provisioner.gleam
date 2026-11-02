@@ -36,7 +36,6 @@ import core/capability.{type Capability, type Provision}
 import core/mailbox/protocol
 import core/route.{type Inbox}
 import daemon/engine
-import daemon/log
 import daemon/mail.{type Handle}
 import daemon/mailbox_client
 import daemon/status
@@ -46,6 +45,8 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/otp/supervision
+import telemetry/field
+import telemetry/log
 import weft/state_machine as sm
 import weft/timer
 
@@ -244,9 +245,12 @@ fn create(data: Data, inbox: Inbox) -> Bool {
       }
     }
 
-    Ok(protocol.Refused(_)) -> {
+    Ok(protocol.Refused(refusal)) -> {
       status.set_mailbox(data.config.status, status.MailboxReachable)
-      log.line("provisioner", "the mailbox refused to create a queue")
+      log.warning("provisioner", "queue_refused", [
+        field.id("queue", inbox.queue),
+        field.tag("reason", refusal),
+      ])
       False
     }
 
