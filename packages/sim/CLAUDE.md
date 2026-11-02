@@ -77,7 +77,9 @@ inside its step.
 
 - **Exact replay.** Every corpus and regression seed runs twice and the
   snapshots (event trace, op outcomes, log lines, a digest of every row of
-  every table) must be identical (`test/sim/corpus_test.gleam`);
+  the eight daemon and four mailbox tables `runner.snapshot` lists, which
+  leave out `fingerprints`, `incidents`, `attempts`, `send_keys` and
+  `blobs`) must be identical (`test/sim/corpus_test.gleam`);
   `sim/swarm --double` does the same over a campaign.
 - **Quiescence sees dirty NIFs.** `erlang:statistics(total_active_tasks_all)`
   does not count a process inside a dirty NIF, and every SQLite call is one;
@@ -164,3 +166,7 @@ Fixed so far:
   which job it hits depends on the schedule, not on its kind.
 - The swarm draws op arguments uniformly; ops that need an earlier op's
   result (an accept needs an invitation) fall back to a short wait.
+- Measured, in `docs/architecture/sim.md` with the recall, mutation and
+  coverage numbers: end-to-end retransmit and quarantine are never called in
+  500 swarm seeds, a refusal of an input exactly at a limit passes, and
+  `sim/swarm` exits 0 whatever it finds, so read its census.
