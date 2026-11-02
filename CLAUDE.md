@@ -67,7 +67,7 @@ the two places `gleam format` deletes a blank line and so exempts.
 
 - Design priorities, in order: security, correctness, durability,
   robustness, performance, capability.
-- Gleam >= 1.18, Erlang/OTP >= 29. All code passes `gleam format --check`
+- Gleam >= 1.19.2, Erlang/OTP >= 29. All code passes `gleam format --check`
   and compiles warning-free before commit. `make check` is the gate.
 - `core` is pure: no I/O, no `@external` of any target, and no
   `gleam_erlang` or `gleam_otp`, in source or in `gleam.toml`. Lint R6
