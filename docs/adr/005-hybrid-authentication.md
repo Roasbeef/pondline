@@ -168,3 +168,30 @@ A test pins the layout (both ends' stored `AD` is exactly the two
 fingerprints, initiator first), and the mutations that use only one
 fingerprint, swap their order, or drop the ML-DSA-65 key from the binding
 message each fail it or another test.
+
+## Addendum (2026-11-01): what the symbolic model says about this reasoning
+
+`docs/formal/crypto.md` modelled the handshake in ProVerif. Two results bear
+on this record. Nothing in the protocol changes.
+
+**The reasoning for the transcript signature's Ed25519 half was wrong.** This
+record treats the classical half as what preserves joiner authentication if
+ML-DSA-65 falls. For the transcript signature it is DH1 that does so, as in
+classical PQXDH: with ML-DSA-65 broken and X25519 intact there is no attack on
+a verifier that checks only the ML-DSA-65 half (rows `ml_only_leak_pq` and
+`ml_only_leak_ml_dh`). So the "Revisit" line above, "the pair then rests on
+Ed25519", should read as resting on DH1 for the joiner. The ML-DSA-65 half does
+the new work: it authenticates the joiner when X25519 and Ed25519 are both
+broken (`ed_only_leak_quantum` is attacked, `quantum` is proved). The Ed25519
+half stays. The pair is uniform across the three signatures and cheap, and for
+the identity binding and prekey signatures that half is not redundant. This is
+a symbolic result, not a computational proof.
+
+**Ed25519 verification stays as it is, without rejecting small-order or
+mixed-order keys.** OpenSSL accepts them, as all 29 `acceptable` Wycheproof
+cases show. A strict check would need a custom point check beside the OTP
+binding, against ADR-002, and would protect nothing today: no honest identity
+has such a key, every identity is also bound to an ML-DSA-65 key, and no trust
+derives from an Ed25519 key alone. The test suite pins the behaviour, so a
+library change that altered it is noticed. Revisit if any feature compares
+Ed25519 keys on their own, such as a directory or a pin.
