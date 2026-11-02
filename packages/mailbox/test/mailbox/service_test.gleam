@@ -399,7 +399,7 @@ pub fn fetch_excludes_expired_and_sweep_removes_them_test() {
   assert batch_ids(at(later)) == [2]
 
   let assert Ok(report) = service.sweep(db, later)
-  assert report == store.SweepReport(envelopes: 1, tombstones: 0)
+  assert report == store.SweepReport(envelopes: 1, tombstones: 0, blobs: 0)
 
   let assert Ok(Some(record)) = store.queue_by_id(db, qid(1))
   assert record.bytes_used == 4096
@@ -413,10 +413,10 @@ pub fn sweep_removes_stale_tombstones_test() {
   let _ = ack(db, [1])
 
   let assert Ok(early) = service.sweep(db, now)
-  assert early == store.SweepReport(envelopes: 0, tombstones: 0)
+  assert early == store.SweepReport(envelopes: 0, tombstones: 0, blobs: 0)
 
   let assert Ok(late) = service.sweep(db, time.add(now, 3601))
-  assert late == store.SweepReport(envelopes: 0, tombstones: 1)
+  assert late == store.SweepReport(envelopes: 0, tombstones: 1, blobs: 0)
 
   // With the tombstone gone and the deadline past, the same append is a new
   // request: its deadline must be valid, and then it is accepted afresh.

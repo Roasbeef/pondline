@@ -109,7 +109,8 @@ this before changing any of them.
   runs each operation as a job: load state, run the pure transition with the
   real `Suite` and injected clock, commit, then call `notify`. It never touches
   the network. `process` applies the id-and-digest rule before opening a
-  frame, then counts the attempt (`store.count_attempt`, its own
+  frame (a repeat marks its processed row unacknowledged,
+  `store.mark_unacked`), then counts the attempt (`store.count_attempt`, its own
   transaction) and quarantines an envelope past
   `limits.max_process_attempts` (`store.Quarantined`: dropped, acknowledged,
   an incident; ADR-010). It looks a `Ratchet` frame's fingerprint up before
@@ -182,7 +183,17 @@ this before changing any of them.
   `send_with_key`, `receive`, `acknowledge`, `status`, `audit`, `incidents`,
   `subscribe`, `health`; health counts incidents). `invite` waits for
   its queue with `weft/poll` (a durable row landing, probed every
-  `invite_poll_ms` for at most `invite_wait_ms`).
+  `invite_poll_ms` for at most `invite_wait_ms`). `invite_ticket` and
+  `accept_ticket` (ADR-009) are the only calls that reach a mailbox
+  themselves, in the caller's process, through the tree's dialer, which
+  `api.Daemon` carries: the inviter stores the sealed invitation with
+  `PutBlob` (paid for by the offer queue's admin capability) and returns
+  the ticket only after `BlobStored`; the joiner admits the ticket's
+  endpoint under the carrier policy, fetches with `GetBlob`, opens (AEAD,
+  then commitment), checks the invitation names the ticket's mailbox, and
+  then calls `accept`. Each call is retried with `weft/poll` for at most
+  `ticket_wait_ms` on the poll clock; neither writes durable state of its
+  own.
 - `daemon/lock`: the exclusive SQLite lock held by a trapping `weft/actor`
   whose `on_shutdown` closes the connection. `daemon/status` (the Tor and
   mailbox cell) and `daemon/events` (the subscriber list) are plain
@@ -231,6 +242,15 @@ Invariants:
   code's comments.
 - An envelope is a repeat only if its identifier and its digest both match
   its `Processed` row; anything else goes through the core.
+- A repeat is owed an acknowledgement: `process` marks its processed row
+  unacknowledged, so an envelope the mailbox serves again after it was
+  acknowledged (a restored backup, a sender's retry stored again once its
+  tombstone was swept) is named in the next round's `Ack` and leaves the
+  queue, without a second delivery or a counted attempt (ADR-010,
+  addendum; found by the P model, `docs/formal/p.md`).
+  `test/daemon/reack_test.gleam` stages both paths with sixteen zombies
+  and a message behind them. Mutation-checked: answering `Repeat` without
+  the unack fails both tests (the seventeenth message never arrives).
 - A repeated message identifier from an authenticated peer is ignored, not
   delivered, and recorded as an incident, and the queue moves on
   (`test/daemon/dedup_test.gleam`, two real daemons and a real mailbox, the
@@ -285,8 +305,9 @@ Invariants:
   reports reach standard error rebuilt from their shape.
   `test/daemon/secrets_test.gleam` searches a whole exchange's stderr, and a
   run with injected crashes in the engine (mid-send), the scheduler and a
-  mailbox request process, for the payload, the sealing key, capabilities
-  and the invitation in every spelling (text, decimal byte list, hex).
+  mailbox request process, for the payload, the sealing key, capabilities,
+  the invitation, and a ticket with its `K` and derived keys, in every
+  spelling (text, decimal byte list, hex).
   `test/daemon/crash_report_test.gleam` is the reproduction: an engine whose
   seal raises from OpenSSL printed the key and the plaintext in its crash
   and supervisor reports before the handler; installing OTP's
@@ -296,6 +317,11 @@ Invariants:
   `send_with_key` to `engine.send`, exposed only inside the job for the
   core to seal and digest; `engine.invitation_file` answers with a
   `Secret`. Delivered payloads were already `Secret`s.
+- Pairing by ticket is tested end to end against a real mailbox
+  (`test/daemon/ticket_test.gleam`): pairing and a message; a mailbox
+  answering with another ticket's invitation refused; an expired ticket,
+  a ticket for nothing and a mistyped one refused cleanly; a loopback
+  ticket refused under `TorOnly` before any connection.
 - Known gaps: nothing in the state directory is encrypted (permissions only);
   `invite` waits at most `api.invite_wait_ms` for the queue and a timed-out
   offer opens later unexported; a supervisor that fails to start takes its
@@ -417,6 +443,16 @@ Invariants:
   payload; the rest stays for the next call.
 - `invite create` writes the invitation to its `--out` file (0600, refuses
   to overwrite, checked before the daemon is asked) and prints only the path.
+  With `--ticket` it prints the ticket alone on standard output (and the
+  path, if `--out` was also given, on standard error). `invite accept
+  --ticket` reads the ticket from `--file` or `--stdin`. `--ticket` is a
+  flag, and a stray word is refused without being repeated, so a ticket
+  never reaches argv or an error; `cli_test` checks every command. The
+  local API's `invite` takes `"ticket": true`; `accept` takes exactly one
+  of `invitation` and `ticket`. The CLI waits `cli.invitation_timeout_ms` (130 s) for
+  `invite create` and a ticket accept, at least the daemon's own bound
+  (`cli_test`), and refuses a ticket input that is not text locally. An
+  unknown `--name=value` is named without its value.
 - Exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
   4 not found, 5 refused, invalid or too large, 6 unavailable.
 - Known gaps: a connection process that crashes leaves its socket open until the

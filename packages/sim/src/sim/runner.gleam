@@ -83,6 +83,7 @@ import sim/internal/ffi_vm.{type Table}
 import sim/net
 import sim/ops
 import sim/oracle
+import sim/restore
 import sim/rng.{type Rng}
 import sim/seed.{type Op, type Party, type Script}
 import sim/suite
@@ -332,6 +333,10 @@ fn setup(bytes: BitArray, script: Script, options: Options) -> State {
     service.create_grant(holder, 1000, mailbox_suite.random)
     as "the provisioning grant is created"
 
+  // The backup a `RestoreMailbox` op restores from fills as the mailbox
+  // inserts, so it is installed before the mailbox node starts.
+  restore.install(mailbox_keeper)
+
   let mailbox = start_mailbox(the_world, mailbox_uri, holder, mailbox_keeper)
   let a = new_daemon(the_world, bytes, seed.A, run_id, root, provision)
   let b = new_daemon(the_world, bytes, seed.B, run_id, root, provision)
@@ -578,8 +583,28 @@ fn perform(state: State, index: Int, op: Op) -> State {
 
     seed.Kill(victim:) -> kill(state, victim)
 
+    seed.RestoreMailbox -> restore_mailbox(state)
+
     _ -> spawn_op(state, index, op)
   }
+}
+
+/// Restores the mailbox from its backup (`sim/restore`). The envelopes it
+/// brings back lose their tombstones, so the runner stops holding the
+/// mailbox to them: `never_resurrected` is about a mailbox that brings an
+/// envelope back by itself, and this one is the harness's doing. The next
+/// acknowledgement tombstones each again, and the check resumes.
+fn restore_mailbox(state: State) -> State {
+  let restored = restore.restore(state.mailbox.keeper)
+  let tombstoned =
+    list.fold(restored, state.tombstoned, fn(acc, row) {
+      set.delete(acc, #(row.queue, row.envelope))
+    })
+
+  trace(
+    State(..state, tombstoned:),
+    "restore " <> int.to_string(list.length(restored)),
+  )
 }
 
 /// The node name a fault target stands for.
@@ -1402,6 +1427,8 @@ fn appended(read: net.Read) -> Result(BitArray, Nil) {
     | net.Decoded(protocol.Fetch(..))
     | net.Decoded(protocol.Ack(..))
     | net.Decoded(protocol.DeleteQueue(..))
+    | net.Decoded(protocol.PutBlob(..))
+    | net.Decoded(protocol.GetBlob(..))
     | net.Undecodable(_) -> Error(Nil)
   }
 }
@@ -1416,6 +1443,8 @@ fn batch_envelopes(response: Response) -> List(BitArray) {
     | protocol.Appended(..)
     | protocol.Acked
     | protocol.QueueDeleted
+    | protocol.BlobStored(..)
+    | protocol.SealedBlob(..)
     | protocol.Refused(..) -> []
   }
 }
@@ -1441,6 +1470,8 @@ fn response_name(response: Response) -> String {
       "batch " <> int.to_string(list.length(envelopes))
     protocol.Acked -> "acked"
     protocol.QueueDeleted -> "deleted"
+    protocol.BlobStored(..) -> "blob_stored"
+    protocol.SealedBlob(..) -> "sealed_blob"
     protocol.Refused(reason:) -> "refused " <> string.inspect(reason)
   }
 }
@@ -1539,7 +1570,8 @@ fn party_of(op: Op) -> Result(Party, Nil) {
     | seed.ArmStore(..)
     | seed.ToggleMailbox
     | seed.SetSkew(..)
-    | seed.Kill(..) -> Error(Nil)
+    | seed.Kill(..)
+    | seed.RestoreMailbox -> Error(Nil)
   }
 }
 

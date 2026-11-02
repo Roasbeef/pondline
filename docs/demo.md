@@ -8,6 +8,7 @@ only if every check passed.
 scripts/demo.sh --carrier=loopback          # about 20 s after the build
 scripts/demo.sh --carrier=tor               # about 100 s; needs the network
 scripts/demo.sh --carrier=tor --messages 4  # fewer tasks (1 to 10)
+scripts/demo.sh --carrier=loopback --pairing=file  # move the invitation file, not a ticket
 make demo CARRIER=tor                       # the same, through make
 ```
 
@@ -52,7 +53,9 @@ what bounds B's tasks, and the demo can show messages being held.
 3. **Pairing.** A creates an invitation (it carries the post-quantum key
    bundle), B accepts, A's operator approves. Both sides become `active`
    through messages that cross the mailbox. The invitation moves out of
-   band, as a file.
+   band as a ticket by default (ADR-009): A prints a short `rw1` string,
+   and B redeems it on standard input, fetching the sealed invitation
+   from the mailbox. `--pairing=file` moves the invitation file instead.
 4. **Sandbox.** Probes run inside each agent's sandbox: it can use the
    daemon with its own credential; it cannot read `operator.cred`, the
    daemon database or the original `agent.cred`, cannot list the state

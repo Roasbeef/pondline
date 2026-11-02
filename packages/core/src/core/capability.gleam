@@ -39,6 +39,11 @@ pub type Admin
 /// mailbox operator to a daemon.
 pub type Provision
 
+/// Fetch one sealed invitation blob (ADR-009). Derived from a ticket's
+/// secret, so the inviter registers it and the ticket's holder presents it;
+/// the mailbox stores only its hash.
+pub type Retrieve
+
 /// Builds a capability from exactly `capability_bytes` bytes.
 ///
 /// ## Examples

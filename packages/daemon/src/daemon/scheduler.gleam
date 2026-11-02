@@ -350,7 +350,9 @@ pub fn classify(
     Ok(protocol.QueueCreated(_))
     | Ok(protocol.Batch(_))
     | Ok(protocol.Acked)
-    | Ok(protocol.QueueDeleted) -> Transient
+    | Ok(protocol.QueueDeleted)
+    | Ok(protocol.BlobStored(_))
+    | Ok(protocol.SealedBlob(_)) -> Transient
 
     Error(_) -> Transient
   }

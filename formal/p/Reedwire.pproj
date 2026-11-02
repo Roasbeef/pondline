@@ -1,0 +1,11 @@
+<!-- The P model of Reedwire's end-to-end message delivery. See
+     docs/formal/p.md for what is modelled and how to run it. -->
+<Project>
+<ProjectName>Reedwire</ProjectName>
+<InputFiles>
+  <PFile>./PSrc/</PFile>
+  <PFile>./PSpec/</PFile>
+  <PFile>./PTst/</PFile>
+</InputFiles>
+<OutputDir>./PGenerated/</OutputDir>
+</Project>

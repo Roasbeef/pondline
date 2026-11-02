@@ -31,8 +31,20 @@ depends on it, so its fake crypto can never reach a release (spec §13.3).
   (`% 4`: approval × budget), bytes 1–2 a little-endian fault mask over
   `FaultClass` (`StoreDaemon`, `StoreMailbox`, `Engine`, `NetLoss`,
   `NetDelay`, `MailboxDown`, `Byzantine`, `Skew`, `Peer`, `Limits`,
-  `Restarts`, `Kills`), then two-byte ops (`op % 20`, argument). A masked op
-  is an honest send or a short advance. `mask_off` clears classes.
+  `Restarts`, `Kills`, `Restore`), then two-byte ops (`op % 21`, argument).
+  A masked op is an honest send or a short advance. `mask_off` clears
+  classes. `op_count` went from 20 to 21 for `RestoreMailbox`; every corpus
+  op byte is below 20, so the corpus kept its meaning, while a swarm seed
+  drawn from the same generator seed now decodes differently.
+- `sim/restore`: the `Restore` class. `install` adds a `sim_backup` table
+  and a trigger to the mailbox's database before the node starts, so
+  every envelope the mailbox inserts is copied inside its own
+  transaction; `restore` (the `RestoreMailbox` op, at an op boundary on
+  the keeper) puts back every backed-up envelope that has a tombstone, at
+  its old `seq`, deletes the tombstone and counts its bytes again. The
+  runner drops the restored pairs from its tombstone history, so
+  `never_resurrected` does not blame the mailbox for the harness's
+  restore.
 - `sim/world`: `World` (inbox, `Cells`, fault `Table`), the `Inbound` message
   every seam reports with, and one builder per seam.
 - `sim/runner`: `run(seed, Options) -> Report` (violations, excuses, the
@@ -129,7 +141,15 @@ Fixed so far:
   failed on `UNIQUE (contact, message_id)`, the envelope was never
   acknowledged and every later one on that queue waited behind it
   (`queues_drained`). The core now ignores the repeat and records an
-  incident; the seed is the corpus's last entry.
+  incident; the seed is the corpus's second-to-last entry.
+- The P model's counterexample (ADR-010, addendum): a mailbox restored from
+  a backup serves envelopes the receiver already acknowledged. The engine
+  answered each `Repeat` and the fetcher never named it again, so the
+  fetcher spun on it (the runner's livelock check) and the mailbox held it
+  (`queues_drained`). Found by the P model first; the `restore` class was
+  added to make the swarm see it, and it finds it blind on the pre-fix
+  code. A repeat now marks its row unacknowledged; the seed is the
+  corpus's last entry.
 
 ## Known gaps
 
@@ -137,6 +157,9 @@ Fixed so far:
   local API socket and CLI, mist, `node.stop`'s lock wait (the runner kills
   the supervisor itself), the sweeper's expiry of envelopes (virtual time
   never reaches retention).
+- Pairing by ticket (ADR-009) is not driven: the runner pairs by file, and
+  `PutBlob`/`GetBlob` appear only as names in traces and as variants the
+  byzantine mailbox's wrong-kind answer covers.
 - A store fault is armed per node and fires on the next transactions, so
   which job it hits depends on the schedule, not on its kind.
 - The swarm draws op arguments uniformly; ops that need an earlier op's

@@ -3,9 +3,11 @@
 //// and error, are searched for the bytes that must never appear.
 
 import core/capability
+import core/codex32
 import core/offer
 import core/route
-import core/secret
+import core/secret.{type Secret}
+import core/ticket
 import daemon/api
 import daemon/config
 import daemon/engine
@@ -18,6 +20,7 @@ import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import mailbox/mail as mailbox_mail
+import primitives/suite
 import telemetry/handler
 import telemetry/level
 
@@ -37,6 +40,29 @@ fn capabilities(inbox: route.Inbox) -> List(String) {
   ]
 }
 
+/// A ticket's text, its secret `K`, and every value derived from `K` that
+/// stays with the two daemons (ADR-009), in lowercase hex where binary.
+fn ticket_secrets(issued: Secret) -> List(String) {
+  let assert Ok(text) = bit_array.to_string(secret.expose(issued))
+  let assert Ok(made) = ticket.decode(text)
+  let assert Ok(keys) = ticket.keys(suite.suite(), made)
+
+  // A loopback ticket's payload is the port and then `K`.
+  let assert Ok([_format, ..payload]) =
+    codex32.to_symbols(string.drop_end(string.drop_start(text, 3), 15))
+  let assert Ok(<<_port:size(16), k:bytes-size(32)>>) =
+    codex32.symbols_to_bytes(payload)
+
+  [
+    text,
+    string.drop_start(text, 3),
+    hex(k),
+    hex(capability.expose(keys.retrieve)),
+    hex(secret.expose(keys.key)),
+    hex(secret.expose(keys.commit_key)),
+  ]
+}
+
 pub fn logs_and_errors_carry_no_secret_test() {
   let assert Ok(Nil) = handler.install(level.Info)
   support.capture_start()
@@ -47,6 +73,11 @@ pub fn logs_and_errors_carry_no_secret_test() {
 
   let assert Ok(file) = api.invite(a, "secrets", offer.AutoApprove, 5)
   let assert Ok(at_b) = api.accept(b, file, "a")
+
+  // A second pairing by ticket, so the ticket's whole path is logged too.
+  let assert Ok(issued) =
+    api.invite_ticket(a, "by ticket", offer.AutoApprove, 5)
+  let assert Ok(_) = api.accept_ticket(b, issued.ticket, "a")
   let at_a =
     support.eventually(15_000, fn() {
       let assert Ok(views) = api.contacts(a)
@@ -75,6 +106,8 @@ pub fn logs_and_errors_carry_no_secret_test() {
   // Errors of every kind, each rendered.
   let errors = [
     string.inspect(api.accept(b, <<"junk":utf8>>, "x")),
+    string.inspect(api.accept_ticket(b, secret.new(<<"rw1junk":utf8>>), "x")),
+    string.inspect(issued),
     string.inspect(api.send(
       b,
       at_a,
@@ -122,6 +155,7 @@ pub fn logs_and_errors_carry_no_secret_test() {
     list.flat_map(list.append(inboxes_a, inboxes_b), capabilities)
     |> list.prepend(hex(file))
     |> list.prepend(payload)
+    |> list.append(ticket_secrets(issued.ticket))
 
   let captured = case bit_array.to_string(support.capture_stop()) {
     Ok(text) -> text

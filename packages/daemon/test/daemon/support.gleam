@@ -314,6 +314,124 @@ pub fn lose_stored(
   Nil
 }
 
+/// One stored envelope row, copied whole, as a backup of the mailbox's
+/// database holds it.
+pub type BackedUp {
+  BackedUp(
+    seq: Int,
+    queue: BitArray,
+    envelope: BitArray,
+    digest: BitArray,
+    deadline: Int,
+    size: Int,
+    ciphertext: BitArray,
+  )
+}
+
+/// Copies every envelope the mailbox stores for `queue`, as a backup taken
+/// at this moment would hold them.
+pub fn back_up_queue(
+  mailbox: Mailbox,
+  queue: id.Id(id.Queue),
+) -> List(BackedUp) {
+  let connection = mailbox_database(mailbox)
+  let assert Ok(rows) =
+    sqlight.query(
+      "SELECT seq, queue_id, envelope_id, digest, deadline, size, ciphertext
+       FROM envelopes WHERE queue_id = ? ORDER BY seq",
+      on: connection,
+      with: [sqlight.blob(id.to_bytes(queue))],
+      expecting: {
+        use seq <- decode.field(0, decode.int)
+        use queue <- decode.field(1, decode.bit_array)
+        use envelope <- decode.field(2, decode.bit_array)
+        use digest <- decode.field(3, decode.bit_array)
+        use deadline <- decode.field(4, decode.int)
+        use size <- decode.field(5, decode.int)
+        use ciphertext <- decode.field(6, decode.bit_array)
+        decode.success(BackedUp(
+          seq:,
+          queue:,
+          envelope:,
+          digest:,
+          deadline:,
+          size:,
+          ciphertext:,
+        ))
+      },
+    )
+  let assert Ok(Nil) = sqlight.close(connection)
+
+  rows
+}
+
+/// Puts backed-up envelopes the mailbox has since acknowledged back where
+/// they were, as restoring the mailbox from that backup would: the same
+/// row under its old `seq` (so at the head of its queue), its tombstone
+/// gone, and its bytes counted against the queue again.
+pub fn restore_backup(mailbox: Mailbox, rows: List(BackedUp)) -> Nil {
+  let connection = mailbox_database(mailbox)
+  let assert Ok(Nil) = sqlight.exec("BEGIN IMMEDIATE", connection)
+
+  list.each(rows, fn(row) {
+    let key = [sqlight.blob(row.queue), sqlight.blob(row.envelope)]
+    let assert Ok(_) =
+      sqlight.query(
+        "DELETE FROM tombstones WHERE queue_id = ? AND envelope_id = ?",
+        on: connection,
+        with: key,
+        expecting: decode.success(Nil),
+      )
+    let assert Ok(_) =
+      sqlight.query(
+        "INSERT INTO envelopes
+           (seq, queue_id, envelope_id, digest, deadline, size, ciphertext)
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+        on: connection,
+        with: [
+          sqlight.int(row.seq),
+          sqlight.blob(row.queue),
+          sqlight.blob(row.envelope),
+          sqlight.blob(row.digest),
+          sqlight.int(row.deadline),
+          sqlight.int(row.size),
+          sqlight.blob(row.ciphertext),
+        ],
+        expecting: decode.success(Nil),
+      )
+    let assert Ok(_) =
+      sqlight.query(
+        "UPDATE queues SET bytes_used = bytes_used + ? WHERE queue_id = ?",
+        on: connection,
+        with: [sqlight.int(row.size), sqlight.blob(row.queue)],
+        expecting: decode.success(Nil),
+      )
+    Nil
+  })
+
+  let assert Ok(Nil) = sqlight.exec("COMMIT", connection)
+  let assert Ok(Nil) = sqlight.close(connection)
+
+  Nil
+}
+
+/// Deletes every tombstone of `queue`, as the sweep does once their
+/// retention deadline passes, so the mailbox no longer remembers the
+/// envelopes it acknowledged there.
+pub fn sweep_tombstones(mailbox: Mailbox, queue: id.Id(id.Queue)) -> Nil {
+  let connection = mailbox_database(mailbox)
+  let assert Ok(_) =
+    sqlight.query(
+      "DELETE FROM tombstones WHERE queue_id = ?",
+      on: connection,
+      with: [sqlight.blob(id.to_bytes(queue))],
+      expecting: decode.success(Nil),
+    )
+  let assert Ok(Nil) = sqlight.close(connection)
+
+  Nil
+}
+
 /// A second connection to a running mailbox's database. The mailbox's own
 /// connection holds no long transaction, so a short write here gets in.
 fn mailbox_database(mailbox: Mailbox) -> sqlight.Connection {

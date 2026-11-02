@@ -169,7 +169,9 @@ pub type Handled {
   Fresh
 
   /// The envelope was already processed under the same identifier and
-  /// digest. Nothing changed; the fetcher only acknowledges.
+  /// digest. Nothing of the relationship changed; its processed row is
+  /// marked unacknowledged again, so the fetcher's next round names it to
+  /// the mailbox even if an earlier round already had.
   Repeat
 }
 
@@ -1002,9 +1004,10 @@ pub fn expire_offers(name: Handle(Message)) -> Result(Nil, Failure) {
 /// Processes one fetched envelope and commits its outcome.
 ///
 /// An envelope already processed under the same identifier and digest is a
-/// `Repeat`. Everything else runs through the core, and whatever the core
-/// refuses is committed as dropped. `Ok` means the outcome is durable and the
-/// fetcher may acknowledge it; an error means nothing was committed.
+/// `Repeat`, and is owed an acknowledgement again. Everything else runs
+/// through the core, and whatever the core refuses is committed as dropped.
+/// `Ok` means the outcome is durable and the fetcher may acknowledge it; an
+/// error means nothing was committed.
 ///
 /// ## Examples
 ///
@@ -1042,12 +1045,40 @@ fn handle_envelope(
   case known {
     Some(stored) ->
       case state.suite.constant_time_equal(stored, digest) {
-        True -> Ok(Repeat)
+        True -> repeat(state, ref)
         False -> attempt(state, ref, padded)
       }
 
     None -> attempt(state, ref, padded)
   }
+}
+
+/// Answers an envelope the store already processed by owing the mailbox
+/// its acknowledgement again (ADR-010, addendum).
+///
+/// A mailbox serves a processed envelope in two ways. Before the
+/// acknowledgement, it is the batch the next round acknowledges anyway,
+/// and the row is still unacknowledged. After it, the mailbox brought the
+/// envelope back: restored from a backup taken before the acknowledgement,
+/// or stored again by the sender's retry once the tombstone's retention
+/// deadline passed, which can be up to `limits.retention_slack_seconds`
+/// before the sender stops retrying. The fetcher acknowledges only what
+/// `store.unacked` lists, so an envelope whose row stayed acknowledged was
+/// never named again: it sat at the head of the queue until retention, and
+/// a queue of them hid every envelope behind it.
+///
+/// Marking the row unacknowledged keeps the fetcher's one rule, acknowledge
+/// exactly what the store says is committed and unacknowledged, and covers
+/// both cases. The row and its digest stay, so the envelope is never
+/// processed or delivered twice; no attempt is counted, since nothing
+/// failed; and a queue that retires before the next round still has an
+/// unacknowledged row, so the fetch manager drains it.
+fn repeat(state: State, ref: EnvelopeRef) -> Result(Handled, Failure) {
+  use _ <- result.try(
+    fault(store.mark_unacked(state.store, ref.queue, ref.envelope)),
+  )
+
+  Ok(Repeat)
 }
 
 /// Counts this attempt durably, then processes the envelope, or quarantines

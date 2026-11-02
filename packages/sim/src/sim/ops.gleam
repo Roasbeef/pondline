@@ -121,7 +121,8 @@ pub fn body(
     | seed.SetSkew(..)
     | seed.Forge(..)
     | seed.Restart(..)
-    | seed.Kill(..) -> Error(Nil)
+    | seed.Kill(..)
+    | seed.RestoreMailbox -> Error(Nil)
   }
 }
 

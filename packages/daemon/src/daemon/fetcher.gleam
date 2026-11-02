@@ -10,7 +10,10 @@
 //// acknowledged at the start of the next, after its commit is a row it reads
 //// back. The same step is the restart path: an envelope committed before a
 //// crash and never acknowledged is just another unacknowledged row, so no
-//// recovery code exists beyond the loop itself.
+//// recovery code exists beyond the loop itself. So is an envelope the
+//// mailbox serves again after its acknowledgement (a restore, a sender's
+//// late retry): the engine answers it `Repeat` and marks its row
+//// unacknowledged, and the next round names it again (ADR-010, addendum).
 ////
 //// ## A `weft/state_machine`
 ////
@@ -410,6 +413,8 @@ fn acknowledge(
     | protocol.Appended(_)
     | protocol.Batch(_)
     | protocol.QueueDeleted
+    | protocol.BlobStored(_)
+    | protocol.SealedBlob(_)
     | protocol.Refused(_) -> Error(RoundFailed)
   }
 }
@@ -434,6 +439,8 @@ fn fetch_batch(config: Config) -> Result(List(StoredEnvelope), RoundFailed) {
     | protocol.Appended(_)
     | protocol.Acked
     | protocol.QueueDeleted
+    | protocol.BlobStored(_)
+    | protocol.SealedBlob(_)
     | protocol.Refused(_) -> Error(RoundFailed)
   }
 }
