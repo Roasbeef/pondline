@@ -462,7 +462,7 @@ path needs a sender that got no answer for about a week, and costs one
 zombie for at most `retention_slack_seconds`; it matters because it needs
 no operator action.
 
-**The fix** (ADR-010, addendum). `engine.gleam:1048` (`repeat`) answers
+**The fix** (ADR-010, addendum). `engine.gleam:1076` (`repeat`) answers
 a `Repeat` by marking the envelope's processed row unacknowledged
 (`daemon/store.gleam:1769`, `mark_unacked`; `MarkUnacked` in
 `daemon/sql/inbound.sql`), so the next round's `ack_pending` names it and
