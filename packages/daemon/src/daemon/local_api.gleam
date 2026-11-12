@@ -139,8 +139,8 @@ type InviteForm {
 /// An operation with its arguments.
 type Call {
   Invite(description: String, approval: Approval, budget: Int, form: InviteForm)
-  Accept(invitation: BitArray, description: String)
-  AcceptTicket(ticket: Secret, description: String)
+  Accept(invitation: BitArray, description: String, budget: Option(Int))
+  AcceptTicket(ticket: Secret, description: String, budget: Option(Int))
   ListContacts
   Approve(contact: Id(Contact))
   Decline(contact: Id(Contact))
@@ -546,19 +546,53 @@ fn parse_accept(args: Dynamic) -> Result(Call, Failure) {
   use file <- result.try(optional(args, "invitation", decode.string, ""))
   use ticket <- result.try(optional(args, "ticket", decode.string, ""))
   use description <- result.try(optional(args, "description", decode.string, ""))
+  use budget <- result.try(optional_accept_budget(args))
 
   // Exactly one source: both would be ambiguous and neither is nothing.
   case file, ticket {
     "", "" -> Error(invalid("give exactly one of invitation and ticket"))
 
-    "", _ -> Ok(AcceptTicket(ticket: secret.new(<<ticket:utf8>>), description:))
+    "", _ ->
+      Ok(AcceptTicket(
+        ticket: secret.new(<<ticket:utf8>>),
+        description:,
+        budget:,
+      ))
 
     _, "" -> {
       use invitation <- result.try(base64(file, "invitation"))
-      Ok(Accept(invitation:, description:))
+      Ok(Accept(invitation:, description:, budget:))
     }
 
     _, _ -> Error(invalid("give exactly one of invitation and ticket"))
+  }
+}
+
+/// Decodes the optional `budget` argument of `accept`, bounded by `1..limits.max_budget_messages`.
+fn optional_accept_budget(args: Dynamic) -> Result(Option(Int), Failure) {
+  use parsed <- result.try(
+    decode.run(
+      args,
+      decode.optional_field(
+        "budget",
+        None,
+        decode.optional(decode.int),
+        decode.success,
+      ),
+    )
+    |> result.map_error(fn(_) { invalid("malformed argument budget") }),
+  )
+
+  // Reject out-of-range integers rather than silently clamping a budget.
+  case parsed {
+    None -> Ok(None)
+    Some(value) if value >= 1 && value <= limits.max_budget_messages ->
+      Ok(Some(value))
+    Some(_) ->
+      Error(invalid(
+        "budget must be between 1 and "
+        <> int.to_string(limits.max_budget_messages),
+      ))
   }
 }
 
@@ -722,13 +756,13 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
         ])
       })
 
-    Accept(invitation:, description:) ->
-      backend.accept(invitation, description)
+    Accept(invitation:, description:, budget:) ->
+      backend.accept(invitation, description, budget)
       |> lift
       |> result.map(contact_json_of)
 
-    AcceptTicket(ticket:, description:) ->
-      backend.accept_ticket(ticket, description)
+    AcceptTicket(ticket:, description:, budget:) ->
+      backend.accept_ticket(ticket, description, budget)
       |> lift
       |> result.map(contact_json_of)
 

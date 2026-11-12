@@ -94,16 +94,16 @@ commands:
          [--carrier tor|loopback] [--tor-bin PATH]
   invite create --description TEXT --budget N [--auto-approve]
                 [--out FILE] [--ticket]
-  invite accept [--ticket] (--file FILE | --stdin) [--description TEXT]
+  invite accept [--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]
   contacts list
-  contact approve|decline|close --contact HEX
-  contact budget --contact HEX --add N
-  send --contact HEX [--content-type T] (--file F | --stdin) [--reply-to HEX]
+  contact approve|decline|close --contact CONTACT
+  contact budget --contact CONTACT --add N
+  send --contact CONTACT [--content-type T] (--file F | --stdin) [--reply-to HEX]
        [--idempotency-key KEY]
-  receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]
+  receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]
   ack --message HEX
   status --message HEX
-  audit [--contact HEX] [--limit N]
+  audit [--contact CONTACT] [--limit N]
   incidents [--limit N]
   health
   --version
@@ -221,6 +221,22 @@ pub type PayloadView {
   Raw
 }
 
+/// How `--contact` names a relationship on the CLI: either a full 32-digit hex
+/// identifier (sent directly) or a description/petname or >=4-char hex prefix
+/// resolved against `contacts` before the command runs.
+pub type ContactRef {
+  /// Full 32-digit hex contact identifier.
+  ExactContact(contact: Id(Contact))
+
+  /// Description/petname or hex prefix resolved against `contacts`.
+  LookupContact(query: String)
+}
+
+/// One row from `contacts` used to resolve `LookupContact` selectors purely.
+pub type ContactEntry {
+  ContactEntry(contact: Id(Contact), phase: String, description: String)
+}
+
 /// What a client command asks the daemon to do.
 pub type Action {
   CreateInvite(
@@ -229,28 +245,33 @@ pub type Action {
     budget: Int,
     output: InviteOutput,
   )
-  AcceptInvite(source: Input, form: AcceptForm, description: String)
+  AcceptInvite(
+    source: Input,
+    form: AcceptForm,
+    description: String,
+    budget: Option(Int),
+  )
   ListContacts
-  ApproveContact(contact: Id(Contact))
-  DeclineContact(contact: Id(Contact))
-  CloseContact(contact: Id(Contact))
-  RaiseBudget(contact: Id(Contact), add: Int)
+  ApproveContact(contact: ContactRef)
+  DeclineContact(contact: ContactRef)
+  CloseContact(contact: ContactRef)
+  RaiseBudget(contact: ContactRef, add: Int)
   SendMessage(
-    contact: Id(Contact),
+    contact: ContactRef,
     content_type: String,
     source: Input,
     in_reply_to: Option(Id(Message)),
     idempotency_key: Option(String),
   )
   ReceiveMessages(
-    contact: Option(Id(Contact)),
+    contact: Option(ContactRef),
     max: Int,
     wait_seconds: Int,
     view: PayloadView,
   )
   Acknowledge(message: Id(Message))
   MessageStatus(message: Id(Message))
-  ShowAudit(contact: Option(Id(Contact)), limit: Int)
+  ShowAudit(contact: Option(ContactRef), limit: Int)
   ShowIncidents(limit: Int)
   ShowHealth
 }
@@ -339,10 +360,16 @@ pub fn parse_with_env(
       client(
         rest,
         env,
-        ["--file", "--description"],
+        ["--file", "--description", "--budget"],
         ["--stdin", "--ticket"],
         fn(options) {
           use source <- result.try(one_source(options))
+          use budget <- result.try(optional_present_number(
+            options,
+            "--budget",
+            1,
+            1_000_000,
+          ))
           let description = dict_get(options, "--description", "")
 
           // `--ticket` says what the input is; it never carries it.
@@ -351,7 +378,7 @@ pub fn parse_with_env(
             False -> FromInvitation
           }
 
-          Ok(AcceptInvite(source:, form:, description:))
+          Ok(AcceptInvite(source:, form:, description:, budget:))
         },
       )
 
@@ -924,6 +951,19 @@ fn optional_number(
   }
 }
 
+/// An optional integer option from `low` to `high`, returning `None` when absent.
+fn optional_present_number(
+  options: Options,
+  name: String,
+  low: Int,
+  high: Int,
+) -> Result(Option(Int), String) {
+  case dict.get(options.values, name) {
+    Ok(text) -> in_range(text, name, low, high) |> result.map(Some)
+    Error(Nil) -> Ok(None)
+  }
+}
+
 /// Parses an integer within bounds.
 fn in_range(
   text: String,
@@ -945,18 +985,195 @@ fn in_range(
   }
 }
 
-/// The required `--contact` identifier.
-fn contact(options: Options) -> Result(Id(Contact), String) {
+/// The required `--contact` selector: full 32-digit hex id, hex prefix, or petname.
+fn contact(options: Options) -> Result(ContactRef, String) {
   use text <- result.try(required(options, "--contact"))
-  hex(text, "--contact")
+  parse_contact_ref(text)
 }
 
-/// The optional `--contact` identifier.
-fn optional_contact(options: Options) -> Result(Option(Id(Contact)), String) {
+/// The optional `--contact` selector.
+fn optional_contact(options: Options) -> Result(Option(ContactRef), String) {
   case dict.get(options.values, "--contact") {
-    Ok(text) -> result.map(hex(text, "--contact"), Some)
+    Ok(text) -> result.map(parse_contact_ref(text), Some)
     Error(Nil) -> Ok(None)
   }
+}
+
+/// Parses `--contact` as `ExactContact` when it is 32-digit hex, else `LookupContact`.
+fn parse_contact_ref(text: String) -> Result(ContactRef, String) {
+  let trimmed = string.trim(text)
+
+  // Empty selectors are usage errors; 32-digit hex skips any lookup RPC.
+  case trimmed {
+    "" -> Error("--contact must not be empty")
+    _ ->
+      case id.from_hex(trimmed) {
+        Ok(parsed) -> Ok(ExactContact(parsed))
+        Error(Nil) -> Ok(LookupContact(trimmed))
+      }
+  }
+}
+
+/// Whether `action` carries a `LookupContact` that needs a `contacts` lookup first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.needs_contact_lookup(ApproveContact(LookupContact("bob")))
+/// // -> True
+/// ```
+pub fn needs_contact_lookup(action: Action) -> Bool {
+  case action {
+    ApproveContact(LookupContact(..))
+    | DeclineContact(LookupContact(..))
+    | CloseContact(LookupContact(..))
+    | RaiseBudget(contact: LookupContact(..), ..)
+    | SendMessage(contact: LookupContact(..), ..) -> True
+    ReceiveMessages(contact: Some(LookupContact(..)), ..)
+    | ShowAudit(contact: Some(LookupContact(..)), ..) -> True
+    _ -> False
+  }
+}
+
+/// Resolves any `LookupContact` inside `action` against `entries`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.resolve_action_contacts(ShowHealth, [])
+/// // -> Ok(ShowHealth)
+/// ```
+pub fn resolve_action_contacts(
+  action: Action,
+  entries: List(ContactEntry),
+) -> Result(Action, String) {
+  // Rewrite only the actions that carry a required or optional `ContactRef`.
+  case action {
+    ApproveContact(ref) ->
+      resolve_ref(ref, entries) |> result.map(ApproveContact)
+    DeclineContact(ref) ->
+      resolve_ref(ref, entries) |> result.map(DeclineContact)
+    CloseContact(ref) -> resolve_ref(ref, entries) |> result.map(CloseContact)
+    RaiseBudget(ref, add) ->
+      resolve_ref(ref, entries) |> result.map(RaiseBudget(_, add))
+    SendMessage(ref, content_type, source, in_reply_to, idempotency_key) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      SendMessage(resolved, content_type, source, in_reply_to, idempotency_key)
+    }
+    ReceiveMessages(Some(ref), max, wait_seconds, view) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      ReceiveMessages(Some(resolved), max, wait_seconds, view)
+    }
+    ShowAudit(Some(ref), limit) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      ShowAudit(Some(resolved), limit)
+    }
+    other -> Ok(other)
+  }
+}
+
+/// Resolves one `ContactRef` into an `ExactContact`.
+fn resolve_ref(
+  ref: ContactRef,
+  entries: List(ContactEntry),
+) -> Result(ContactRef, String) {
+  case ref {
+    ExactContact(_) -> Ok(ref)
+    LookupContact(query) ->
+      resolve_contact_ref(entries, query) |> result.map(ExactContact)
+  }
+}
+
+/// Resolves `query` against `entries`: exact case-insensitive description match first,
+/// then >=4-character hex prefix match, preferring non-closed contacts and failing closed on ambiguity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.resolve_contact_ref([], "bob")
+/// // -> Error("no contact matching \"bob\"")
+/// ```
+pub fn resolve_contact_ref(
+  entries: List(ContactEntry),
+  query: String,
+) -> Result(Id(Contact), String) {
+  let lowered = string.lowercase(string.trim(query))
+  let by_name =
+    list.filter(entries, fn(entry) {
+      string.lowercase(string.trim(entry.description)) == lowered
+    })
+
+  // Prefer exact description matches before falling back to hex prefixes (>= 4 chars).
+  case pick_unique_contact(by_name, query) {
+    Ok(found) -> Ok(found)
+    Error(AmbiguousMatch(reason)) -> Error(reason)
+    Error(NoMatch) -> resolve_hex_prefix(entries, lowered, query)
+  }
+}
+
+/// Internal outcome of disambiguating candidate contacts.
+type LookupMiss {
+  NoMatch
+  AmbiguousMatch(reason: String)
+}
+
+/// Matches `lowered` as a >=4-character hex prefix of `id.to_hex(entry.contact)`.
+fn resolve_hex_prefix(
+  entries: List(ContactEntry),
+  lowered: String,
+  original: String,
+) -> Result(Id(Contact), String) {
+  let is_prefix_candidate =
+    string.byte_size(lowered) >= 4 && is_hex_ascii(lowered)
+
+  // Short or non-hex strings cannot match as hex prefixes.
+  case is_prefix_candidate {
+    False -> Error("no contact matching \"" <> original <> "\"")
+    True -> {
+      let by_prefix =
+        list.filter(entries, fn(entry) {
+          string.starts_with(id.to_hex(entry.contact), lowered)
+        })
+
+      // Disambiguate prefix hits the same way as description hits.
+      case pick_unique_contact(by_prefix, original) {
+        Ok(found) -> Ok(found)
+        Error(AmbiguousMatch(reason)) -> Error(reason)
+        Error(NoMatch) -> Error("no contact matching \"" <> original <> "\"")
+      }
+    }
+  }
+}
+
+/// Picks a single contact from `matches`, preferring non-closed contacts over closed ones.
+fn pick_unique_contact(
+  matches: List(ContactEntry),
+  query: String,
+) -> Result(Id(Contact), LookupMiss) {
+  let live = list.filter(matches, fn(entry) { entry.phase != "closed" })
+
+  // Prefer live relationships when a closed relationship shares the same label.
+  let pool = case live {
+    [_, ..] -> live
+    [] -> matches
+  }
+
+  // More than one candidate in the active pool is ambiguous and never guessed.
+  case pool {
+    [] -> Error(NoMatch)
+    [single] -> Ok(single.contact)
+    [_, _, ..] ->
+      Error(AmbiguousMatch(
+        "ambiguous contact \"" <> query <> "\"; pass its full hex id",
+      ))
+  }
+}
+
+/// Checks whether every character in `text` is a lowercase hex digit.
+fn is_hex_ascii(text: String) -> Bool {
+  list.all(string.to_graphemes(text), fn(ch) {
+    string.contains("0123456789abcdef", ch)
+  })
 }
 
 /// The required `--message` identifier.
@@ -988,7 +1205,7 @@ fn hex(text: String, name: String) -> Result(Id(kind), String) {
 /// ## Examples
 ///
 /// ```gleam
-/// cli.input_of(AcceptInvite(InputFile("bob.invite"), FromInvitation, ""))
+/// cli.input_of(AcceptInvite(InputFile("bob.invite"), FromInvitation, "", None))
 /// // -> InputFile("bob.invite")
 /// ```
 pub fn input_of(action: Action) -> Input {
@@ -1058,21 +1275,23 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
       ]),
     )
 
-    AcceptInvite(form: FromInvitation, description:, ..) -> #(
+    AcceptInvite(form: FromInvitation, description:, budget:, ..) -> #(
       "accept",
       json.object([
         #("invitation", json.string(bit_array.base64_encode(input, True))),
         #("description", json.string(description)),
+        ..budget_args(budget)
       ]),
     )
 
     // The ticket goes as text; `cli_run` has already refused input that is
     // not, and the daemon drops the newline a paste leaves.
-    AcceptInvite(form: FromTicket, description:, ..) -> #(
+    AcceptInvite(form: FromTicket, description:, budget:, ..) -> #(
       "accept",
       json.object([
         #("ticket", json.string(result.unwrap(bit_array.to_string(input), ""))),
         #("description", json.string(description)),
+        ..budget_args(budget)
       ]),
     )
 
@@ -1084,7 +1303,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     RaiseBudget(contact:, add:) -> #(
       "raise_budget",
       json.object([
-        #("contact", json.string(id.to_hex(contact))),
+        #("contact", contact_ref_json(contact)),
         #("by", json.int(add)),
       ]),
     )
@@ -1092,7 +1311,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     SendMessage(contact:, content_type:, in_reply_to:, idempotency_key:, ..) -> #(
       "send",
       json.object([
-        #("contact", json.string(id.to_hex(contact))),
+        #("contact", contact_ref_json(contact)),
         #("content_type", json.string(content_type)),
         #("payload", json.string(bit_array.base64_encode(input, True))),
         #("in_reply_to", json.nullable(in_reply_to, hex_json)),
@@ -1103,7 +1322,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     ReceiveMessages(contact:, max:, wait_seconds:, ..) -> #(
       "receive",
       json.object([
-        #("contact", json.nullable(contact, hex_json)),
+        #("contact", json.nullable(contact, contact_ref_json)),
         #("max", json.int(max)),
         #("wait_ms", json.int(wait_seconds * 1000)),
       ]),
@@ -1115,7 +1334,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     ShowAudit(contact:, limit:) -> #(
       "audit",
       json.object([
-        #("contact", json.nullable(contact, hex_json)),
+        #("contact", json.nullable(contact, contact_ref_json)),
         #("limit", json.int(limit)),
       ]),
     )
@@ -1161,6 +1380,14 @@ fn key_args(key: Option(String)) -> List(#(String, Json)) {
   }
 }
 
+/// Optional `budget` field on `accept`, omitted when `None` so wire requests stay minimal.
+fn budget_args(budget: Option(Int)) -> List(#(String, Json)) {
+  case budget {
+    Some(value) -> [#("budget", json.int(value))]
+    None -> []
+  }
+}
+
 /// The wire name of an approval mode.
 fn approval_name(approval: Approval) -> String {
   case approval {
@@ -1174,9 +1401,17 @@ fn hex_json(identifier: Id(kind)) -> Json {
   json.string(id.to_hex(identifier))
 }
 
+/// Encodes a `ContactRef` to JSON after resolution.
+fn contact_ref_json(ref: ContactRef) -> Json {
+  case ref {
+    ExactContact(contact:) -> hex_json(contact)
+    LookupContact(query:) -> json.string(query)
+  }
+}
+
 /// The arguments of an operation on one contact.
-fn contact_args(contact: Id(Contact)) -> Json {
-  json.object([#("contact", hex_json(contact))])
+fn contact_args(contact: ContactRef) -> Json {
+  json.object([#("contact", contact_ref_json(contact))])
 }
 
 /// The arguments of an operation on one message.

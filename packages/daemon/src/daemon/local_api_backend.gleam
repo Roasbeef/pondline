@@ -46,8 +46,8 @@ pub fn unavailable() -> Backend {
   Backend(
     invite: fn(_, _, _) { Error(Unavailable) },
     invite_ticket: fn(_, _, _) { Error(Unavailable) },
-    accept: fn(_, _) { Error(Unavailable) },
-    accept_ticket: fn(_, _) { Error(Unavailable) },
+    accept: fn(_, _, _) { Error(Unavailable) },
+    accept_ticket: fn(_, _, _) { Error(Unavailable) },
     contacts: fn() { Error(Unavailable) },
     approve: fn(_) { Error(Unavailable) },
     decline: fn(_) { Error(Unavailable) },
@@ -123,11 +123,12 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
       |> result.map(fn(issued) { #(secret.expose(issued.file), issued.ticket) })
       |> map_error
     },
-    accept: fn(file, description) {
-      api.accept(daemon, file, description) |> map_error
+    accept: fn(file, description, budget) {
+      api.accept_with_budget(daemon, file, description, budget) |> map_error
     },
-    accept_ticket: fn(text, description) {
-      api.accept_ticket(daemon, text, description) |> map_error
+    accept_ticket: fn(text, description, budget) {
+      api.accept_ticket_with_budget(daemon, text, description, budget)
+      |> map_error
     },
     contacts: fn() {
       api.contacts(daemon)

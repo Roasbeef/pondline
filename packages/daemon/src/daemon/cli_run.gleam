@@ -31,6 +31,7 @@
 import core/capability
 import core/endpoint.{TorOnly, TorOrLoopback}
 import core/grant
+import core/id
 import core/limits
 import core/secret
 import daemon/build
@@ -53,6 +54,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/io
 import gleam/json
+import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
@@ -514,8 +516,14 @@ fn attempt(
   )
   use input <- result.try(read_input(cli.input_of(action)))
   use Nil <- result.try(check_ticket_text(action, input))
+  use resolved_action <- result.try(resolve_contacts_if_needed(
+    target,
+    output,
+    secret.expose(credential),
+    action,
+  ))
 
-  let #(op, args) = cli.request(action, input)
+  let #(op, args) = cli.request(resolved_action, input)
 
   // This is the one place the credential's bytes leave this module: onto
   // the socket the daemon owns, base64-encoded by the client.
@@ -525,7 +533,7 @@ fn attempt(
       secret.expose(credential),
       op,
       args,
-      cli.timeout_ms(action),
+      cli.timeout_ms(resolved_action),
     )
     |> result.map_error(unreachable(_, target.socket)),
   )
@@ -535,8 +543,100 @@ fn attempt(
     protocol.Failed(category:, message:) ->
       Ok(failed(output, line, category, message))
 
-    protocol.Succeeded(result:) -> succeeded(output, action, line, result)
+    protocol.Succeeded(result:) ->
+      succeeded(output, resolved_action, line, result)
   }
+}
+
+/// Queries `contacts` over the local socket only when `action` carries a `LookupContact`.
+fn resolve_contacts_if_needed(
+  target: Target,
+  output: Output,
+  credential_bytes: BitArray,
+  action: Action,
+) -> Result(Action, Outcome) {
+  // Exact 32-digit hex ids bypass the lookup RPC completely.
+  case cli.needs_contact_lookup(action) {
+    False -> Ok(action)
+    True -> {
+      use #(line, response) <- result.try(
+        local_api_client.exchange(
+          target.socket,
+          credential_bytes,
+          "contacts",
+          json.object([]),
+          10_000,
+        )
+        |> result.map_error(unreachable(_, target.socket)),
+      )
+      use entries <- result.try(decode_contact_entries(output, line, response))
+      cli.resolve_action_contacts(action, entries)
+      |> result.map_error(fn(message) { not_found_outcome(output, message) })
+    }
+  }
+}
+
+/// Decodes the daemon's `contacts` reply into `List(cli.ContactEntry)`.
+fn decode_contact_entries(
+  output: Output,
+  line: String,
+  response: protocol.Response,
+) -> Result(List(cli.ContactEntry), Outcome) {
+  // Propagate auth/availability refusals from `contacts` directly.
+  case response {
+    protocol.Failed(category:, message:) ->
+      Error(failed(output, line, category, message))
+    protocol.Succeeded(result:) -> {
+      let entry_decoder = {
+        use contact_hex <- decode.field("contact", decode.string)
+        use phase <- decode.field("phase", decode.string)
+        use description <- decode.field("description", decode.string)
+        decode.success(#(contact_hex, phase, description))
+      }
+      use raw_rows <- result.try(
+        decode.run(
+          result,
+          decode.field("contacts", decode.list(entry_decoder), decode.success),
+        )
+        |> result.map_error(fn(_) {
+          failure(
+            cli.exit_unavailable,
+            "the daemon sent a malformed contacts reply",
+          )
+        }),
+      )
+      Ok(parse_contact_entries(raw_rows))
+    }
+  }
+}
+
+/// Keeps rows whose `contact` parses as a valid `Id(Contact)`.
+fn parse_contact_entries(
+  rows: List(#(String, String, String)),
+) -> List(cli.ContactEntry) {
+  rows
+  |> list.filter_map(fn(row) {
+    let #(hex, phase, description) = row
+    use parsed <- result.map(id.from_hex(hex))
+    cli.ContactEntry(contact: parsed, phase:, description:)
+  })
+}
+
+/// Renders a `not_found` error outcome in human or `--json` mode.
+fn not_found_outcome(output: Output, message: String) -> Outcome {
+  let encoded_line =
+    json.object([
+      #("ok", json.bool(False)),
+      #(
+        "error",
+        json.object([
+          #("category", json.string("not_found")),
+          #("message", json.string(message)),
+        ]),
+      ),
+    ])
+    |> json.to_string
+  failed(output, encoded_line, protocol.NotFound, message)
 }
 
 /// Refuses a ticket input that is not text before the daemon is asked. A

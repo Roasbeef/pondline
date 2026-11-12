@@ -376,7 +376,9 @@ pub fn backend_errors_map_to_stable_categories_test() {
     local_api_types.Backend(
       ..fixture.backend(fake),
       approve: fn(_) { Error(local_api_types.NotFound) },
-      accept: fn(_, _) { Error(local_api_types.InvalidInvitation("expired")) },
+      accept: fn(_, _, _) {
+        Error(local_api_types.InvalidInvitation("expired"))
+      },
       send: fn(_, _, _, _, _) { Error(local_api_types.Refused("budget spent")) },
       status: fn(_) { Error(local_api_types.Unavailable) },
     )
@@ -650,4 +652,58 @@ pub fn init_and_saved_config_round_trip_test() {
     )
   let _ = simplifile.delete(grant_file)
   let _ = simplifile.delete(dir)
+}
+
+pub fn cli_resolves_contact_by_petname_and_accept_budget_round_trips_test() {
+  use f <- fixture.with_server
+  let cred_file = f.dir <> "/agent_test.cred"
+  let assert Ok(Nil) = ffi_local_system.write_private_file(cred_file, f.agent)
+  let payload_file = f.dir <> "/msg.txt"
+  let assert Ok(Nil) = simplifile.write(payload_file, "hello bob")
+
+  // Sending with `--contact bob` resolves `"bob"` via `contacts` using the agent credential.
+  let target = cli.Target(socket: f.socket, credential_file: cred_file)
+  let send_out =
+    cli_run.run(cli.Client(
+      target,
+      cli.HumanOutput,
+      cli.SendMessage(
+        cli.LookupContact("bob"),
+        "text/plain",
+        cli.InputFile(payload_file),
+        None,
+        None,
+      ),
+    ))
+  assert send_out.status == cli.exit_ok
+
+  // Unknown contact petname returns exit_not_found (4) and JSON error in `--json` mode.
+  let miss_out =
+    cli_run.run(cli.Client(
+      target,
+      cli.JsonOutput,
+      cli.SendMessage(
+        cli.LookupContact("mallory"),
+        "text/plain",
+        cli.InputFile(payload_file),
+        None,
+        None,
+      ),
+    ))
+  assert miss_out.status == cli.exit_not_found
+  let assert Ok(miss_json) = bit_array.to_string(miss_out.stdout)
+  assert string.contains(miss_json, "\"not_found\"")
+
+  // `accept` with explicit `"budget": 25` reaches the backend.
+  let _ =
+    ask(f, f.operator, "accept", [
+      #("ticket", json.string("pl1example")),
+      #("description", json.string("peer")),
+      #("budget", json.int(25)),
+    ])
+    |> succeeded
+  assert list.contains(
+    fixture.calls(f.fake),
+    "accept_ticket pl1example peer budget=25",
+  )
 }
