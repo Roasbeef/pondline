@@ -33,7 +33,7 @@ modelled code has changed since except line positions.
 | Logging (`packages/telemetry`) | Typed logfmt over `logger`; OTP's reports are rebuilt from their shape; send payloads and invitation files travel as `Secret` (ADR-012). |
 | Tor (`packages/tor`, `native/pondline-tor`) | Arti sidecar over an Erlang port (ADR-001). |
 | Shell DST (`packages/sim`) | Real daemons and mailbox, exact replay. Judged; see item 1 below and `docs/architecture/sim.md`. |
-| Packaging | Self-contained release, install, dist (ADR-003). macOS arm64 tested; Linux never run. |
+| Packaging | Self-contained release, install, dist, `pondline-update` and CI/release workflows (ADR-003). macOS arm64 and Linux x86_64 built and smoke-tested. |
 | Formal (`docs/formal/README.md`) | Lean, P, TLA+ (18 configurations) and ProVerif (30 rows). Mutants fail as expected in each. |
 | Docs | Every package has an architecture `README.md`; `docs/architecture/system.md` covers the whole. The top README and `docs/quickstart.md` are for outside readers. |
 

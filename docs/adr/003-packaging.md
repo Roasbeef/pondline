@@ -361,3 +361,24 @@ there unchanged; that is also unverified.
 ## Addendum: 2026-11-02
 
 The project was renamed from Reedwire, and this record was updated to match. [ADR-014](014-the-name-is-pondline.md) has the decision.
+
+## Addendum: 2026-11-12 — Linux x86_64 proof, static liblzma, and `pondline-update`
+
+### Static `liblzma-sys` in `pondline-tor`
+
+`native/pondline-tor/Cargo.toml` now enables `liblzma-sys = { version = "0.4", features = ["static"] }`. On macOS arm64 `pondline-tor` links only `IOKit`, `CoreFoundation`, `/usr/lib/libiconv.2.dylib` and `/usr/lib/libSystem.B.dylib` (`bin/lib/liblzma.5.dylib` is gone); on Linux x86_64 `ldd bin/pondline-tor` names only `libgcc_s.so.1`, `libm.so.6`, `libc.so.6` and `ld-linux-x86-64.so.2`.
+
+### Pinned Linux x86_64 builder and bare Ubuntu 24.04 proof
+
+`docker/release-builder.Dockerfile` pins the Linux x86_64 build baseline on `ubuntu:24.04` (`glibc 2.39`) with SHA-256 verification on every fetched artifact: OpenSSL `3.5.9` LTS installed in `/opt/pondline-openssl`, Erlang/OTP `29.1.2` (`builds.hex.pm` `ubuntu-24.04`) with `lib/crypto` recompiled (`-DSIZEOF_VOID_P=8 -DHAVE_DYNAMIC_CRYPTO_LIB`) against `/opt/pondline-openssl` so compile-time ML-KEM/ML-DSA symbols and runtime `libcrypto.so.3` match, Gleam `1.19.2`, `rebar3` `3.27.0`, Rust `1.98.1`, and `patchelf`. `scripts/release.sh` strips debug sections (`strip --strip-unneeded`) from copied ELF binaries and shared objects, sets `DT_RUNPATH` `$ORIGIN` on bundled `.so` files as well as callers, checks ELF headers before invoking `ldd` in the leak check, and deduplicates `/proc/<pid>/maps` entries by file path. `scripts/dist.sh` sets `COPYFILE_DISABLE=1` so macOS BSD `tar` never packs AppleDouble `._*` members.
+
+Measured on Linux 6.12 x86_64 (`Ubuntu 24.04.5 LTS`, `glibc 2.39`):
+
+- Build-time `vmcheck`: `OpenSSL 3.5.9 29 Sep 2026`, single mapped `libcrypto` at `<REL>/lib/crypto-5.10/priv/lib/libcrypto.so.3`.
+- Dynamic linkage: `ldd crypto.so` resolves `libcrypto.so.3` inside `<REL>/lib/crypto-5.10/priv/lib/`, `libc.so.6` and `ld-linux-x86-64.so.2`; `objdump -T` across `beam.smp` and `pondline-tor` shows a `GLIBC_2.38` symbol floor.
+- Size after ELF strip: `54 MB` unpacked (627 files), `27 MB` `pondline-0.1.0-linux-x86_64.tar.gz`.
+- Scrubbed runtime proof (`scripts/release-smoke.sh`) inside a fresh `ubuntu:24.04` container with only system OpenSSL `3.0.13` and no Erlang, Gleam or Rust installed: `PASS release smoke (4s)` (both `--version` checks, sidecar start/stop, bundled `OpenSSL 3.5.9` ML-KEM-1024 round trip, mailbox `plg1` + file grants, `~/.pondline` `init` + bare daemon pairing and petname message round trip, clean `SIGTERM` shutdown).
+
+### `pondline-update` and CI/Release pipelines
+
+`scripts/fetch-release.sh` ships inside every release as `bin/pondline-update` (linked into `$PREFIX/bin/pondline-update` by `scripts/install.sh`) and is published as `install.sh` on GitHub Releases. Because `gleam_httpc` and `inets` remain forbidden inside the BEAM bundle, clearnet release fetching lives in this standalone shell script: it verifies the 64-hex SHA-256 digest before `tar` reads the archive, serializes concurrent runs on `$PREFIX/.pondline-update.lock`, and delegates atomic `current` symlink switching and live-tree retention to the unpacked archive's `install.sh`. `scripts/test-update.sh` verifies fresh installation, single-byte tamper refusal before unpack, live-process retention across an atomic version switch, and post-exit tree pruning on both macOS arm64 and bare Ubuntu 24.04. `.github/workflows/ci.yml` and `.github/workflows/release.yml` automate both platforms.

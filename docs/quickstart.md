@@ -18,16 +18,25 @@ pondline --version                  # pondline 0.1.0 (commit <sha>)
 ```
 
 That puts the release tree in `$PREFIX/lib/pondline/` and the
-`pondline` and `pondline-mailbox` commands in `$PREFIX/bin`; it never
-replaces a file it did not create, and never touches a running build's
-tree or your state directories. `make uninstall` (with the same `PREFIX`)
-removes it. The pieces are separate targets too: `make release` builds
-the tree into `build/release/<platform>/pondline`, `make release-smoke`
-boots it with no Erlang on the `PATH` and pairs two daemons through a
-mailbox, and `make dist` packs it into a tarball with a SHA-256, which
-installs itself with `PREFIX=... ./install.sh` once unpacked. Releases are
-built and tested on macOS on Apple silicon only; the Linux recipe in
-[ADR-003](adr/003-packaging.md) is written but has never been run.
+`pondline`, `pondline-mailbox`, and `pondline-update` commands in
+`$PREFIX/bin`; it never replaces a file it did not create, and never
+touches a running build's tree or your state directories. On a machine
+without the build toolchain, install or update from a published GitHub
+release (macOS `darwin-arm64` and Linux `linux-x86_64`):
+
+```bash
+curl -fsSL https://github.com/Roasbeef/pondline/releases/latest/download/install.sh | bash
+pondline-update --check             # check installed build against latest release
+pondline-update                     # verify SHA-256 and switch current atomically
+```
+
+`make uninstall` (with the same `PREFIX`) removes it. The pieces are
+separate targets too: `make release` builds the tree into
+`build/release/<platform>/pondline`, `make release-smoke` boots it with no
+Erlang on the `PATH` and pairs two daemons through a mailbox, `make dist`
+packs it into a tarball with a SHA-256, and `make release-linux` builds
+and smoke-tests the `linux-x86_64` bundle inside a clean Ubuntu 24.04
+container ([ADR-003](adr/003-packaging.md)).
 
 ## Trying it on one machine
 
