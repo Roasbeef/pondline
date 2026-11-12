@@ -72,9 +72,9 @@ fn default_state_dir() -> option.Option(String) {
 
 /// Writes an outcome's output and exits with its status.
 fn emit(outcome: Outcome) -> Nil {
-  // Standard output is written first and as raw bytes, so a payload is
-  // never re-encoded.
-  let _ = ffi_local_system.write_stdout(outcome.stdout)
+  // Standard output is written first as raw bytes directly to fd 1; a failed
+  // stdout write on a command that succeeded must fail rather than exit 0.
+  let stdout_result = ffi_local_system.write_stdout(outcome.stdout)
 
   // Standard error is written only when there is something to say.
   case outcome.stderr {
@@ -82,9 +82,13 @@ fn emit(outcome: Outcome) -> Nil {
     message -> io.println_error(message)
   }
 
-  // Success returns normally, and any other status halts the VM with it.
-  case outcome.status {
-    0 -> Nil
-    status -> ffi_local_system.halt(status)
+  // Exit non-zero if the command failed or if writing stdout itself failed.
+  case outcome.status, stdout_result {
+    0, Ok(Nil) -> Nil
+    0, Error(reason) -> {
+      io.println_error("pondline: could not write standard output: " <> reason)
+      ffi_local_system.halt(cli.exit_local)
+    }
+    status, _ -> ffi_local_system.halt(status)
   }
 }

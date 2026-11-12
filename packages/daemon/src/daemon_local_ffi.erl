@@ -137,19 +137,22 @@ file_mode(Path) ->
         {error, Reason} -> reason(Reason)
     end.
 
-%% Writes raw bytes to standard output. The io server would re-encode
-%% bytes above 127, so this goes through the file descriptor path.
+%% Writes raw bytes directly to file descriptor 1 via an OTP fd port. Unlike
+%% `io`, this never UTF-8 re-encodes binary payloads, and unlike opening
+%% `/dev/stdout` by path, it works inside macOS seatbelt and chroot sandboxes.
+write_stdout(<<>>) ->
+    {ok, nil};
 write_stdout(Bytes) ->
-    case file:open("/dev/stdout", [append, raw, binary]) of
-        {ok, Fd} ->
-            Result = file:write(Fd, Bytes),
-            _ = file:close(Fd),
-            case Result of
-                ok -> {ok, nil};
-                {error, Reason} -> reason(Reason)
-            end;
-        {error, Reason} ->
-            reason(Reason)
+    try
+        Port = erlang:open_port({fd, 0, 1}, [out, binary, stream]),
+        try
+            true = erlang:port_command(Port, Bytes),
+            {ok, nil}
+        after
+            try erlang:port_close(Port) catch _:_ -> ok end
+        end
+    catch
+        _:Reason -> reason(Reason)
     end.
 
 %% Reads standard input to its end, giving up with `too_large` once more

@@ -24,12 +24,19 @@ getenv(Name) ->
 %% A short path under /tmp: a unix socket path is limited to about 100
 %% bytes, and the platform temp directory can already use most of that.
 make_scratch_dir() ->
-    %% The VM's unique integers restart at every run, so a directory left by an
-    %% earlier run would collide; the os pid keeps runs apart.
-    Dir = "/tmp/rwtor-" ++ os:getpid() ++ "-"
-          ++ integer_to_list(erlang:unique_integer([positive])),
-    ok = file:make_dir(Dir),
-    list_to_binary(Dir).
+    %% Prefer /tmp so AF_UNIX socket paths stay short, falling back to TMPDIR
+    %% when running inside a sandbox that denies literal /tmp writes.
+    Leaf = "t" ++ os:getpid() ++ "-" ++ integer_to_list(erlang:unique_integer([positive])),
+    Primary = "/tmp/" ++ Leaf,
+    case file:make_dir(Primary) of
+        ok -> list_to_binary(Primary);
+        {error, _} ->
+            Base = case os:getenv("TMPDIR") of false -> "build"; V -> string:trim(V, trailing, "/") end,
+            Fallback = Base ++ "/" ++ Leaf,
+            ok = filelib:ensure_dir(Fallback),
+            ok = file:make_dir(Fallback),
+            list_to_binary(Fallback)
+    end.
 
 remove_dir(Dir) ->
     _ = file:del_dir_r(binary_to_list(Dir)),
