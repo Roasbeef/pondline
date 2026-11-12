@@ -18,8 +18,10 @@ the protocol logic stays pure.
   Fallible operations return `Result(_, Nil)` and never raise.
 - `primitives/internal/ffi_crypto`: the externals, confined here by the FFI
   rule.
-- `src/primitives_ffi.erl`: the Erlang shim. Every wrapper catches every
-  exception.
+- `src/primitives_ffi.erl`: the Erlang shim. Every fallible key or verification
+  wrapper catches exceptions so key material cannot leak through crash reports;
+  total operations (`sha256`, `hmac_sha256`, `equal`, `random_bytes`, keypair
+  generation and `openssl_version`) stay direct calls.
 - `primitives/suite`: `suite()`, the production `core/crypto/suite.Suite`
   built from the functions above. The only place the record is filled with
   real implementations; the fake lives in `core`'s `test/` only.
@@ -42,9 +44,10 @@ None. Pure function calls into OpenSSL; no processes, no messages.
 
 ## Invariants
 
-- No exception leaves `primitives_ffi`. OTP's crypto errors carry their
-  arguments, which are keys, so a raised error would print a private key
-  into a crash report.
+- Fallible key and verification operations catch every exception inside
+  `primitives_ffi` and return `Error(Nil)` or `False`. OTP's crypto errors carry
+  their arguments, which are keys, so an uncaught error on a bad key or input
+  would print key material into a crash report.
 - Every primitive matches its standard's published vectors
   (`test/primitives/known_answer_test.gleam`: RFC 7748, 8032, 8439, 4231,
   FIPS 180-4). ML-KEM, which has no deterministic key generation through

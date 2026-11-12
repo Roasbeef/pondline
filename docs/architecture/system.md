@@ -5,7 +5,7 @@ another's through a mailbox that stores only padded ciphertext. This
 document shows how the packages and operating-system processes fit
 together, how one message travels from the local API of the sender to the
 local API of the receiver and back as a receipt, and which mechanism
-makes each step survive a crash. It reflects the code at `632db2f`.
+makes each step survive a crash. It reflects the code at `49a51b3`.
 
 The protocol itself is in [../spec.md](../spec.md), the reasons for it in
 [../design-intent.md](../design-intent.md), and the mailbox service in
@@ -136,13 +136,7 @@ mailbox never sees a client address, because its only listener is bound to
 `127.0.0.1` and the sidecar forwards every stream to it
 ([ADR-001](../adr/001-tor-sidecar.md)).
 
-The `daemon` command runs the daemon tree and the local API in one BEAM.
-Every other `pondline` command is a client: it connects to `api.sock` in the
-state directory, sends one request line and prints the reply
-(`daemon/cli_run.gleam`, `daemon/local_api_client.gleam`). The state
-directory is mode `0700` and the socket `0600`; a scoped credential
-separates the agent from the operator inside that boundary
-(`daemon/credential.gleam`).
+The `daemon` command runs the daemon tree and the local API in one BEAM, reading its mailbox endpoint, carrier and optional sidecar path from `<state-dir>/config.json` or materializing them from an explicit setup ([ADR-015](../adr/015-grant-tokens-and-daemon-config.md)). `pondline init` writes `provision.cap`, `config.json` and the local API credentials ahead of time without starting the runtime. Every other `pondline` command is a client: it defaults `--state-dir` to `$PONDLINE_STATE_DIR` or `$HOME/.pondline`, connects to `api.sock`, resolves a non-hex `--contact` selector via a `contacts` lookup before sending the main request, and prints the reply (`daemon/cli_run.gleam`, `daemon/local_api_client.gleam`). The state directory is mode `0700` and the socket `0600`; a scoped credential separates the agent from the operator inside that boundary (`daemon/credential.gleam`).
 
 Two daemons never share a state directory: `daemon/lock` holds an exclusive SQLite transaction on
 `lock.db`, which the operating system releases when the process dies.
@@ -190,7 +184,7 @@ without the scheduler, provisioner and fetch manager, so local commands
 commit and nothing touches the network.
 
 The engine reaches the workers through exactly one function. It calls
-`notify` after each commit, and `route_notice` (`daemon/node.gleam:457`)
+`notify` after each commit, and `route_notice` (`daemon/node.gleam:460`)
 maps a notice to a nudge: `Transmit` to `scheduler.nudge`, `CreateQueue` to
 `provisioner.nudge`, `Topology` to `fetch_manager.nudge`, and
 `WakeAdapter` and `Changed` to the `events` list. Every nudge is advisory,
@@ -236,7 +230,7 @@ The mailbox side of the `Append` in step 10 of the diagram is the Append pipelin
    credential and the scope, in that order, before it decodes arguments. The
    send payload becomes a `Secret` at `local_api.parse_send` and stays one
    until the engine seals it.
-2. **Plan.** `engine.send` (`daemon/engine.gleam:782`) runs the job inside
+2. **Plan.** `engine.send` (`daemon/engine.gleam:799`) runs the job inside
    the engine actor: it loads the relationship, calls the pure
    `relationship.send` with the real `Suite` and the injected clock, and
    receives a `Plan` of records. The ciphertext in the plan is final; no
@@ -245,7 +239,7 @@ The mailbox side of the `Append` in step 10 of the diagram is the Append pipelin
    relationship state with a version check, the `Outbound` record as an
    `outbox` row with status `queued`, and the `sent_messages` row in one
    `BEGIN IMMEDIATE` transaction. `engine.commit_change`
-   (`daemon/engine.gleam:1575`) calls `notify` only after the commit
+   (`daemon/engine.gleam:1592`) calls `notify` only after the commit
    returned. An idempotency key (`KeyedSend`, ADR-011) commits its
    `send_keys` row in the same transaction, so a retry after a lost answer
    queues nothing new.
@@ -306,7 +300,7 @@ sequenceDiagram
    a 120_000 ms deadline (`ack_deadline_ms`, `poll_deadline_ms`). A failure
    enters `BackingOff` with `backoff_ms` between 500 and 30_000.
 9. **Process.** `process_batch` hands each envelope to `engine.process`
-   (`daemon/engine.gleam:1018`). `handle_envelope` treats an envelope as a
+   (`daemon/engine.gleam:1035`). `handle_envelope` treats an envelope as a
    repeat only when its identifier and digest both match its `Processed`
    row; a repeat marks the row unacknowledged and delivers nothing. Any
    other envelope is counted (`store.count_attempt`), quarantined if the
@@ -361,9 +355,11 @@ outside the message path but uses the same machinery.
   only API calls that reach a mailbox from the caller's own process.
 - A queue is first a committed inbox row. The provisioner (a one-state
   `weft/state_machine`) sends `CreateQueue` for committed inboxes using the
-  provisioning capability read from `--provision-file`, then calls
-  `engine.provisioned`. The mailbox operator creates that capability with
-  `mailbox grant`.
+  32-byte provisioning capability stored at `<state-dir>/provision.cap` (or
+  passed via `--provision-file`), then calls `engine.provisioned`. The mailbox
+  operator mints that capability with `pondline-mailbox grant`, exporting
+  either a raw 32-byte file or a `plg1...` codex32 grant token that bundles the
+  endpoint and capability ([ADR-015](../adr/015-grant-tokens-and-daemon-config.md)).
 - The fetch manager starts a fetcher for every live inbound queue, and for a
   retired queue that still holds committed unacknowledged envelopes, and
   stops fetchers whose queue is gone.
@@ -390,7 +386,7 @@ rather than by a recovery routine.
 
 Both SQLite files use `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`
 and `checkpoint_fullfsync=ON` (`daemon/store.gleam:502`,
-`mailbox/store.gleam:271`), so a commit that returned is on disk. The table
+`mailbox/store.gleam:288`), so a commit that returned is on disk. The table
 lists where a crash can land and what finds the work afterwards.
 
 | Crash or loss point | Durable state at that moment | What resumes the work |

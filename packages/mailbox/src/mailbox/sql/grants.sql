@@ -12,3 +12,9 @@ WHERE capability_hash = ?;
 -- name: UseGrant :exec
 UPDATE grants SET queues_used = queues_used + 1
 WHERE capability_hash = ?;
+
+-- name: GrantSummary :one
+SELECT COUNT(*) AS grants,
+       CAST(COALESCE(SUM(allowance), 0) AS INTEGER) AS allowance_total,
+       CAST(COALESCE(SUM(queues_used), 0) AS INTEGER) AS queues_used_total
+FROM grants;

@@ -165,6 +165,10 @@ pub const max_ticket_blob_bytes = 16_640
 /// from walking a pasted document.
 pub const max_ticket_bytes = 192
 
+/// The longest mailbox provisioning grant token a decoder reads (192 bytes).
+/// An onion grant token (`plg1...`) is 131 characters and a loopback one 75.
+pub const max_grant_token_bytes = 192
+
 /// The largest encoded route: an onion hostname, a port, a queue identifier
 /// and a capability, with framing (512 bytes).
 pub const max_route_bytes = 512

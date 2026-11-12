@@ -67,25 +67,12 @@ In order.
    into the arch doc. *Cut:* no driving of the real carrier or mist in the swarm,
    and no nightly job. Expect new production bugs; triage each as production,
    harness or policy.
-2. **Test the processed id-and-digest rule.** Reverting it passes the daemon's
-   whole suite and the swarm, so nothing defends it. Write the test directly
-   (one envelope id, different bytes, after its `Processed` row), mutation-checked.
-   **Exit:** the digest revert fails a daemon test.
-3. **Close the core test gaps** the survivors name: the `<=` limits on payload,
+2. **Close the core test gaps** the survivors name: the `<=` limits on payload,
    description and content type (R-class refusal exactly at a limit passes), the
    receipt in `AwaitingAccept`, `raise_budget`'s ceiling, `offer.expire`,
    `redeem`'s deadline, `recognise_retry`, `check_names`. Note that 18 of 62 written
    mutants were cut unrun. **Exit:** those mutants die in `packages/core`.
-4. **Fix docs the code contradicts**, found while writing the READMEs.
-   `packages/lint/CLAUDE.md`, the `lint` module doc, `lint/cli` usage and
-   `scripts/lint.sh` describe a gating set, package counts and modules from another
-   repository; `packages/primitives/CLAUDE.md` overstates which wrappers catch
-   exceptions (`sha256` and the unkeyed functions don't, by design); the comment on
-   `primitives.openssl_version` says a release checks it at startup and nothing
-   calls it, which is either stale or a missing check; `relationship` and
-   `plan.DeliveryStatus` say an expired message is recorded and it isn't.
-   **Exit:** each corrected, or the missing check added.
-5. **Rewrite this file** at the end of that body of work.
+3. **Rewrite this file** at the end of that body of work.
 
 ## Rulings already made
 
@@ -119,6 +106,7 @@ idempotency key** (ADR-011).
 shape; the formatter must not raise** (ADR-012).
 **The invitation embeds the bundle and there is no join secret** (ADR-013).
 **The project is Pondline, on the wire as well as in the docs** (ADR-014).
+**Provisioning grants travel as `plg1` codex32 tokens, daemons persist `~/.pondline/config.json` via `pondline init`, and `pondline-tor` is auto-discovered or fails fast** (ADR-015).
 **The license is MIT, and security reports go through GitHub's private reporting**
 (`LICENSE`, `SECURITY.md`).
 **One agent per daemon, a per-pairing message budget, a plaintext audit log, HTTP

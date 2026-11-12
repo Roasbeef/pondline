@@ -2,11 +2,12 @@ import core/id
 import core/offer.{AutoApprove, OperatorApproves}
 import daemon/api
 import daemon/cli.{
-  AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, CreateInvite,
-  DaemonOptions, DeclineContact, Encoded, FromInvitation, FromTicket,
-  HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput, ListContacts,
-  MessageStatus, RaiseBudget, Raw, ReceiveMessages, RunDaemon, SendMessage,
-  ShowAudit, ShowHealth, ShowIncidents, Target, TicketAndFile, TicketOnly,
+  AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, ContactEntry,
+  CreateInvite, DeclineContact, Encoded, ExactContact, FromInvitation,
+  FromTicket, HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput,
+  ListContacts, LookupContact, MessageStatus, RaiseBudget, Raw, ReceiveMessages,
+  RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents, Target,
+  TicketAndFile, TicketOnly,
 }
 import daemon/local_api_protocol as protocol
 import gleam/json
@@ -79,11 +80,20 @@ pub fn invite_create_with_a_ticket_test() {
 pub fn invite_accept_with_a_ticket_test() {
   let assert Ok(Client(action:, ..)) =
     parse(["invite", "accept", "--ticket", "--stdin", ..common])
-  assert action == AcceptInvite(InputStdin, FromTicket, "")
+  assert action == AcceptInvite(InputStdin, FromTicket, "", None)
 
   let assert Ok(Client(action:, ..)) =
-    parse(["invite", "accept", "--ticket", "--file", "t.txt", ..common])
-  assert action == AcceptInvite(InputFile("t.txt"), FromTicket, "")
+    parse([
+      "invite",
+      "accept",
+      "--ticket",
+      "--file",
+      "t.txt",
+      "--budget",
+      "40",
+      ..common
+    ])
+  assert action == AcceptInvite(InputFile("t.txt"), FromTicket, "", Some(40))
 
   assert parse(["invite", "accept", "--ticket", ..common])
     == Error("give exactly one of --file and --stdin")
@@ -92,7 +102,7 @@ pub fn invite_accept_with_a_ticket_test() {
 pub fn invite_accept_test() {
   let assert Ok(Client(action:, ..)) =
     parse(["invite", "accept", "--file", "a.invite", ..common])
-  assert action == AcceptInvite(InputFile("a.invite"), FromInvitation, "")
+  assert action == AcceptInvite(InputFile("a.invite"), FromInvitation, "", None)
 
   let assert Ok(Client(action:, ..)) =
     parse([
@@ -104,7 +114,7 @@ pub fn invite_accept_test() {
       "alice",
       ..common
     ])
-  assert action == AcceptInvite(InputFile("a"), FromInvitation, "alice")
+  assert action == AcceptInvite(InputFile("a"), FromInvitation, "alice", None)
 }
 
 pub fn contacts_and_contact_commands_test() {
@@ -113,19 +123,23 @@ pub fn contacts_and_contact_commands_test() {
 
   let assert Ok(Client(action:, ..)) =
     parse(["contact", "approve", "--contact", hex, ..common])
-  assert action == ApproveContact(identifier(hex))
+  assert action == ApproveContact(ExactContact(identifier(hex)))
 
   let assert Ok(Client(action:, ..)) =
     parse(["contact", "decline", "--contact", hex, ..common])
-  assert action == DeclineContact(identifier(hex))
+  assert action == DeclineContact(ExactContact(identifier(hex)))
 
   let assert Ok(Client(action:, ..)) =
     parse(["contact", "close", "--contact", hex, ..common])
-  assert action == CloseContact(identifier(hex))
+  assert action == CloseContact(ExactContact(identifier(hex)))
 
   let assert Ok(Client(action:, ..)) =
     parse(["contact", "budget", "--contact", hex, "--add", "9", ..common])
-  assert action == RaiseBudget(identifier(hex), 9)
+  assert action == RaiseBudget(ExactContact(identifier(hex)), 9)
+
+  let assert Ok(Client(action: named_approve, ..)) =
+    parse(["contact", "approve", "--contact", "alice", ..common])
+  assert named_approve == ApproveContact(LookupContact("alice"))
 }
 
 pub fn send_takes_its_payload_from_exactly_one_source_test() {
@@ -133,7 +147,7 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
     parse(["send", "--contact", hex, "--file", "p.bin", ..common])
   assert action
     == SendMessage(
-      identifier(hex),
+      ExactContact(identifier(hex)),
       "application/octet-stream",
       InputFile("p.bin"),
       None,
@@ -154,7 +168,7 @@ pub fn send_takes_its_payload_from_exactly_one_source_test() {
     ])
   assert action
     == SendMessage(
-      identifier(hex),
+      ExactContact(identifier(hex)),
       "text/plain",
       InputStdin,
       Some(identifier(hex2)),
@@ -185,7 +199,8 @@ pub fn receive_test() {
 
   let assert Ok(Client(action:, ..)) =
     parse(["receive", "--contact", hex, "--max", "4", "--wait", "25", ..common])
-  assert action == ReceiveMessages(Some(identifier(hex)), 4, 25, Encoded)
+  assert action
+    == ReceiveMessages(Some(ExactContact(identifier(hex))), 4, 25, Encoded)
 
   // `--raw` prints one message, so the count is one.
   let assert Ok(Client(action:, ..)) = parse(["receive", "--raw", ..common])
@@ -213,7 +228,7 @@ pub fn ack_status_audit_health_test() {
 
   let assert Ok(Client(action:, ..)) =
     parse(["audit", "--contact", hex, "--limit", "7", ..common])
-  assert action == ShowAudit(Some(identifier(hex)), 7)
+  assert action == ShowAudit(Some(ExactContact(identifier(hex))), 7)
 
   let assert Ok(Client(action:, ..)) = parse(["incidents", ..common])
   assert action == ShowIncidents(50)
@@ -232,22 +247,52 @@ pub fn daemon_test() {
       "daemon", "--state-dir", "/s", "--mailbox", "abc.onion:80",
       "--provision-file", "/p",
     ])
-  assert options == DaemonOptions("/s", "abc.onion:80", "/p", cli.Tor, None)
+  assert options
+    == cli.DaemonCommand(
+      "/s",
+      cli.ExplicitMailbox("abc.onion:80", "/p"),
+      None,
+      None,
+    )
 
   let assert Ok(RunDaemon(options)) =
     parse([
       "daemon", "--state-dir", "/s", "--mailbox", "127.0.0.1:8080",
       "--provision-file", "/p", "--carrier", "loopback", "--tor-bin", "/bin/tor",
     ])
-  assert options.carrier == cli.Loopback
+  assert options.carrier == Some(cli.Loopback)
   assert options.tor_bin == Some("/bin/tor")
+
+  let assert Ok(RunDaemon(grant_opts)) =
+    parse(["daemon", "--state-dir", "/s", "--grant-stdin"])
+  assert grant_opts.setup == cli.GrantMailbox(InputStdin)
+
+  let assert Ok(RunDaemon(grant_file_opts)) =
+    parse(["daemon", "--state-dir", "/s", "--grant-file", "/g"])
+  assert grant_file_opts.setup == cli.GrantMailbox(InputFile("/g"))
+  assert result_is_error(
+    parse(["daemon", "--state-dir", "/s", "--grant-file", "/g", "--grant-stdin"]),
+  )
+  assert result_is_error(
+    parse([
+      "daemon",
+      "--state-dir",
+      "/s",
+      "--mailbox",
+      "h:80",
+      "--provision-file",
+      "/p",
+      "--grant-stdin",
+    ]),
+  )
 
   let base = ["daemon", "--state-dir", "/s", "--provision-file", "/p"]
   assert result_is_error(parse(list.append(base, ["--mailbox", "nohost"])))
   assert result_is_error(parse(list.append(base, ["--mailbox", "h:0"])))
   assert result_is_error(parse(list.append(base, ["--mailbox", "h:99999"])))
   assert result_is_error(parse(list.append(base, ["--mailbox", ":80"])))
-  assert result_is_error(parse(["daemon", "--state-dir", "/s"]))
+  let assert Ok(RunDaemon(saved_opts)) = parse(["daemon", "--state-dir", "/s"])
+  assert saved_opts == cli.DaemonCommand("/s", cli.SavedMailbox, None, None)
   assert result_is_error(
     parse(list.append(base, ["--mailbox", "h:80", "--carrier", "pigeon"])),
   )
@@ -279,6 +324,38 @@ pub fn the_target_is_resolved_from_options_and_environment_test() {
   let assert Ok(Client(target:, ..)) =
     parse(["health", "--socket", "/x.sock", "--credential-file", "/c"])
   assert target == Target("/x.sock", "/c")
+}
+
+pub fn init_and_default_state_dir_test() {
+  let env =
+    cli.Environment(
+      credential_file: None,
+      default_state_dir: Some("/home/u/.pondline"),
+    )
+  let assert Ok(Client(target:, ..)) = cli.parse_with_env(["health"], env)
+  assert target
+    == Target("/home/u/.pondline/api.sock", "/home/u/.pondline/operator.cred")
+
+  // Explicit `--socket` without `--state-dir` never borrows `~/.pondline/operator.cred`.
+  assert result_is_error(cli.parse_with_env(
+    ["health", "--socket", "/other.sock"],
+    env,
+  ))
+
+  let assert Ok(cli.InitDaemon(init_cmd)) =
+    cli.parse_with_env(["init", "--stdin"], env)
+  assert init_cmd
+    == cli.InitCommand(
+      "/home/u/.pondline",
+      cli.GrantMailbox(InputStdin),
+      cli.Tor,
+      None,
+      HumanOutput,
+    )
+
+  let assert Ok(RunDaemon(bare_daemon)) = cli.parse_with_env(["daemon"], env)
+  assert bare_daemon
+    == cli.DaemonCommand("/home/u/.pondline", cli.SavedMailbox, None, None)
 }
 
 pub fn json_output_is_a_flag_test() {
@@ -325,6 +402,7 @@ fn every_command() -> List(List(String)) {
     ["audit"],
     ["incidents"],
     ["health"],
+    ["init", "--stdin"],
     ["daemon", "--mailbox", "h:80", "--provision-file", "p"],
   ]
 }
@@ -386,6 +464,29 @@ pub fn no_command_accepts_a_ticket_in_argv_test() {
   })
 }
 
+pub fn no_command_accepts_a_grant_token_in_argv_test() {
+  let grant_token = "plg1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+  let commands = [["daemon", "--grant-stdin"], ..every_command()]
+
+  list.each(commands, fn(command) {
+    list.each(
+      [
+        [grant_token],
+        ["--grant", grant_token],
+        ["--grant-token", grant_token],
+        ["--grant-stdin=" <> grant_token],
+      ],
+      fn(extra) {
+        let line = list.flatten([command, extra, common])
+        let assert Error(message) = parse(line)
+
+        assert !string.contains(message, grant_token)
+        assert !string.contains(message, "plg1")
+      },
+    )
+  })
+}
+
 /// The CLI waits for an invitation or a ticket's redemption at least as
 /// long as the daemon may work on it, so it never reports a failure for an
 /// invitation that is then created or a contact that is then accepted.
@@ -396,8 +497,29 @@ pub fn the_cli_outwaits_the_daemon_on_invitations_test() {
   assert cli.invitation_timeout_ms >= daemon_bound
   assert cli.timeout_ms(CreateInvite("d", AutoApprove, 1, TicketOnly))
     == cli.invitation_timeout_ms
-  assert cli.timeout_ms(AcceptInvite(InputStdin, FromTicket, ""))
+  assert cli.timeout_ms(AcceptInvite(InputStdin, FromTicket, "", None))
     == cli.invitation_timeout_ms
+}
+
+pub fn contact_ref_resolution_and_disambiguation_test() {
+  let c1 = identifier("ab12cd340000000000000000000000aa")
+  let c2 = identifier(hex2)
+  let entries = [
+    ContactEntry(c1, "closed", "Alice"),
+    ContactEntry(c2, "active", "Alice"),
+  ]
+  // Live contact wins over a closed contact sharing the same petname.
+  assert cli.resolve_contact_ref(entries, "alice") == Ok(c2)
+  // >=4-char hex prefix resolves uniquely.
+  assert cli.resolve_contact_ref(entries, "ab12cd") == Ok(c1)
+  // Two active contacts sharing a name fail closed as ambiguous.
+  let dup = [
+    ContactEntry(c1, "active", "bob"),
+    ContactEntry(c2, "active", "bob"),
+  ]
+  assert result_is_error(cli.resolve_contact_ref(dup, "bob"))
+  assert cli.resolve_contact_ref(entries, "nobody")
+    == Error("no contact matching \"nobody\"")
 }
 
 pub fn requests_carry_the_wire_shape_test() {

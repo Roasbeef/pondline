@@ -28,13 +28,18 @@
 //// by way of the backend module, serves the local API and then waits
 //// forever.
 
+import core/capability
+import core/endpoint.{TorOnly, TorOrLoopback}
+import core/grant
+import core/id
 import core/limits
 import core/secret
 import daemon/build
 import daemon/cli.{
-  type Action, type Command, type Input, type Output, type Target, Client,
-  CreateInvite, Help, InputFile, InputStdin, JsonOutput, NoInput, RunDaemon,
-  Version,
+  type Action, type Carrier, type Command, type Input, type Output, type Target,
+  Client, CreateInvite, DaemonOptions, ExplicitMailbox, GrantMailbox, Help,
+  HumanOutput, InitDaemon, InputFile, InputStdin, JsonOutput, Loopback, NoInput,
+  RunDaemon, SavedMailbox, Tor, Version,
 }
 import daemon/cli_render
 import daemon/credential
@@ -43,13 +48,18 @@ import daemon/local_api
 import daemon/local_api_backend
 import daemon/local_api_client.{CannotConnect, ConnectionFailed, MalformedReply}
 import daemon/local_api_protocol as protocol
+import daemon/lock
+import daemon/node
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/io
 import gleam/json
-import gleam/option.{None, Some}
+import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import simplifile
 
 /// The largest input file `pondline` reads, in bytes. A payload is at most
@@ -78,14 +88,25 @@ pub fn run(command: Command) -> Outcome {
     Version ->
       Outcome(cli.exit_ok, <<build.describe(build.current()):utf8, "\n">>, "")
 
+    InitDaemon(init_cmd) -> run_init(init_cmd)
     RunDaemon(options) -> run_daemon(options)
     Client(target:, output:, action:) -> run_client(target, output, action)
   }
 }
 
 /// Starts the runtime and the local API, announces the socket and waits.
-fn run_daemon(options: cli.DaemonOptions) -> Outcome {
+fn run_daemon(command: cli.DaemonCommand) -> Outcome {
+  case resolve_daemon_options(command) {
+    Error(outcome) -> outcome
+    Ok(options) -> start_resolved_daemon(options)
+  }
+}
+
+/// Boots a daemon whose mailbox endpoint and provisioning file are resolved.
+fn start_resolved_daemon(options: cli.DaemonOptions) -> Outcome {
   let started = {
+    use Nil <- result.try(check_daemon_sidecar(options))
+    use Nil <- result.try(check_state_dir_unlocked_msg(options.state_dir))
     use credentials <- result.try(credential.ensure(options.state_dir))
     use backend <- result.try(local_api_backend.start_node(options))
 
@@ -106,6 +127,434 @@ fn run_daemon(options: cli.DaemonOptions) -> Outcome {
 
     Error(message) -> failure(cli.exit_unavailable, message)
   }
+}
+
+/// Runs `pondline init`: materializes `provision.cap`, `config.json`, and credentials.
+fn run_init(command: cli.InitCommand) -> Outcome {
+  let initialized = {
+    use Nil <- result.try(check_explicit_tor_bin(command.tor_bin))
+    use options <- result.try(materialize_and_save_config(
+      command.state_dir,
+      command.setup,
+      command.carrier,
+      command.tor_bin,
+    ))
+    use _credentials <- result.map(
+      credential.ensure(command.state_dir)
+      |> result.map_error(failure(cli.exit_local, _)),
+    )
+    options
+  }
+
+  // Render human confirmation or a structured JSON envelope.
+  case initialized, command.output {
+    Error(outcome), _ -> outcome
+    Ok(options), HumanOutput -> {
+      let line =
+        "initialized "
+        <> options.state_dir
+        <> " for "
+        <> options.mailbox
+        <> " ("
+        <> carrier_name(options.carrier)
+        <> ")\n"
+      Outcome(cli.exit_ok, <<line:utf8>>, "")
+    }
+    Ok(options), JsonOutput -> {
+      let body =
+        json.object([
+          #("ok", json.bool(True)),
+          #(
+            "result",
+            json.object([
+              #("state_dir", json.string(options.state_dir)),
+              #("mailbox", json.string(options.mailbox)),
+              #("carrier", json.string(carrier_name(options.carrier))),
+            ]),
+          ),
+        ])
+        |> json.to_string
+      Outcome(cli.exit_ok, <<body:utf8, "\n">>, "")
+    }
+  }
+}
+
+/// Resolves `DaemonCommand` into `DaemonOptions`, saving `<state_dir>/config.json`
+/// when explicit or grant options were supplied and loading it on `SavedMailbox`.
+fn resolve_daemon_options(
+  command: cli.DaemonCommand,
+) -> Result(cli.DaemonOptions, Outcome) {
+  // SavedMailbox loads persisted config and applies optional CLI overrides;
+  // ExplicitMailbox and GrantMailbox validate and persist fresh config first.
+  case command.setup {
+    SavedMailbox -> {
+      use saved <- result.map(load_daemon_config(command.state_dir))
+      let chosen_carrier = option.unwrap(command.carrier, saved.carrier)
+      let chosen_tor = option.or(command.tor_bin, saved.tor_bin)
+      DaemonOptions(..saved, carrier: chosen_carrier, tor_bin: chosen_tor)
+    }
+
+    ExplicitMailbox(..) | GrantMailbox(..) -> {
+      let chosen_carrier = option.unwrap(command.carrier, Tor)
+      use Nil <- result.try(check_carrier_sidecar(
+        chosen_carrier,
+        command.tor_bin,
+      ))
+      materialize_and_save_config(
+        command.state_dir,
+        command.setup,
+        chosen_carrier,
+        command.tor_bin,
+      )
+    }
+  }
+}
+
+/// Materializes `<state_dir>/provision.cap` and writes `<state_dir>/config.json` (0600).
+/// Validates both capability bytes and carrier policy admission in memory first so a
+/// refused re-initialization never overwrites an existing `provision.cap`.
+fn materialize_and_save_config(
+  state_dir: String,
+  setup: cli.MailboxSetup,
+  chosen_carrier: Carrier,
+  tor_bin: Option(String),
+) -> Result(cli.DaemonOptions, Outcome) {
+  // Decode and validate capability bytes in memory before touching disk.
+  use #(mailbox_text, cap_bytes) <- result.try(case setup {
+    ExplicitMailbox(mailbox:, provision_file:) ->
+      read_explicit_provision(mailbox, provision_file)
+    GrantMailbox(source:) -> {
+      use raw <- result.try(read_input(source))
+      decode_grant_token(raw)
+    }
+    SavedMailbox -> Error(failure(cli.exit_usage, "missing setup input"))
+  })
+
+  use canonical_mailbox <- result.try(admit_mailbox_for_carrier(
+    mailbox_text,
+    chosen_carrier,
+  ))
+  use Nil <- result.try(check_state_dir_unlocked(state_dir))
+  use Nil <- result.try(prepare_private_state_dir(state_dir))
+  let provision_file = state_dir <> "/provision.cap"
+  use Nil <- result.try(write_private_state_file(provision_file, cap_bytes))
+  use Nil <- result.map(write_config_file(
+    state_dir,
+    canonical_mailbox,
+    chosen_carrier,
+    tor_bin,
+  ))
+  DaemonOptions(
+    state_dir:,
+    mailbox: canonical_mailbox,
+    provision_file:,
+    carrier: chosen_carrier,
+    tor_bin:,
+  )
+}
+
+/// Verifies `state_dir` is not currently held by a running daemon before mutating files.
+fn check_state_dir_unlocked(state_dir: String) -> Result(Nil, Outcome) {
+  check_state_dir_unlocked_msg(state_dir)
+  |> result.map_error(failure(cli.exit_unavailable, _))
+}
+
+/// Returns an error string when `<state_dir>/lock.db` exists and is held by a live daemon.
+fn check_state_dir_unlocked_msg(state_dir: String) -> Result(Nil, String) {
+  let lock_path = state_dir <> "/" <> node.lock_file
+
+  // Only an existing lock file can be held; probing a missing directory would create nothing.
+  case simplifile.is_file(lock_path) {
+    Ok(True) ->
+      case lock.is_free(lock_path) {
+        True -> Ok(Nil)
+        False -> Error("another daemon holds this state directory")
+      }
+    _ -> Ok(Nil)
+  }
+}
+
+/// Resolves `pondline-tor` upfront when `daemon` runs under `--carrier tor`.
+fn check_carrier_sidecar(
+  chosen_carrier: Carrier,
+  tor_bin: Option(String),
+) -> Result(Nil, Outcome) {
+  case chosen_carrier {
+    Loopback -> check_explicit_tor_bin(tor_bin)
+    Tor ->
+      local_api_backend.resolve_default_tor_bin(tor_bin)
+      |> result.replace(Nil)
+      |> result.map_error(failure(cli.exit_unavailable, _))
+  }
+}
+
+/// Checks `pondline-tor` for `start_resolved_daemon` before creating credentials.
+fn check_daemon_sidecar(options: cli.DaemonOptions) -> Result(Nil, String) {
+  case options.carrier {
+    Loopback -> Ok(Nil)
+    Tor ->
+      local_api_backend.resolve_default_tor_bin(options.tor_bin)
+      |> result.replace(Nil)
+  }
+}
+
+/// Verifies an explicit `--tor-bin` file exists before saving it in `config.json`.
+fn check_explicit_tor_bin(tor_bin: Option(String)) -> Result(Nil, Outcome) {
+  case tor_bin {
+    None -> Ok(Nil)
+    Some(path) ->
+      case simplifile.is_file(path) {
+        Ok(True) -> Ok(Nil)
+        _ ->
+          Error(failure(
+            cli.exit_local,
+            "pondline-tor binary not found at " <> path,
+          ))
+      }
+  }
+}
+
+/// Reads and validates a 32-byte provisioning capability file in memory.
+fn read_explicit_provision(
+  mailbox: String,
+  source_file: String,
+) -> Result(#(String, BitArray), Outcome) {
+  use bytes <- result.try(
+    simplifile.read_bits(source_file)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_unavailable,
+        "the provisioning file is missing or malformed",
+      )
+    }),
+  )
+  use _cap <- result.map(
+    capability.from_bytes(bytes)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_unavailable,
+        "the provisioning file is missing or malformed",
+      )
+    }),
+  )
+  #(mailbox, bytes)
+}
+
+/// Verifies that `mailbox_text` parses and is permitted by `chosen_carrier`.
+fn admit_mailbox_for_carrier(
+  mailbox_text: String,
+  chosen_carrier: Carrier,
+) -> Result(String, Outcome) {
+  use parsed <- result.try(
+    endpoint.parse(mailbox_text)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_refused,
+        "--mailbox must be ONION:PORT or 127.0.0.1:PORT",
+      )
+    }),
+  )
+
+  // Map the CLI carrier flag onto the runtime carrier policy.
+  let policy = case chosen_carrier {
+    Tor -> TorOnly
+    Loopback -> TorOrLoopback
+  }
+
+  use admitted <- result.map(
+    endpoint.admit(parsed, policy)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_refused, "loopback mailbox requires --carrier loopback")
+    }),
+  )
+  endpoint.to_string(admitted)
+}
+
+/// Writes `<state_dir>/config.json` atomically with mode 0600.
+fn write_config_file(
+  state_dir: String,
+  mailbox: String,
+  chosen_carrier: Carrier,
+  tor_bin: Option(String),
+) -> Result(Nil, Outcome) {
+  // Store an explicit `--tor-bin` only when supplied, leaving auto-discovery dynamic.
+  let tor_json = case tor_bin {
+    Some(path) -> json.string(path)
+    None -> json.null()
+  }
+
+  let payload =
+    json.object([
+      #("v", json.int(1)),
+      #("mailbox", json.string(mailbox)),
+      #("carrier", json.string(carrier_name(chosen_carrier))),
+      #("tor_bin", tor_json),
+    ])
+    |> json.to_string
+  write_private_state_file(state_dir <> "/config.json", <<payload:utf8, "\n">>)
+}
+
+/// Loads `<state_dir>/config.json` and verifies `<state_dir>/provision.cap` exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_run.load_daemon_config("/nonexistent")
+/// // -> Error(Outcome(6, <<>>, ...))
+/// ```
+pub fn load_daemon_config(
+  state_dir: String,
+) -> Result(cli.DaemonOptions, Outcome) {
+  let config_path = state_dir <> "/config.json"
+  let cap_path = state_dir <> "/provision.cap"
+  use text <- result.try(
+    simplifile.read(config_path)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_unavailable,
+        "no saved config in "
+          <> state_dir
+          <> "; run pondline init first or pass --mailbox/--provision-file or --grant-stdin",
+      )
+    }),
+  )
+
+  // Decode versioned fields with a total JSON decoder before checking admission.
+  let decoder = {
+    use version <- decode.field("v", decode.int)
+    use mailbox <- decode.field("mailbox", decode.string)
+    use carrier_str <- decode.field("carrier", decode.string)
+    use tor_bin <- decode.optional_field(
+      "tor_bin",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(#(version, mailbox, carrier_str, tor_bin))
+  }
+  use #(version, mailbox, carrier_str, tor_bin) <- result.try(
+    json.parse(text, decoder)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_unavailable, "malformed config in " <> config_path)
+    }),
+  )
+  use chosen_carrier <- result.try(parse_saved_carrier(
+    version,
+    carrier_str,
+    config_path,
+  ))
+  use canonical_mailbox <- result.try(admit_mailbox_for_carrier(
+    mailbox,
+    chosen_carrier,
+  ))
+  use _cap <- result.map(
+    simplifile.read_bits(cap_path)
+    |> result.map_error(fn(_) { Nil })
+    |> result.try(capability.from_bytes)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_unavailable, "missing or malformed " <> cap_path)
+    }),
+  )
+  DaemonOptions(
+    state_dir:,
+    mailbox: canonical_mailbox,
+    provision_file: cap_path,
+    carrier: chosen_carrier,
+    tor_bin:,
+  )
+}
+
+/// Validates the schema version and carrier field from `config.json`.
+fn parse_saved_carrier(
+  version: Int,
+  carrier_str: String,
+  config_path: String,
+) -> Result(Carrier, Outcome) {
+  case version, carrier_str {
+    1, "tor" -> Ok(Tor)
+    1, "loopback" -> Ok(Loopback)
+    _, _ ->
+      Error(failure(
+        cli.exit_unavailable,
+        "unsupported version or carrier in " <> config_path,
+      ))
+  }
+}
+
+/// Canonical string name of a `Carrier`.
+fn carrier_name(chosen_carrier: Carrier) -> String {
+  case chosen_carrier {
+    Tor -> "tor"
+    Loopback -> "loopback"
+  }
+}
+
+/// Creates `state_dir` with mode 0700.
+fn prepare_private_state_dir(state_dir: String) -> Result(Nil, Outcome) {
+  ffi_local_system.make_private_dir(state_dir)
+  |> result.map_error(fn(reason) {
+    failure(cli.exit_local, "could not prepare " <> state_dir <> ": " <> reason)
+  })
+}
+
+/// Atomically writes `bytes` to `path` with mode 0600.
+fn write_private_state_file(
+  path: String,
+  bytes: BitArray,
+) -> Result(Nil, Outcome) {
+  ffi_local_system.write_private_file(path, bytes)
+  |> result.map_error(fn(reason) {
+    failure(cli.exit_local, "could not write " <> path <> ": " <> reason)
+  })
+}
+
+/// Decodes a `plg1...` grant token and persists its 32-byte provisioning
+/// capability in `<state_dir>/provision.cap` with mode 0600.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_run.apply_grant_token("/tmp/pl", <<"not-a-grant":utf8>>)
+/// // -> Error(Outcome(5, <<>>, ...))
+/// ```
+pub fn apply_grant_token(
+  state_dir: String,
+  raw: BitArray,
+) -> Result(#(String, String), Outcome) {
+  use #(mailbox, cap_bytes) <- result.try(decode_grant_token(raw))
+  use Nil <- result.try(prepare_private_state_dir(state_dir))
+  let provision_file = state_dir <> "/provision.cap"
+  use Nil <- result.map(write_private_state_file(provision_file, cap_bytes))
+  #(mailbox, provision_file)
+}
+
+/// Decodes a `plg1...` grant token into `(mailbox_host_port, capability_bytes)` without writing to disk.
+fn decode_grant_token(raw: BitArray) -> Result(#(String, BitArray), Outcome) {
+  use text <- result.try(
+    bit_array.to_string(raw)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_refused, "the grant token is not text")
+    }),
+  )
+  use token <- result.map(
+    grant.decode(string.trim(text)) |> result.map_error(grant_decode_outcome),
+  )
+  #(
+    endpoint.to_string(grant.endpoint(token)),
+    capability.expose(grant.provision(token)),
+  )
+}
+
+/// Maps a `GrantError` to a clean refusal outcome without echoing input text.
+fn grant_decode_outcome(error: grant.GrantError) -> Outcome {
+  // Translate each decode failure into operator guidance without echoing input.
+  let reason = case error {
+    grant.NotAGrant -> "the input is not a plg1 grant token"
+    grant.BadChecksum -> "the grant token checksum failed; check for typos"
+    grant.UnknownFormat -> "the grant token uses an unsupported format"
+    grant.BadPayload -> "the grant token payload is malformed"
+  }
+
+  failure(cli.exit_refused, reason)
 }
 
 /// Runs one client command.
@@ -129,8 +578,14 @@ fn attempt(
   )
   use input <- result.try(read_input(cli.input_of(action)))
   use Nil <- result.try(check_ticket_text(action, input))
+  use resolved_action <- result.try(resolve_contacts_if_needed(
+    target,
+    output,
+    secret.expose(credential),
+    action,
+  ))
 
-  let #(op, args) = cli.request(action, input)
+  let #(op, args) = cli.request(resolved_action, input)
 
   // This is the one place the credential's bytes leave this module: onto
   // the socket the daemon owns, base64-encoded by the client.
@@ -140,7 +595,7 @@ fn attempt(
       secret.expose(credential),
       op,
       args,
-      cli.timeout_ms(action),
+      cli.timeout_ms(resolved_action),
     )
     |> result.map_error(unreachable(_, target.socket)),
   )
@@ -150,8 +605,100 @@ fn attempt(
     protocol.Failed(category:, message:) ->
       Ok(failed(output, line, category, message))
 
-    protocol.Succeeded(result:) -> succeeded(output, action, line, result)
+    protocol.Succeeded(result:) ->
+      succeeded(output, resolved_action, line, result)
   }
+}
+
+/// Queries `contacts` over the local socket only when `action` carries a `LookupContact`.
+fn resolve_contacts_if_needed(
+  target: Target,
+  output: Output,
+  credential_bytes: BitArray,
+  action: Action,
+) -> Result(Action, Outcome) {
+  // Exact 32-digit hex ids bypass the lookup RPC completely.
+  case cli.needs_contact_lookup(action) {
+    False -> Ok(action)
+    True -> {
+      use #(line, response) <- result.try(
+        local_api_client.exchange(
+          target.socket,
+          credential_bytes,
+          "contacts",
+          json.object([]),
+          10_000,
+        )
+        |> result.map_error(unreachable(_, target.socket)),
+      )
+      use entries <- result.try(decode_contact_entries(output, line, response))
+      cli.resolve_action_contacts(action, entries)
+      |> result.map_error(fn(message) { not_found_outcome(output, message) })
+    }
+  }
+}
+
+/// Decodes the daemon's `contacts` reply into `List(cli.ContactEntry)`.
+fn decode_contact_entries(
+  output: Output,
+  line: String,
+  response: protocol.Response,
+) -> Result(List(cli.ContactEntry), Outcome) {
+  // Propagate auth/availability refusals from `contacts` directly.
+  case response {
+    protocol.Failed(category:, message:) ->
+      Error(failed(output, line, category, message))
+    protocol.Succeeded(result:) -> {
+      let entry_decoder = {
+        use contact_hex <- decode.field("contact", decode.string)
+        use phase <- decode.field("phase", decode.string)
+        use description <- decode.field("description", decode.string)
+        decode.success(#(contact_hex, phase, description))
+      }
+      use raw_rows <- result.try(
+        decode.run(
+          result,
+          decode.field("contacts", decode.list(entry_decoder), decode.success),
+        )
+        |> result.map_error(fn(_) {
+          failure(
+            cli.exit_unavailable,
+            "the daemon sent a malformed contacts reply",
+          )
+        }),
+      )
+      Ok(parse_contact_entries(raw_rows))
+    }
+  }
+}
+
+/// Keeps rows whose `contact` parses as a valid `Id(Contact)`.
+fn parse_contact_entries(
+  rows: List(#(String, String, String)),
+) -> List(cli.ContactEntry) {
+  rows
+  |> list.filter_map(fn(row) {
+    let #(hex, phase, description) = row
+    use parsed <- result.map(id.from_hex(hex))
+    cli.ContactEntry(contact: parsed, phase:, description:)
+  })
+}
+
+/// Renders a `not_found` error outcome in human or `--json` mode.
+fn not_found_outcome(output: Output, message: String) -> Outcome {
+  let encoded_line =
+    json.object([
+      #("ok", json.bool(False)),
+      #(
+        "error",
+        json.object([
+          #("category", json.string("not_found")),
+          #("message", json.string(message)),
+        ]),
+      ),
+    ])
+    |> json.to_string
+  failed(output, encoded_line, protocol.NotFound, message)
 }
 
 /// Refuses a ticket input that is not text before the daemon is asked. A
@@ -177,8 +724,8 @@ fn check_output_file(action: Action) -> Result(Nil, Outcome) {
     CreateInvite(output:, ..) ->
       case cli.invitation_path(output) {
         Some(out) ->
-          case simplifile.is_file(out) {
-            Ok(False) -> Ok(Nil)
+          case simplifile.file_info(out) {
+            Error(simplifile.Enoent) -> Ok(Nil)
             _ ->
               Error(failure(cli.exit_refused, "refusing to overwrite " <> out))
           }
@@ -225,10 +772,22 @@ fn read_input(input: Input) -> Result(BitArray, Outcome) {
 
 /// A failure to read an input file.
 fn unreadable(path: String, error: simplifile.FileError) -> Outcome {
-  failure(
-    cli.exit_local,
-    "could not read " <> path <> ": " <> simplifile.describe_error(error),
-  )
+  let looks_secret =
+    string.starts_with(path, "pl1") || string.starts_with(path, "plg1")
+
+  // Never echo a misplaced ticket or grant token typed after `--file`.
+  case looks_secret {
+    True ->
+      failure(
+        cli.exit_refused,
+        "expected a file path, not a ticket or grant token; use --stdin",
+      )
+    False ->
+      failure(
+        cli.exit_local,
+        "could not read " <> path <> ": " <> simplifile.describe_error(error),
+      )
+  }
 }
 
 /// The outcome for a daemon that could not be reached.

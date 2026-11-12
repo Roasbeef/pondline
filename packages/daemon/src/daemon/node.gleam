@@ -215,7 +215,10 @@ fn probe(config: Config) -> Result(Nil, StartError) {
 }
 
 /// A configured Tor binary must exist, because a sidecar that cannot be
-/// spawned fails the whole tree and with it the starter.
+/// spawned fails the whole tree and with it the starter. `tor: None` stays
+/// admitted here even under `TorOnly` for simulation and test callers that
+/// exercise `carrier.Unused`; the CLI front door (`local_api_backend.start_node`)
+/// resolves `pondline-tor` first and fails fast when none is found.
 fn check_sidecar(config: Config) -> Result(Nil, StartError) {
   case config.tor {
     None -> Ok(Nil)

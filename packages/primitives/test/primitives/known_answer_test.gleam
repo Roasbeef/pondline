@@ -5,6 +5,7 @@
 //// trip, size and implicit rejection instead.
 
 import gleam/bit_array
+import gleam/int
 import gleam/string
 import primitives
 
@@ -179,5 +180,10 @@ pub fn constant_time_equal_test() {
 }
 
 pub fn openssl_supports_mlkem_test() {
-  assert string.starts_with(primitives.openssl_version(), "OpenSSL 3.")
+  let banner = primitives.openssl_version()
+  let assert ["OpenSSL", number, ..] = string.split(banner, " ")
+  let assert [major_text, minor_text, ..] = string.split(number, ".")
+  let assert Ok(major) = int.parse(major_text)
+  let assert Ok(minor) = int.parse(minor_text)
+  assert major > 3 || major == 3 && minor >= 5
 }

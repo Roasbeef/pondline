@@ -22,3 +22,9 @@ WHERE deadline < sqlc.arg(now) GROUP BY queue_id;
 
 -- name: DeleteExpiredBlobs :exec
 DELETE FROM blobs WHERE deadline < sqlc.arg(now);
+
+-- name: BlobSummary :one
+SELECT COUNT(*) AS blobs,
+       CAST(COALESCE(SUM(size), 0) AS INTEGER) AS blob_bytes
+FROM blobs
+WHERE deadline >= sqlc.arg(now);

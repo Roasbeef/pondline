@@ -1,8 +1,14 @@
+import core/endpoint
+import core/grant
 import core/id
 import core/limits
+import core/secret
+import daemon/cli
+import daemon/cli_run
 import daemon/credential
 import daemon/internal/ffi_local_system
 import daemon/local_api
+import daemon/local_api_backend
 import daemon/local_api_client
 import daemon/local_api_fixture as fixture
 import daemon/local_api_protocol as protocol
@@ -11,8 +17,10 @@ import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 
@@ -368,7 +376,9 @@ pub fn backend_errors_map_to_stable_categories_test() {
     local_api_types.Backend(
       ..fixture.backend(fake),
       approve: fn(_) { Error(local_api_types.NotFound) },
-      accept: fn(_, _) { Error(local_api_types.InvalidInvitation("expired")) },
+      accept: fn(_, _, _) {
+        Error(local_api_types.InvalidInvitation("expired"))
+      },
       send: fn(_, _, _, _, _) { Error(local_api_types.Refused("budget spent")) },
       status: fn(_) { Error(local_api_types.Unavailable) },
     )
@@ -544,4 +554,175 @@ pub fn a_send_carries_its_idempotency_key_test() {
       "send " <> contact_hex() <> " text/plain 01 None key=k-1",
       "send " <> contact_hex() <> " text/plain 01 None",
     ]
+}
+
+pub fn daemon_tor_sidecar_resolution_and_fail_fast_test() {
+  let none = fn(_) { Error(Nil) }
+  let has = fn(expected) { fn(path) { path == expected } }
+
+  assert local_api_backend.resolve_tor_bin(
+      Some("/opt/pondline-tor"),
+      none,
+      none,
+      has("/opt/pondline-tor"),
+    )
+    == Ok("/opt/pondline-tor")
+  assert local_api_backend.resolve_tor_bin(
+      None,
+      fn(_) { Ok("/bundle/bin/pondline-tor") },
+      none,
+      has("/bundle/bin/pondline-tor"),
+    )
+    == Ok("/bundle/bin/pondline-tor")
+  assert local_api_backend.resolve_tor_bin(None, none, none, fn(_) { False })
+    == Error(
+      "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
+    )
+}
+
+pub fn apply_grant_token_writes_private_capability_and_scrubs_errors_test() {
+  let dir =
+    "build/grant_token_test_" <> int.to_string(int.random(1_000_000_000))
+  let _ = simplifile.delete(dir)
+  let assert Ok(ep) = endpoint.parse("127.0.0.1:4199")
+  let cap_bytes = <<42:256>>
+  let assert Ok(token) = grant.from_parts(ep, cap_bytes)
+  let raw = <<{ secret.expose(grant.encode(token)) }:bits, "\n":utf8>>
+
+  let assert Ok(#(mailbox, cap_file)) = cli_run.apply_grant_token(dir, raw)
+  assert mailbox == "127.0.0.1:4199"
+  assert cap_file == dir <> "/provision.cap"
+  assert simplifile.read_bits(cap_file) == Ok(cap_bytes)
+  assert ffi_local_system.file_mode(cap_file) == Ok(0o600)
+
+  let bad = <<"plg1secretbadtoken":utf8>>
+  let assert Error(outcome) = cli_run.apply_grant_token(dir, bad)
+  assert !string.contains(outcome.stderr, "plg1secretbadtoken")
+  let _ = simplifile.delete(dir)
+}
+
+pub fn init_and_saved_config_round_trip_test() {
+  let _ = simplifile.create_directory_all("build")
+  let dir = "build/init_cfg_test_" <> int.to_string(int.random(1_000_000_000))
+  let _ = simplifile.delete(dir)
+  let assert Ok(ep) = endpoint.parse("127.0.0.1:4299")
+  let cap_bytes = <<77:256>>
+  let assert Ok(token) = grant.from_parts(ep, cap_bytes)
+  let grant_file = dir <> "_grant.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(grant_file, secret.expose(grant.encode(token)))
+
+  // Loopback endpoint without `--carrier loopback` is refused by policy.
+  let refused =
+    cli_run.run(
+      cli.InitDaemon(cli.InitCommand(
+        dir,
+        cli.GrantMailbox(cli.InputFile(grant_file)),
+        cli.Tor,
+        None,
+        cli.HumanOutput,
+      )),
+    )
+  assert refused.status == cli.exit_refused
+
+  // With `--carrier loopback`, `init` saves 0600 `config.json`, `provision.cap`, and credentials.
+  let ok =
+    cli_run.run(
+      cli.InitDaemon(cli.InitCommand(
+        dir,
+        cli.GrantMailbox(cli.InputFile(grant_file)),
+        cli.Loopback,
+        None,
+        cli.JsonOutput,
+      )),
+    )
+  assert ok.status == cli.exit_ok
+  assert ffi_local_system.file_mode(dir <> "/config.json") == Ok(0o600)
+  assert ffi_local_system.file_mode(dir <> "/provision.cap") == Ok(0o600)
+  assert ffi_local_system.file_mode(dir <> "/operator.cred") == Ok(0o600)
+
+  let assert Ok(loaded) = cli_run.load_daemon_config(dir)
+  assert loaded
+    == cli.DaemonOptions(
+      dir,
+      "127.0.0.1:4299",
+      dir <> "/provision.cap",
+      cli.Loopback,
+      None,
+    )
+  // A refused re-init must leave the existing `provision.cap` and `config.json` intact.
+  let assert Ok(other_token) = grant.from_parts(ep, <<99:256>>)
+  let other_file = dir <> "_other_grant.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(other_file, secret.expose(grant.encode(other_token)))
+  let bad_reinit =
+    cli_run.run(
+      cli.InitDaemon(cli.InitCommand(
+        dir,
+        cli.GrantMailbox(cli.InputFile(other_file)),
+        cli.Tor,
+        None,
+        cli.HumanOutput,
+      )),
+    )
+  assert bad_reinit.status == cli.exit_refused
+  assert simplifile.read_bits(dir <> "/provision.cap") == Ok(cap_bytes)
+
+  let _ = simplifile.delete(other_file)
+  let _ = simplifile.delete(grant_file)
+  let _ = simplifile.delete(dir)
+}
+
+pub fn cli_resolves_contact_by_petname_and_accept_budget_round_trips_test() {
+  use f <- fixture.with_server
+  let cred_file = f.dir <> "/agent_test.cred"
+  let assert Ok(Nil) = ffi_local_system.write_private_file(cred_file, f.agent)
+  let payload_file = f.dir <> "/msg.txt"
+  let assert Ok(Nil) = simplifile.write(payload_file, "hello bob")
+
+  // Sending with `--contact bob` resolves `"bob"` via `contacts` using the agent credential.
+  let target = cli.Target(socket: f.socket, credential_file: cred_file)
+  let send_out =
+    cli_run.run(cli.Client(
+      target,
+      cli.HumanOutput,
+      cli.SendMessage(
+        cli.LookupContact("bob"),
+        "text/plain",
+        cli.InputFile(payload_file),
+        None,
+        None,
+      ),
+    ))
+  assert send_out.status == cli.exit_ok
+
+  // Unknown contact petname returns exit_not_found (4) and JSON error in `--json` mode.
+  let miss_out =
+    cli_run.run(cli.Client(
+      target,
+      cli.JsonOutput,
+      cli.SendMessage(
+        cli.LookupContact("mallory"),
+        "text/plain",
+        cli.InputFile(payload_file),
+        None,
+        None,
+      ),
+    ))
+  assert miss_out.status == cli.exit_not_found
+  let assert Ok(miss_json) = bit_array.to_string(miss_out.stdout)
+  assert string.contains(miss_json, "\"not_found\"")
+
+  // `accept` with explicit `"budget": 25` reaches the backend.
+  let _ =
+    ask(f, f.operator, "accept", [
+      #("ticket", json.string("pl1example")),
+      #("description", json.string("peer")),
+      #("budget", json.int(25)),
+    ])
+    |> succeeded
+  assert list.contains(
+    fixture.calls(f.fake),
+    "accept_ticket pl1example peer budget=25",
+  )
 }

@@ -524,6 +524,23 @@ pub fn accept(
   file: BitArray,
   description: String,
 ) -> Result(Id(Contact), Failure) {
+  accept_with_budget(name, file, description, None)
+}
+
+/// `accept` with an explicit inbound message budget override (`None` uses `state.accept_budget`).
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.accept_with_budget(name, file, "alice", Some(50))
+/// // -> Ok(contact)
+/// ```
+pub fn accept_with_budget(
+  name: Handle(Message),
+  file: BitArray,
+  description: String,
+  budget: Option(Int),
+) -> Result(Id(Contact), Failure) {
   run(name, Accept, fn(state) {
     use invite <- result.try(
       invitation.decode(state.suite, file)
@@ -540,7 +557,7 @@ pub fn accept(
     // it started and starts no second joiner, until that one is closed.
     case earlier {
       Some(contact) -> Ok(contact)
-      None -> join(state, invite, description)
+      None -> join(state, invite, description, budget)
     }
   })
 }
@@ -551,11 +568,11 @@ fn join(
   state: State,
   invite: invitation.Invitation,
   description: String,
+  budget: Option(Int),
 ) -> Result(Id(Contact), Failure) {
   use inbox <- result.try(new_inbox(state))
-
-  let terms =
-    relationship.Terms(inbox:, description:, budget: state.accept_budget)
+  let inbound_budget = option.unwrap(budget, state.accept_budget)
+  let terms = relationship.Terms(inbox:, description:, budget: inbound_budget)
   use made <- result.try(
     relationship.join(state.suite, invite, state.policy, terms, state.clock())
     |> result.map_error(join_failure),

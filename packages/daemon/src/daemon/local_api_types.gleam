@@ -139,8 +139,9 @@ pub type Backend {
     invite: fn(String, Approval, Int) -> Result(BitArray, ApiError),
     invite_ticket: fn(String, Approval, Int) ->
       Result(#(BitArray, Secret), ApiError),
-    accept: fn(BitArray, String) -> Result(Id(Contact), ApiError),
-    accept_ticket: fn(Secret, String) -> Result(Id(Contact), ApiError),
+    accept: fn(BitArray, String, Option(Int)) -> Result(Id(Contact), ApiError),
+    accept_ticket: fn(Secret, String, Option(Int)) ->
+      Result(Id(Contact), ApiError),
     contacts: fn() -> Result(List(ContactView), ApiError),
     approve: fn(Id(Contact)) -> Result(Nil, ApiError),
     decline: fn(Id(Contact)) -> Result(Nil, ApiError),

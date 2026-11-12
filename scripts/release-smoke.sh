@@ -76,7 +76,7 @@ die() {
 # ----------------------------------------------------------------- cleanup
 
 # A short directory: a Unix socket path is limited to about 100 bytes.
-T=$(cd "$(mktemp -d /tmp/rwsmoke.XXXXXX)" && pwd -P)
+T=$(cd "$(mktemp -d /tmp/rwsmoke.XXXXXX 2>/dev/null || mktemp -d "${TMPDIR%/}/rws.XXXXXX")" && pwd -P)
 PIDS=""
 
 cleanup() {
@@ -203,34 +203,38 @@ step "ok   bundled crypto: $kem, ML-KEM-1024 round trip"
 
 # ------------------------------------------------------------- 4. mailbox
 
-mailbox grant --db "$T/mailbox.db" --queues 20 --out "$T/a.cap" >/dev/null || die "grant A"
-mailbox grant --db "$T/mailbox.db" --queues 20 --out "$T/b.cap" >/dev/null || die "grant B"
-spawn mailbox.log "$MAILBOX" serve --db "$T/mailbox.db" --port 0
+spawn mailbox.log "$MAILBOX" serve --db "$T/mailbox.db"
 wait_for 30 grep -q '^listening ' "$T/mailbox.log" || die "the mailbox did not listen"
 ADDR=$(sed -n 's/^listening //p' "$T/mailbox.log" | head -n 1)
-step "ok   mailbox: two grants, listening on $ADDR"
+GRANT_A=$(mailbox grant --db "$T/mailbox.db" --queues 20 --mailbox "$ADDR" --token) || die "grant A --token"
+case "$GRANT_A" in plg1*) ;; *) die "grant --token printed no plg1 token" ;; esac
+mailbox grant --db "$T/mailbox.db" --queues 20 --out "$T/b.cap" >/dev/null || die "grant B"
+step "ok   mailbox: listening on $ADDR (default port 0), plg1 grant + file grant issued"
 
 # ------------------------------------------------------------- 5. daemons
 
-for side in a b; do
-  mkdir -m 700 "$T/$side"
-  spawn "daemon-$side.log" "$PONDLINE" daemon --state-dir "$T/$side" \
-    --mailbox "$ADDR" --provision-file "$T/$side.cap" --carrier loopback
-done
+# A uses default $HOME/.pondline via `pondline init --stdin` + zero-flag `pondline daemon`;
+# B uses explicit --state-dir, --mailbox and --provision-file.
+printf '%s\n' "$GRANT_A" | pondline init --carrier loopback --stdin >/dev/null || die "pondline init A"
+unset GRANT_A
+mkdir -m 700 "$T/b"
+spawn "daemon-a.log" "$PONDLINE" daemon
+spawn "daemon-b.log" "$PONDLINE" daemon --state-dir "$T/b" \
+  --mailbox "$ADDR" --provision-file "$T/b.cap" --carrier loopback
 for side in a b; do
   wait_for 30 grep -q '^ready ' "$T/daemon-$side.log" || die "daemon $side did not start"
 done
 
-health=$(pondline health --state-dir "$T/a") || die "health failed"
+health=$(pondline health) || die "health failed"
 echo "$health" | grep -qx "version=$VERSION" || die "health lacks version=$VERSION: $health"
 echo "$health" | grep -qx "commit=$COMMIT" || die "health lacks commit=$COMMIT: $health"
-step "ok   two daemons ready; health reports version=$VERSION commit=$COMMIT"
+step "ok   two daemons ready (A via ~/.pondline init + bare daemon); health reports $VERSION $COMMIT"
 
 # ------------------------------------------------------------- 6. pairing
 
 # The ticket is a bearer secret: it goes from A's standard output to B's
 # standard input and is never printed or put in argv.
-TICKET=$(pondline invite create --state-dir "$T/a" --description responder \
+TICKET=$(pondline invite create --description "agent B" \
   --budget 10 --out "$T/invite.bin" --ticket 2>/dev/null) || die "invite create --ticket"
 case "$TICKET" in
   pl1*) ;;
@@ -238,32 +242,33 @@ case "$TICKET" in
 esac
 [ -s "$T/invite.bin" ] || die "invite create --ticket --out wrote no file"
 printf '%s\n' "$TICKET" | pondline invite accept --state-dir "$T/b" --ticket \
-  --stdin --description asker >/dev/null || die "invite accept --ticket"
+  --stdin --description "agent A" --budget 10 >/dev/null || die "invite accept --ticket"
 unset TICKET
 
 contact_on() {
   pondline contacts list --state-dir "$1" | awk -v phase="$2" '$2 == phase {print $1; exit}'
 }
-pending() { [ -n "$(contact_on "$T/a" pending_approval)" ]; }
-active() { [ -n "$(contact_on "$T/a" active)" ] && [ -n "$(contact_on "$T/b" active)" ]; }
+pending() { [ -n "$(contact_on "$T/.pondline" pending_approval)" ]; }
+active() { [ -n "$(contact_on "$T/.pondline" active)" ] && [ -n "$(contact_on "$T/b" active)" ]; }
 
 wait_for 60 pending || die "A never saw B's accept"
-pondline contact approve --state-dir "$T/a" --contact "$(contact_on "$T/a" pending_approval)" \
-  >/dev/null || die "approve"
+pondline contact approve --contact "agent B" >/dev/null || die "approve by petname"
 wait_for 60 active || die "the pairing did not become active on both sides"
-A_SEES_B=$(contact_on "$T/a" active)
+A_SEES_B=$(contact_on "$T/.pondline" active)
 B_SEES_A=$(contact_on "$T/b" active)
-step "ok   paired: A sees B as $A_SEES_B, B sees A as $B_SEES_A"
+step "ok   paired (approved by petname): A sees B as $A_SEES_B, B sees A as $B_SEES_A"
 
 # ------------------------------------------------------------- 7. message
 
 PAYLOAD="smoke $VERSION $COMMIT $$"
-printf '%s' "$PAYLOAD" | pondline send --state-dir "$T/b" --contact "$B_SEES_A" --stdin \
-  >/dev/null || die "send"
-got=$(pondline receive --state-dir "$T/a" --contact "$A_SEES_B" --raw --wait 30 2>"$T/receive.err") \
-  || die "receive"
+printf '%s' "$PAYLOAD" | pondline send --state-dir "$T/b" --contact "agent A" --stdin \
+  >/dev/null || die "send by petname"
+got=$(pondline receive --contact "agent B" --raw --wait 30 2>"$T/receive.err") \
+  || die "receive by petname"
 [ "$got" = "$PAYLOAD" ] || die "A received '$got', B sent '$PAYLOAD'"
-step "ok   B sent ${#PAYLOAD} bytes from stdin; A received the same bytes"
+MB_STATUS=$(mailbox status --db "$T/mailbox.db" --json) || die "mailbox status --json"
+echo "$MB_STATUS" | grep -q '"grants":2' || die "mailbox status missing grants=2: $MB_STATUS"
+step "ok   B sent ${#PAYLOAD} bytes by petname; A received same bytes; mailbox status verified"
 
 # ---------------------------------------------------------------- 8. stop
 

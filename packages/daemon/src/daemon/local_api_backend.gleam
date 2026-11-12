@@ -13,12 +13,13 @@
 //// when the operator asked for the loopback carrier, which is the one place
 //// that choice is made.
 
-import core/endpoint.{type Endpoint, Loopback, Onion, TorOnly, TorOrLoopback}
+import core/endpoint.{type Endpoint, TorOnly, TorOrLoopback}
 import core/secret
 import daemon/api
 import daemon/build
 import daemon/cli.{type DaemonOptions}
 import daemon/config
+import daemon/internal/ffi_local_system
 import daemon/local_api_types.{
   type ApiError, type Backend, type Event, Backend, Health, Unavailable,
 }
@@ -27,9 +28,9 @@ import daemon/status
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
+import simplifile
 
 /// A backend that refuses every call as `Unavailable`. It answers `health`
 /// with a state saying why. Tests of the local API use it as a stand-in.
@@ -45,8 +46,8 @@ pub fn unavailable() -> Backend {
   Backend(
     invite: fn(_, _, _) { Error(Unavailable) },
     invite_ticket: fn(_, _, _) { Error(Unavailable) },
-    accept: fn(_, _) { Error(Unavailable) },
-    accept_ticket: fn(_, _) { Error(Unavailable) },
+    accept: fn(_, _, _) { Error(Unavailable) },
+    accept_ticket: fn(_, _, _) { Error(Unavailable) },
     contacts: fn() { Error(Unavailable) },
     approve: fn(_) { Error(Unavailable) },
     decline: fn(_) { Error(Unavailable) },
@@ -76,12 +77,16 @@ pub fn start_node(options: DaemonOptions) -> Result(Backend, String) {
   use mailbox <- result.try(parse_mailbox(options.mailbox))
 
   // The carrier option decides both the policy and whether a sidecar runs:
-  // Tor admits only onion mailboxes and needs the sidecar binary, while
-  // loopback is the explicit operator choice for tests and the offline demo.
-  let #(policy, tor) = case options.carrier {
-    cli.Tor -> #(TorOnly, options.tor_bin)
-    cli.Loopback -> #(TorOrLoopback, None)
-  }
+  // Tor admits only onion mailboxes and requires a resolved `pondline-tor`
+  // binary, while loopback is the explicit choice for tests and local demos.
+  use #(policy, tor) <- result.try(case options.carrier {
+    cli.Tor -> {
+      use path <- result.map(resolve_default_tor_bin(options.tor_bin))
+      #(TorOnly, Some(path))
+    }
+
+    cli.Loopback -> Ok(#(TorOrLoopback, None))
+  })
 
   let base =
     config.new(
@@ -118,11 +123,12 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
       |> result.map(fn(issued) { #(secret.expose(issued.file), issued.ticket) })
       |> map_error
     },
-    accept: fn(file, description) {
-      api.accept(daemon, file, description) |> map_error
+    accept: fn(file, description, budget) {
+      api.accept_with_budget(daemon, file, description, budget) |> map_error
     },
-    accept_ticket: fn(text, description) {
-      api.accept_ticket(daemon, text, description) |> map_error
+    accept_ticket: fn(text, description, budget) {
+      api.accept_ticket_with_budget(daemon, text, description, budget)
+      |> map_error
     },
     contacts: fn() {
       api.contacts(daemon)
@@ -177,30 +183,101 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
   )
 }
 
-/// Parses the `--mailbox` option: `127.0.0.1:PORT` or `localhost:PORT` is
-/// a loopback endpoint, and anything else must be a v3 onion address with a
-/// port. Whether a loopback endpoint is admitted is the runtime's policy
-/// check, not this parser's.
-fn parse_mailbox(text: String) -> Result(Endpoint, String) {
-  let invalid = "--mailbox must be ONION:PORT or 127.0.0.1:PORT"
-
-  use #(host, port_text) <- result.try(
-    string.split_once(text, ":") |> result.replace_error(invalid),
-  )
-  use number <- result.try(
-    int.parse(port_text) |> result.replace_error(invalid),
-  )
-  use port <- result.try(endpoint.port(number) |> result.replace_error(invalid))
-
-  // The host names the carrier: loopback for the two local spellings, an
-  // onion address for everything else.
-  case host {
-    "127.0.0.1" | "localhost" -> Ok(Loopback(port:))
-    _ ->
-      endpoint.parse_onion(host)
-      |> result.map(fn(address) { Onion(address:, port:) })
-      |> result.replace_error(invalid)
+/// Resolves the `pondline-tor` binary path from an explicit `--tor-bin`,
+/// `PONDLINE_TOR_BIN`, `PATH`, or a local repository checkout build.
+///
+/// ## Examples
+///
+/// ```gleam
+/// local_api_backend.resolve_tor_bin(Some("/bin/tor"), fn(_) { Error(Nil) }, fn(_) { Error(Nil) }, fn(_) { True })
+/// // -> Ok("/bin/tor")
+/// ```
+pub fn resolve_tor_bin(
+  explicit: Option(String),
+  lookup_env: fn(String) -> Result(String, Nil),
+  find_exec: fn(String) -> Result(String, Nil),
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  // An explicit `--tor-bin` or `PONDLINE_TOR_BIN` must exist where named, so a
+  // typo fails at start instead of falling through to another binary.
+  case explicit {
+    Some(path) ->
+      check_binary(path, "pondline-tor binary not found at ", exists)
+    None -> resolve_implicit_tor_bin(lookup_env, find_exec, exists)
   }
+}
+
+/// Resolves `pondline-tor` against the live environment and filesystem.
+/// Public so `cli_run` can fail fast before touching state files.
+///
+/// ## Examples
+///
+/// ```gleam
+/// local_api_backend.resolve_default_tor_bin(Some("/missing"))
+/// // -> Error("pondline-tor binary not found at /missing")
+/// ```
+pub fn resolve_default_tor_bin(
+  explicit: Option(String),
+) -> Result(String, String) {
+  resolve_tor_bin(
+    explicit,
+    ffi_local_system.getenv,
+    ffi_local_system.find_executable,
+    fn(path) { simplifile.is_file(path) == Ok(True) },
+  )
+}
+
+/// Searches `PONDLINE_TOR_BIN`, `PATH`, and checkout-relative release paths.
+fn resolve_implicit_tor_bin(
+  lookup_env: fn(String) -> Result(String, Nil),
+  find_exec: fn(String) -> Result(String, Nil),
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  case lookup_env("PONDLINE_TOR_BIN") {
+    Ok(path) if path != "" ->
+      check_binary(path, "PONDLINE_TOR_BIN points to missing binary ", exists)
+
+    Ok(_) | Error(Nil) ->
+      case find_exec("pondline-tor") {
+        Ok(path) -> Ok(path)
+        Error(Nil) -> find_checkout_tor_bin(exists)
+      }
+  }
+}
+
+/// Checks checkout-relative build locations so `gleam run` works after `make sidecar`.
+fn find_checkout_tor_bin(exists: fn(String) -> Bool) -> Result(String, String) {
+  let candidates = [
+    "native/pondline-tor/target/release/pondline-tor",
+    "../../native/pondline-tor/target/release/pondline-tor",
+  ]
+
+  // Pick the first checkout build artifact present on disk, or report how to supply one.
+  case list.find(candidates, exists) {
+    Ok(path) -> Ok(path)
+    Error(Nil) ->
+      Error(
+        "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
+      )
+  }
+}
+
+/// Verifies that a named sidecar path exists as a regular file.
+fn check_binary(
+  path: String,
+  prefix: String,
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  case exists(path) {
+    True -> Ok(path)
+    False -> Error(prefix <> path)
+  }
+}
+
+/// Parses the `--mailbox` option via `core/endpoint.parse`.
+fn parse_mailbox(text: String) -> Result(Endpoint, String) {
+  endpoint.parse(text)
+  |> result.replace_error("--mailbox must be ONION:PORT or 127.0.0.1:PORT")
 }
 
 /// A runtime start failure as one line for the operator.

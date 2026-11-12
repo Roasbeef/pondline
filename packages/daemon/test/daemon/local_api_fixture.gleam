@@ -16,6 +16,7 @@ import daemon/local_api_types.{
 }
 import gleam/bit_array
 import gleam/erlang/process.{type Subject}
+import gleam/int
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/otp/actor
@@ -206,15 +207,27 @@ pub fn backend(fake: Fake) -> Backend {
       )
       Ok(#(<<"INVITATION-BYTES", 255, 0>>, secret.new(<<fake_ticket:utf8>>)))
     },
-    accept: fn(invitation, description) {
+    accept: fn(invitation, description, budget) {
+      let suffix = case budget {
+        Some(n) -> " budget=" <> int.to_string(n)
+        None -> ""
+      }
       record(
-        "accept " <> bit_array.base16_encode(invitation) <> " " <> description,
+        "accept "
+        <> bit_array.base16_encode(invitation)
+        <> " "
+        <> description
+        <> suffix,
       )
       Ok(contact())
     },
-    accept_ticket: fn(ticket, description) {
+    accept_ticket: fn(ticket, description, budget) {
       let assert Ok(text) = bit_array.to_string(secret.expose(ticket))
-      record("accept_ticket " <> text <> " " <> description)
+      let suffix = case budget {
+        Some(n) -> " budget=" <> int.to_string(n)
+        None -> ""
+      }
+      record("accept_ticket " <> text <> " " <> description <> suffix)
       Ok(contact())
     },
     contacts: fn() {

@@ -297,8 +297,7 @@ Invariants:
   and an envelope committed but unacknowledged is acknowledged by the next
   fetcher round, with no second delivery to the agent.
 - One daemon per state directory: `lock.db` holds an exclusive SQLite
-  transaction, released by the OS when the process dies. The directory is
-  `0700`, the database and lock `0600`.
+  transaction, released by the OS when the process dies, and `pondline init` and `pondline daemon` verify lock freedom and sidecar availability before writing state files. The directory is `0700`, the database and lock `0600`.
 - No log line or crash report carries a secret (ADR-012). Our lines take
   only `telemetry/field`'s typed kinds; `pondline.main` installs the
   `telemetry` handler before anything runs, for every command, so OTP's
@@ -406,9 +405,7 @@ the operator, and the `pondline` command that speaks to it.
   runtime API changes here.
 - `daemon/local_api_client`: one request over the socket; used by the CLI
   and the tests.
-- `daemon/cli` (pure parse and request building, exit codes), `cli_render`
-  (human output), `cli_run` (effects), and the top-level `pondline` module
-  (`gleam run -m pondline -- <command>`).
+- `daemon/cli` (pure parse, `Environment` default `~/.pondline` / `PONDLINE_STATE_DIR`, `ContactRef` petname/prefix resolution, request building, exit codes), `cli_render` (human output), `cli_run` (`init` and persisted `<state-dir>/config.json` + `provision.cap`, `plg1` grant token materialization, runtime effects; ADR-015), and the top-level `pondline` module (`gleam run -m pondline -- <command>`). Release launchers export `PONDLINE_TOR_BIN` and `start_node` resolves `pondline-tor` automatically or fails fast under `--carrier tor`. `invite accept` takes an optional `--budget N` (`api.accept_with_budget`).
 - `daemon/build`: the running build's identity (`Identity(version,
   commit)`), read from `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`,
   which the release launcher exports (`scripts/release.sh`, ADR-003
@@ -417,7 +414,7 @@ the operator, and the `pondline` command that speaks to it.
   of `health` (added in `local_api_backend`, so a test backend has none).
 - `daemon/internal/ffi_local_socket` and `ffi_local_system` over
   `src/daemon_local_ffi.erl`: Unix sockets, the monotonic clock, private
-  files and directories, raw stdout and stdin, the environment.
+  files and directories, raw fd-1 stdout and stdin, executable lookup, and the environment.
 
 Invariants:
 

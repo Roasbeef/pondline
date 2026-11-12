@@ -17,6 +17,10 @@ pub fn monotonic_ms() -> Int
 @external(erlang, "daemon_local_ffi", "create_private_file")
 pub fn create_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
 
+/// Atomically writes `bytes` to `path` with mode 0600, replacing any existing file.
+@external(erlang, "daemon_local_ffi", "write_private_file")
+pub fn write_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
+
 /// Creates a directory and its parents if missing, then sets the directory
 /// itself to mode 0700.
 @external(erlang, "daemon_local_ffi", "make_private_dir")
@@ -38,6 +42,10 @@ pub fn read_stdin(max: Int) -> Result(BitArray, String)
 /// The value of an environment variable.
 @external(erlang, "daemon_local_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)
+
+/// Finds an executable named `name` on `PATH`.
+@external(erlang, "daemon_local_ffi", "find_executable")
+pub fn find_executable(name: String) -> Result(String, Nil)
 
 /// Stops the VM with `code` after flushing output.
 @external(erlang, "erlang", "halt")

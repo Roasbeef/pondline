@@ -439,7 +439,24 @@ pub fn accept(
   invitation: BitArray,
   description: String,
 ) -> Result(Id(Contact), ApiError) {
-  engine.accept(daemon.engine, invitation, description)
+  accept_with_budget(daemon, invitation, description, None)
+}
+
+/// `accept` with an optional inbound message budget override.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.accept_with_budget(daemon, file, "vendor", Some(25))
+/// // -> Ok(contact)
+/// ```
+pub fn accept_with_budget(
+  daemon: Daemon,
+  invitation: BitArray,
+  description: String,
+  budget: Option(Int),
+) -> Result(Id(Contact), ApiError) {
+  engine.accept_with_budget(daemon.engine, invitation, description, budget)
   |> result.map_error(from_failure)
 }
 
@@ -512,6 +529,23 @@ pub fn accept_ticket(
   text: Secret,
   description: String,
 ) -> Result(Id(Contact), ApiError) {
+  accept_ticket_with_budget(daemon, text, description, None)
+}
+
+/// `accept_ticket` with an optional inbound message budget override.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.accept_ticket_with_budget(daemon, ticket_text, "vendor", Some(25))
+/// // -> Ok(contact)
+/// ```
+pub fn accept_ticket_with_budget(
+  daemon: Daemon,
+  text: Secret,
+  description: String,
+  budget: Option(Int),
+) -> Result(Id(Contact), ApiError) {
   let invalid = InvalidInvitation("the ticket is not valid")
 
   // The ticket is exposed only to be decoded; no error repeats it.
@@ -553,7 +587,7 @@ pub fn accept_ticket(
     )),
   )
 
-  accept(daemon, file, description)
+  accept_with_budget(daemon, file, description, budget)
 }
 
 /// The inbox behind an offer's queue, whose admin capability pays for the

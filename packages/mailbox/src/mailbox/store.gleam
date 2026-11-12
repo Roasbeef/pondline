@@ -181,6 +181,23 @@ pub type SweepReport {
   SweepReport(envelopes: Int, tombstones: Int, blobs: Int)
 }
 
+/// Read-only aggregate counts and byte totals for operator inspection (`mailbox status`).
+pub type StatusReport {
+  StatusReport(
+    grants: Int,
+    allowance_total: Int,
+    queues_used_total: Int,
+    queues: Int,
+    bytes_used: Int,
+    capacity_total: Int,
+    live_envelopes: Int,
+    envelope_bytes: Int,
+    live_blobs: Int,
+    blob_bytes: Int,
+    live_tombstones: Int,
+  )
+}
+
 // -------------------------------------------------------------- lifecycle
 
 /// Opens (creating if absent) the database at `path`, applies the durability
@@ -867,6 +884,55 @@ pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
       tombstones: list.fold(stale, 0, fn(sum, row) { sum + row.stale }),
       blobs: list.fold(blobs, 0, fn(sum, entry) { sum + entry.blobs }),
     ))
+  })
+}
+
+/// Reads aggregate grant, queue, envelope, blob and tombstone counts as of `now`
+/// without exposing any capability hash or identifier.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.status(opened, Instant(1_700_000_000))
+/// // -> Ok(StatusReport(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+/// ```
+pub fn status(store: Store, now: Instant) -> Result(StatusReport, Error) {
+  let Instant(unix_seconds) = now
+  transaction(store, fn() {
+    use grant_rows <- result.try(query(store, sql.grant_summary()))
+    use queue_rows <- result.try(query(store, sql.queue_summary()))
+    use envelope_rows <- result.try(query(
+      store,
+      sql.envelope_summary(now: unix_seconds),
+    ))
+    use blob_rows <- result.try(query(
+      store,
+      sql.blob_summary(now: unix_seconds),
+    ))
+    use tombstone_rows <- result.try(query(
+      store,
+      sql.live_tombstones(now: unix_seconds),
+    ))
+
+    // Aggregate queries always return one row; missing rows report Corrupt.
+    case grant_rows, queue_rows, envelope_rows, blob_rows, tombstone_rows {
+      [g], [q], [e], [b], [t] ->
+        Ok(StatusReport(
+          grants: g.grants,
+          allowance_total: g.allowance_total,
+          queues_used_total: g.queues_used_total,
+          queues: q.queues,
+          bytes_used: q.bytes_used,
+          capacity_total: q.capacity_total,
+          live_envelopes: e.envelopes,
+          envelope_bytes: e.envelope_bytes,
+          live_blobs: b.blobs,
+          blob_bytes: b.blob_bytes,
+          live_tombstones: t.tombstones,
+        ))
+      _, _, _, _, _ ->
+        Error(Corrupt("summary query returned unexpected row count"))
+    }
   })
 }
 

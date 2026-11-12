@@ -5,21 +5,30 @@
 //// variable. `daemon/cli_run` does the effects and `daemon/cli_render`
 //// prints the answers.
 ////
+//// ## Flow
+////
+//// 1. `parse` and `parse_with_env` dispatch on the leading command words to `parse_init`, `parse_daemon`, `client`, `parse_send`, or `parse_receive`.
+//// 2. `read_options` scans `--name value` pairs and flags, rejecting unknown options or stray arguments through `unknown`.
+//// 3. `target` resolves the Unix socket and credential path from options and the environment.
+//// 4. `request` and `timeout_ms` turn a parsed `Action` and its input bytes into the local API call.
+////
 //// ## Commands
 ////
-//// - `daemon --state-dir D --mailbox HOST:PORT --provision-file F
-////   [--carrier tor|loopback] [--tor-bin PATH]` runs the daemon.
-//// - `invite create --description TEXT --budget N [--auto-approve]
-////   [--out FILE] [--ticket]` (at least one of the two) and `invite accept
-////   [--ticket] (--file FILE | --stdin) [--description TEXT]`. With
-////   `--ticket`, create prints a ticket (ADR-009) and accept reads one.
-//// - `contacts list`, `contact approve|decline|close --contact HEX` and
-////   `contact budget --contact HEX --add N`.
-//// - `send --contact HEX [--content-type T] (--file F | --stdin)
-////   [--reply-to HEX] [--idempotency-key KEY]`.
-//// - `receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]`.
-//// - `ack --message HEX`, `status --message HEX`, `audit [--contact HEX]
-////   [--limit N]`, `incidents [--limit N]` and `health`.
+//// - `init (--stdin | --file F | --mailbox HOST:PORT --provision-file F)`
+////   `[--state-dir D] [--carrier tor|loopback] [--tor-bin PATH] [--json]`
+////   initializes a state directory (`~/.pondline` by default) and writes `config.json`.
+//// - `daemon [--state-dir D] [--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin]`
+////   `[--carrier tor|loopback] [--tor-bin PATH]` runs the daemon.
+//// - `invite create --description TEXT --budget N [--auto-approve]`
+////   `[--out FILE] [--ticket]` (at least one of the two) and `invite accept`
+////   `[--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]`.
+//// - `contacts list`, `contact approve|decline|close --contact CONTACT` and
+////   `contact budget --contact CONTACT --add N`.
+//// - `send --contact CONTACT [--content-type T] (--file F | --stdin)`
+////   `[--reply-to HEX] [--idempotency-key KEY]`.
+//// - `receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]`.
+//// - `ack --message HEX`, `status --message HEX`, `audit [--contact CONTACT]`
+////   `[--limit N]`, `incidents [--limit N]` and `health`.
 //// - `--version` prints the build's version and commit.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
@@ -44,6 +53,7 @@
 //// being repeated, since it may be exactly the secret that was misplaced.
 
 import core/id.{type Contact, type Id, type Message}
+import core/limits
 import core/offer.{type Approval, AutoApprove, OperatorApproves}
 import daemon/local_api_protocol as protocol
 import gleam/bit_array
@@ -81,25 +91,27 @@ pub const usage =
   "usage: pondline <command> [options]
 
 commands:
-  daemon --state-dir D --mailbox HOST:PORT --provision-file F
+  init (--stdin | --file F | --mailbox HOST:PORT --provision-file F)
+       [--state-dir D] [--carrier tor|loopback] [--tor-bin PATH] [--json]
+  daemon [--state-dir D] [--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin]
          [--carrier tor|loopback] [--tor-bin PATH]
   invite create --description TEXT --budget N [--auto-approve]
                 [--out FILE] [--ticket]
-  invite accept [--ticket] (--file FILE | --stdin) [--description TEXT]
+  invite accept [--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]
   contacts list
-  contact approve|decline|close --contact HEX
-  contact budget --contact HEX --add N
-  send --contact HEX [--content-type T] (--file F | --stdin) [--reply-to HEX]
+  contact approve|decline|close --contact CONTACT
+  contact budget --contact CONTACT --add N
+  send --contact CONTACT [--content-type T] (--file F | --stdin) [--reply-to HEX]
        [--idempotency-key KEY]
-  receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]
+  receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]
   ack --message HEX
   status --message HEX
-  audit [--contact HEX] [--limit N]
+  audit [--contact CONTACT] [--limit N]
   incidents [--limit N]
   health
   --version
 
-client options: --state-dir D | --socket P, --credential-file F, --json
+client options: --state-dir D (default ~/.pondline or $PONDLINE_STATE_DIR) | --socket P, --credential-file F, --json
 exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
             4 not found, 5 refused or invalid, 6 unavailable"
 
@@ -109,7 +121,48 @@ pub type Carrier {
   Loopback
 }
 
-/// The options of `pondline daemon`.
+/// Environment defaults read once by the entry point and passed into `parse_with_env`.
+pub type Environment {
+  Environment(
+    credential_file: Option(String),
+    default_state_dir: Option(String),
+  )
+}
+
+/// Where `pondline init` or `pondline daemon` obtains its mailbox and provisioning capability.
+pub type MailboxSetup {
+  /// Explicit `--mailbox HOST:PORT --provision-file F`.
+  ExplicitMailbox(mailbox: String, provision_file: String)
+
+  /// A `plg1...` grant token read from a file or standard input.
+  GrantMailbox(source: Input)
+
+  /// Load `<state_dir>/config.json` and `<state_dir>/provision.cap` written earlier.
+  SavedMailbox
+}
+
+/// The parsed `pondline init` command.
+pub type InitCommand {
+  InitCommand(
+    state_dir: String,
+    setup: MailboxSetup,
+    carrier: Carrier,
+    tor_bin: Option(String),
+    output: Output,
+  )
+}
+
+/// The parsed `pondline daemon` command before config/grant resolution.
+pub type DaemonCommand {
+  DaemonCommand(
+    state_dir: String,
+    setup: MailboxSetup,
+    carrier: Option(Carrier),
+    tor_bin: Option(String),
+  )
+}
+
+/// The resolved startup options passed to `local_api_backend.start_node`.
 pub type DaemonOptions {
   DaemonOptions(
     state_dir: String,
@@ -171,6 +224,22 @@ pub type PayloadView {
   Raw
 }
 
+/// How `--contact` names a relationship on the CLI: either a full 32-digit hex
+/// identifier (sent directly) or a description/petname or >=4-char hex prefix
+/// resolved against `contacts` before the command runs.
+pub type ContactRef {
+  /// Full 32-digit hex contact identifier.
+  ExactContact(contact: Id(Contact))
+
+  /// Description/petname or hex prefix resolved against `contacts`.
+  LookupContact(query: String)
+}
+
+/// One row from `contacts` used to resolve `LookupContact` selectors purely.
+pub type ContactEntry {
+  ContactEntry(contact: Id(Contact), phase: String, description: String)
+}
+
 /// What a client command asks the daemon to do.
 pub type Action {
   CreateInvite(
@@ -179,35 +248,41 @@ pub type Action {
     budget: Int,
     output: InviteOutput,
   )
-  AcceptInvite(source: Input, form: AcceptForm, description: String)
+  AcceptInvite(
+    source: Input,
+    form: AcceptForm,
+    description: String,
+    budget: Option(Int),
+  )
   ListContacts
-  ApproveContact(contact: Id(Contact))
-  DeclineContact(contact: Id(Contact))
-  CloseContact(contact: Id(Contact))
-  RaiseBudget(contact: Id(Contact), add: Int)
+  ApproveContact(contact: ContactRef)
+  DeclineContact(contact: ContactRef)
+  CloseContact(contact: ContactRef)
+  RaiseBudget(contact: ContactRef, add: Int)
   SendMessage(
-    contact: Id(Contact),
+    contact: ContactRef,
     content_type: String,
     source: Input,
     in_reply_to: Option(Id(Message)),
     idempotency_key: Option(String),
   )
   ReceiveMessages(
-    contact: Option(Id(Contact)),
+    contact: Option(ContactRef),
     max: Int,
     wait_seconds: Int,
     view: PayloadView,
   )
   Acknowledge(message: Id(Message))
   MessageStatus(message: Id(Message))
-  ShowAudit(contact: Option(Id(Contact)), limit: Int)
+  ShowAudit(contact: Option(ContactRef), limit: Int)
   ShowIncidents(limit: Int)
   ShowHealth
 }
 
 /// A parsed command line.
 pub type Command {
-  RunDaemon(DaemonOptions)
+  InitDaemon(InitCommand)
+  RunDaemon(DaemonCommand)
   Client(target: Target, output: Output, action: Action)
   Help
 
@@ -237,6 +312,25 @@ pub fn parse(
   arguments: List(String),
   env_credential_file: Option(String),
 ) -> Result(Command, String) {
+  parse_with_env(
+    arguments,
+    Environment(credential_file: env_credential_file, default_state_dir: None),
+  )
+}
+
+/// Turns arguments and resolved environment defaults (`PONDLINE_CREDENTIAL_FILE`,
+/// `PONDLINE_STATE_DIR` / `$HOME/.pondline`) into a `Command`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.parse_with_env(["health"], cli.Environment(None, Some("/home/a/.pondline")))
+/// // -> Ok(Client(Target("/home/a/.pondline/api.sock", "/home/a/.pondline/operator.cred"), ...))
+/// ```
+pub fn parse_with_env(
+  arguments: List(String),
+  env: Environment,
+) -> Result(Command, String) {
   // The leading words name the command; its options are checked against
   // that command's own list, so an option valid for one is unknown to the
   // rest.
@@ -245,17 +339,24 @@ pub fn parse(
 
     ["--version"] | ["version"] -> Ok(Version)
 
-    ["daemon", ..rest] -> parse_daemon(rest)
+    ["init", ..rest] -> parse_init(rest, env)
+
+    ["daemon", ..rest] -> parse_daemon(rest, env)
 
     ["invite", "create", ..rest] ->
       client(
         rest,
-        env_credential_file,
+        env,
         ["--description", "--budget", "--out"],
         ["--auto-approve", "--ticket"],
         fn(options) {
           use description <- result.try(required(options, "--description"))
-          use budget <- result.try(number(options, "--budget", 1, 1_000_000))
+          use budget <- result.try(number(
+            options,
+            "--budget",
+            1,
+            limits.max_budget_messages,
+          ))
           use output <- result.try(invite_output(options))
           let approval = approval_of(options)
 
@@ -266,11 +367,17 @@ pub fn parse(
     ["invite", "accept", ..rest] ->
       client(
         rest,
-        env_credential_file,
-        ["--file", "--description"],
+        env,
+        ["--file", "--description", "--budget"],
         ["--stdin", "--ticket"],
         fn(options) {
           use source <- result.try(one_source(options))
+          use budget <- result.try(optional_present_number(
+            options,
+            "--budget",
+            1,
+            limits.max_budget_messages,
+          ))
           let description = dict_get(options, "--description", "")
 
           // `--ticket` says what the input is; it never carries it.
@@ -279,79 +386,71 @@ pub fn parse(
             False -> FromInvitation
           }
 
-          Ok(AcceptInvite(source:, form:, description:))
+          Ok(AcceptInvite(source:, form:, description:, budget:))
         },
       )
 
     ["contacts", "list", ..rest] ->
-      client(rest, env_credential_file, [], [], fn(_) { Ok(ListContacts) })
+      client(rest, env, [], [], fn(_) { Ok(ListContacts) })
 
     ["contact", "approve", ..rest] ->
-      client(rest, env_credential_file, ["--contact"], [], fn(options) {
+      client(rest, env, ["--contact"], [], fn(options) {
         result.map(contact(options), ApproveContact)
       })
 
     ["contact", "decline", ..rest] ->
-      client(rest, env_credential_file, ["--contact"], [], fn(options) {
+      client(rest, env, ["--contact"], [], fn(options) {
         result.map(contact(options), DeclineContact)
       })
 
     ["contact", "close", ..rest] ->
-      client(rest, env_credential_file, ["--contact"], [], fn(options) {
+      client(rest, env, ["--contact"], [], fn(options) {
         result.map(contact(options), CloseContact)
       })
 
     ["contact", "budget", ..rest] ->
-      client(rest, env_credential_file, ["--contact", "--add"], [], fn(options) {
+      client(rest, env, ["--contact", "--add"], [], fn(options) {
         use contact <- result.try(contact(options))
-        use add <- result.try(number(options, "--add", 1, 1_000_000))
+        use add <- result.try(number(
+          options,
+          "--add",
+          1,
+          limits.max_budget_messages,
+        ))
 
         Ok(RaiseBudget(contact:, add:))
       })
 
-    ["send", ..rest] -> parse_send(rest, env_credential_file)
+    ["send", ..rest] -> parse_send(rest, env)
 
-    ["receive", ..rest] -> parse_receive(rest, env_credential_file)
+    ["receive", ..rest] -> parse_receive(rest, env)
 
     ["ack", ..rest] ->
-      client(rest, env_credential_file, ["--message"], [], fn(options) {
+      client(rest, env, ["--message"], [], fn(options) {
         result.map(message(options), Acknowledge)
       })
 
     ["status", ..rest] ->
-      client(rest, env_credential_file, ["--message"], [], fn(options) {
+      client(rest, env, ["--message"], [], fn(options) {
         result.map(message(options), MessageStatus)
       })
 
     ["audit", ..rest] ->
-      client(
-        rest,
-        env_credential_file,
-        ["--contact", "--limit"],
-        [],
-        fn(options) {
-          use contact <- result.try(optional_contact(options))
-          use limit <- result.try(optional_number(
-            options,
-            "--limit",
-            50,
-            1,
-            256,
-          ))
+      client(rest, env, ["--contact", "--limit"], [], fn(options) {
+        use contact <- result.try(optional_contact(options))
+        use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
 
-          Ok(ShowAudit(contact:, limit:))
-        },
-      )
+        Ok(ShowAudit(contact:, limit:))
+      })
 
     ["incidents", ..rest] ->
-      client(rest, env_credential_file, ["--limit"], [], fn(options) {
+      client(rest, env, ["--limit"], [], fn(options) {
         use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
 
         Ok(ShowIncidents(limit:))
       })
 
-    ["health", ..rest] ->
-      client(rest, env_credential_file, [], [], fn(_) { Ok(ShowHealth) })
+    ["health", ..rest] -> client(rest, env, [], [], fn(_) { Ok(ShowHealth) })
 
     _ -> Error("unknown command")
   }
@@ -392,10 +491,7 @@ fn one_source(options: Options) -> Result(Input, String) {
 
 /// Parses `send`. The payload comes from exactly one of `--file` and
 /// `--stdin`, never from the command line.
-fn parse_send(
-  rest: List(String),
-  env: Option(String),
-) -> Result(Command, String) {
+fn parse_send(rest: List(String), env: Environment) -> Result(Command, String) {
   client(
     rest,
     env,
@@ -444,7 +540,7 @@ fn parse_send(
 /// count at one and cannot combine with `--json` or `--max`.
 fn parse_receive(
   rest: List(String),
-  env: Option(String),
+  env: Environment,
 ) -> Result(Command, String) {
   client(rest, env, ["--contact", "--max", "--wait"], ["--raw"], fn(options) {
     use contact <- result.try(optional_contact(options))
@@ -471,30 +567,174 @@ fn parse_receive(
   })
 }
 
-/// Parses `daemon`.
-fn parse_daemon(rest: List(String)) -> Result(Command, String) {
+/// Parses `init`, which configures a state directory (`~/.pondline` by default)
+/// from a `plg1...` grant token or explicit `--mailbox` + `--provision-file`.
+fn parse_init(rest: List(String), env: Environment) -> Result(Command, String) {
   use options <- result.try(
     read_options(
       rest,
-      ["--state-dir", "--mailbox", "--provision-file", "--carrier", "--tor-bin"],
-      [],
+      [
+        "--state-dir", "--mailbox", "--provision-file", "--grant-file", "--file",
+        "--carrier", "--tor-bin",
+      ],
+      ["--grant-stdin", "--stdin", "--json"],
     ),
   )
-  use state_dir <- result.try(required(options, "--state-dir"))
-  use mailbox <- result.try(required(options, "--mailbox"))
-  use mailbox <- result.try(check_endpoint(mailbox))
-  use provision_file <- result.try(required(options, "--provision-file"))
-  use carrier <- result.try(carrier(options))
+  use state_dir <- result.try(resolve_state_dir(options, env.default_state_dir))
+  use setup <- result.try(init_setup(options))
+  use chosen_carrier <- result.try(carrier(options))
+
+  // Select JSON or human confirmation output for `init`.
+  let output = case has_flag(options, "--json") {
+    True -> JsonOutput
+    False -> HumanOutput
+  }
 
   Ok(
-    RunDaemon(DaemonOptions(
+    InitDaemon(InitCommand(
       state_dir:,
-      mailbox:,
-      provision_file:,
-      carrier:,
+      setup:,
+      carrier: chosen_carrier,
+      tor_bin: option.from_result(dict.get(options.values, "--tor-bin")),
+      output:,
+    )),
+  )
+}
+
+/// Parses `daemon`, allowing bare `pondline daemon` to load `<state_dir>/config.json`.
+fn parse_daemon(
+  rest: List(String),
+  env: Environment,
+) -> Result(Command, String) {
+  use options <- result.try(
+    read_options(
+      rest,
+      [
+        "--state-dir", "--mailbox", "--provision-file", "--grant-file",
+        "--carrier", "--tor-bin",
+      ],
+      ["--grant-stdin"],
+    ),
+  )
+  use state_dir <- result.try(resolve_state_dir(options, env.default_state_dir))
+  use setup <- result.try(daemon_setup(options))
+  use explicit_carrier <- result.try(optional_carrier(options))
+
+  Ok(
+    RunDaemon(DaemonCommand(
+      state_dir:,
+      setup:,
+      carrier: explicit_carrier,
       tor_bin: option.from_result(dict.get(options.values, "--tor-bin")),
     )),
   )
+}
+
+/// Resolves `--state-dir`, falling back to `default_state_dir` (`~/.pondline`).
+fn resolve_state_dir(
+  options: Options,
+  default_dir: Option(String),
+) -> Result(String, String) {
+  case dict.get(options.values, "--state-dir"), default_dir {
+    Ok(dir), _ -> Ok(dir)
+    Error(Nil), Some(dir) -> Ok(dir)
+    Error(Nil), None -> Error("missing option --state-dir")
+  }
+}
+
+/// Resolves `init`'s setup source (`ExplicitMailbox` or `GrantMailbox`).
+fn init_setup(options: Options) -> Result(MailboxSetup, String) {
+  let has_explicit =
+    dict.has_key(options.values, "--mailbox")
+    || dict.has_key(options.values, "--provision-file")
+  let has_grant = has_init_grant_option(options)
+
+  // `init` must be handed either `--mailbox`/`--provision-file` or a grant token input.
+  case has_explicit, has_grant {
+    True, False -> explicit_mailbox_setup(options)
+    False, True -> init_grant_source(options) |> result.map(GrantMailbox)
+    True, True ->
+      Error(
+        "give either --mailbox/--provision-file or a grant token input, not both",
+      )
+    False, False ->
+      Error(
+        "give --stdin, --file FILE, or --mailbox HOST:PORT --provision-file FILE",
+      )
+  }
+}
+
+/// Whether any grant-input flag or option was given to `init`.
+fn has_init_grant_option(options: Options) -> Bool {
+  dict.has_key(options.values, "--grant-file")
+  || dict.has_key(options.values, "--file")
+  || has_flag(options, "--grant-stdin")
+  || has_flag(options, "--stdin")
+}
+
+/// Ensures `init` received exactly one grant input source (`--file`, `--grant-file`, `--stdin`, or `--grant-stdin`).
+fn init_grant_source(options: Options) -> Result(Input, String) {
+  let files =
+    list.filter_map(["--grant-file", "--file"], dict.get(options.values, _))
+  let stdins = list.filter(["--grant-stdin", "--stdin"], has_flag(options, _))
+
+  // Only a single file or single stdin flag is unambiguous.
+  case files, stdins {
+    [path], [] -> Ok(InputFile(path))
+    [], [_] -> Ok(InputStdin)
+    _, _ -> Error("give exactly one grant input (--stdin or --file FILE)")
+  }
+}
+
+/// Resolves how `daemon` gets its mailbox: explicit flags, a grant token, or `<state_dir>/config.json`.
+fn daemon_setup(options: Options) -> Result(MailboxSetup, String) {
+  let has_explicit =
+    dict.has_key(options.values, "--mailbox")
+    || dict.has_key(options.values, "--provision-file")
+  let has_grant =
+    dict.has_key(options.values, "--grant-file")
+    || has_flag(options, "--grant-stdin")
+
+  // With neither flag group present, `daemon` loads `<state_dir>/config.json`.
+  case has_explicit, has_grant {
+    True, False -> explicit_mailbox_setup(options)
+    False, True -> grant_source(options) |> result.map(GrantMailbox)
+    False, False -> Ok(SavedMailbox)
+    True, True ->
+      Error(
+        "give either --mailbox/--provision-file or --grant-file/--grant-stdin, not both",
+      )
+  }
+}
+
+/// Validates `--mailbox` and `--provision-file` together.
+fn explicit_mailbox_setup(options: Options) -> Result(MailboxSetup, String) {
+  use mailbox <- result.try(required(options, "--mailbox"))
+  use mailbox <- result.try(check_endpoint(mailbox))
+  use provision_file <- result.map(required(options, "--provision-file"))
+  ExplicitMailbox(mailbox:, provision_file:)
+}
+
+/// Ensures exactly one grant input source (`--grant-file` or `--grant-stdin`).
+fn grant_source(options: Options) -> Result(Input, String) {
+  case
+    dict.get(options.values, "--grant-file"),
+    has_flag(options, "--grant-stdin")
+  {
+    Ok(path), False -> Ok(InputFile(path))
+    Error(Nil), True -> Ok(InputStdin)
+    _, _ -> Error("give exactly one of --grant-file and --grant-stdin")
+  }
+}
+
+/// Parses `--carrier` when optional, leaving `None` when omitted so saved config can supply it.
+fn optional_carrier(options: Options) -> Result(Option(Carrier), String) {
+  case dict.get(options.values, "--carrier") {
+    Error(Nil) -> Ok(None)
+    Ok("tor") -> Ok(Some(Tor))
+    Ok("loopback") -> Ok(Some(Loopback))
+    Ok(_) -> Error("--carrier must be tor or loopback")
+  }
 }
 
 /// The `--carrier` option, defaulting to Tor.
@@ -528,7 +768,7 @@ fn check_endpoint(text: String) -> Result(String, String) {
 /// daemon and builds the action.
 fn client(
   rest: List(String),
-  env_credential_file: Option(String),
+  env: Environment,
   values: List(String),
   flags: List(String),
   build: fn(Options) -> Result(Action, String),
@@ -538,7 +778,7 @@ fn client(
   use options <- result.try(
     read_options(rest, list.append(common_values, values), ["--json", ..flags]),
   )
-  use target <- result.try(target(options, env_credential_file))
+  use target <- result.try(target(options, env))
   use action <- result.try(build(options))
 
   // The output mode is a flag, so it is a branch on presence.
@@ -550,29 +790,36 @@ fn client(
   Ok(Client(target:, output:, action:))
 }
 
-/// Where the daemon's socket and the credential file are. The state
-/// directory supplies both defaults, and the environment variable replaces
-/// the credential default.
-fn target(
-  options: Options,
-  env_credential_file: Option(String),
-) -> Result(Target, String) {
-  let state_dir = dict.get(options.values, "--state-dir")
+/// Where the daemon's socket and the credential file are. Explicit `--state-dir`
+/// or `--socket` wins; when neither is given, `env.default_state_dir` supplies
+/// the default `~/.pondline` directory without ever sending its credential to an
+/// unrelated explicit `--socket`.
+fn target(options: Options, env: Environment) -> Result(Target, String) {
+  let explicit_socket = dict.get(options.values, "--socket")
 
-  // The explicit socket wins; otherwise the state directory implies one.
-  use socket <- result.try(
-    case dict.get(options.values, "--socket"), state_dir {
-      Ok(path), _ -> Ok(path)
-      Error(Nil), Ok(dir) -> Ok(dir <> "/api.sock")
-      Error(Nil), Error(Nil) -> Error("give --state-dir or --socket")
-    },
-  )
+  // Fall back to `env.default_state_dir` (`~/.pondline`) only when neither `--state-dir` nor `--socket` was given.
+  let state_dir = case
+    dict.get(options.values, "--state-dir"),
+    explicit_socket,
+    env.default_state_dir
+  {
+    Ok(dir), _, _ -> Ok(dir)
+    Error(Nil), Error(Nil), Some(dir) -> Ok(dir)
+    Error(Nil), _, _ -> Error(Nil)
+  }
 
-  // The explicit file wins, then the environment, then the state directory's operator credential.
+  // The explicit socket wins; otherwise the resolved state directory implies one.
+  use socket <- result.try(case explicit_socket, state_dir {
+    Ok(path), _ -> Ok(path)
+    Error(Nil), Ok(dir) -> Ok(dir <> "/api.sock")
+    Error(Nil), Error(Nil) -> Error("give --state-dir or --socket")
+  })
+
+  // The explicit file wins, then `PONDLINE_CREDENTIAL_FILE`, then `<state-dir>/operator.cred`.
   use credential_file <- result.try(
     case
       dict.get(options.values, "--credential-file"),
-      env_credential_file,
+      env.credential_file,
       state_dir
     {
       Ok(path), _, _ -> Ok(path)
@@ -717,6 +964,19 @@ fn optional_number(
   }
 }
 
+/// An optional integer option from `low` to `high`, returning `None` when absent.
+fn optional_present_number(
+  options: Options,
+  name: String,
+  low: Int,
+  high: Int,
+) -> Result(Option(Int), String) {
+  case dict.get(options.values, name) {
+    Ok(text) -> in_range(text, name, low, high) |> result.map(Some)
+    Error(Nil) -> Ok(None)
+  }
+}
+
 /// Parses an integer within bounds.
 fn in_range(
   text: String,
@@ -738,18 +998,206 @@ fn in_range(
   }
 }
 
-/// The required `--contact` identifier.
-fn contact(options: Options) -> Result(Id(Contact), String) {
+/// The required `--contact` selector: full 32-digit hex id, hex prefix, or petname.
+fn contact(options: Options) -> Result(ContactRef, String) {
   use text <- result.try(required(options, "--contact"))
-  hex(text, "--contact")
+  parse_contact_ref(text)
 }
 
-/// The optional `--contact` identifier.
-fn optional_contact(options: Options) -> Result(Option(Id(Contact)), String) {
+/// The optional `--contact` selector.
+fn optional_contact(options: Options) -> Result(Option(ContactRef), String) {
   case dict.get(options.values, "--contact") {
-    Ok(text) -> result.map(hex(text, "--contact"), Some)
+    Ok(text) -> result.map(parse_contact_ref(text), Some)
     Error(Nil) -> Ok(None)
   }
+}
+
+/// Parses `--contact` as `ExactContact` when it is 32-digit hex, else `LookupContact`.
+fn parse_contact_ref(text: String) -> Result(ContactRef, String) {
+  let trimmed = string.trim(text)
+  let looks_secret =
+    string.starts_with(trimmed, "pl1") || string.starts_with(trimmed, "plg1")
+
+  // Reject empty, overlong, or misplaced ticket/grant strings without echoing them.
+  case
+    trimmed == "",
+    looks_secret,
+    string.byte_size(trimmed) > limits.max_description_bytes
+  {
+    True, _, _ -> Error("--contact must not be empty")
+    False, True, _ ->
+      Error(
+        "--contact takes a contact id or petname, not a ticket or grant token",
+      )
+    False, False, True -> Error("--contact exceeds maximum description length")
+    False, False, False ->
+      case id.from_hex(trimmed) {
+        Ok(parsed) -> Ok(ExactContact(parsed))
+        Error(Nil) -> Ok(LookupContact(trimmed))
+      }
+  }
+}
+
+/// Whether `action` carries a `LookupContact` that needs a `contacts` lookup first.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.needs_contact_lookup(ApproveContact(LookupContact("bob")))
+/// // -> True
+/// ```
+pub fn needs_contact_lookup(action: Action) -> Bool {
+  case action {
+    ApproveContact(LookupContact(..))
+    | DeclineContact(LookupContact(..))
+    | CloseContact(LookupContact(..))
+    | RaiseBudget(contact: LookupContact(..), ..)
+    | SendMessage(contact: LookupContact(..), ..) -> True
+    ReceiveMessages(contact: Some(LookupContact(..)), ..)
+    | ShowAudit(contact: Some(LookupContact(..)), ..) -> True
+    _ -> False
+  }
+}
+
+/// Resolves any `LookupContact` inside `action` against `entries`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.resolve_action_contacts(ShowHealth, [])
+/// // -> Ok(ShowHealth)
+/// ```
+pub fn resolve_action_contacts(
+  action: Action,
+  entries: List(ContactEntry),
+) -> Result(Action, String) {
+  // Rewrite only the actions that carry a required or optional `ContactRef`.
+  case action {
+    ApproveContact(ref) ->
+      resolve_ref(ref, entries) |> result.map(ApproveContact)
+    DeclineContact(ref) ->
+      resolve_ref(ref, entries) |> result.map(DeclineContact)
+    CloseContact(ref) -> resolve_ref(ref, entries) |> result.map(CloseContact)
+    RaiseBudget(ref, add) ->
+      resolve_ref(ref, entries) |> result.map(RaiseBudget(_, add))
+    SendMessage(ref, content_type, source, in_reply_to, idempotency_key) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      SendMessage(resolved, content_type, source, in_reply_to, idempotency_key)
+    }
+    ReceiveMessages(Some(ref), max, wait_seconds, view) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      ReceiveMessages(Some(resolved), max, wait_seconds, view)
+    }
+    ShowAudit(Some(ref), limit) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      ShowAudit(Some(resolved), limit)
+    }
+    other -> Ok(other)
+  }
+}
+
+/// Resolves one `ContactRef` into an `ExactContact`.
+fn resolve_ref(
+  ref: ContactRef,
+  entries: List(ContactEntry),
+) -> Result(ContactRef, String) {
+  case ref {
+    ExactContact(_) -> Ok(ref)
+    LookupContact(query) ->
+      resolve_contact_ref(entries, query) |> result.map(ExactContact)
+  }
+}
+
+/// Resolves `query` against `entries`: exact case-insensitive description match first,
+/// then >=4-character hex prefix match, preferring non-closed contacts and failing closed on ambiguity.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.resolve_contact_ref([], "bob")
+/// // -> Error("no contact matching \"bob\"")
+/// ```
+pub fn resolve_contact_ref(
+  entries: List(ContactEntry),
+  query: String,
+) -> Result(Id(Contact), String) {
+  let lowered = string.lowercase(string.trim(query))
+  let by_name =
+    list.filter(entries, fn(entry) {
+      string.lowercase(string.trim(entry.description)) == lowered
+    })
+
+  // Prefer exact description matches before falling back to hex prefixes (>= 4 chars).
+  case pick_unique_contact(by_name, query) {
+    Ok(found) -> Ok(found)
+    Error(AmbiguousMatch(reason)) -> Error(reason)
+    Error(NoMatch) -> resolve_hex_prefix(entries, lowered, query)
+  }
+}
+
+/// Internal outcome of disambiguating candidate contacts.
+type LookupMiss {
+  NoMatch
+  AmbiguousMatch(reason: String)
+}
+
+/// Matches `lowered` as a >=4-character hex prefix of `id.to_hex(entry.contact)`.
+fn resolve_hex_prefix(
+  entries: List(ContactEntry),
+  lowered: String,
+  original: String,
+) -> Result(Id(Contact), String) {
+  let is_prefix_candidate =
+    string.byte_size(lowered) >= 4 && is_hex_ascii(lowered)
+
+  // Short or non-hex strings cannot match as hex prefixes.
+  case is_prefix_candidate {
+    False -> Error("no contact matching \"" <> original <> "\"")
+    True -> {
+      let by_prefix =
+        list.filter(entries, fn(entry) {
+          string.starts_with(id.to_hex(entry.contact), lowered)
+        })
+
+      // Disambiguate prefix hits the same way as description hits.
+      case pick_unique_contact(by_prefix, original) {
+        Ok(found) -> Ok(found)
+        Error(AmbiguousMatch(reason)) -> Error(reason)
+        Error(NoMatch) -> Error("no contact matching \"" <> original <> "\"")
+      }
+    }
+  }
+}
+
+/// Picks a single contact from `matches`, preferring non-closed contacts over closed ones.
+fn pick_unique_contact(
+  matches: List(ContactEntry),
+  query: String,
+) -> Result(Id(Contact), LookupMiss) {
+  let live = list.filter(matches, fn(entry) { entry.phase != "closed" })
+
+  // Prefer live relationships when a closed relationship shares the same label.
+  let pool = case live {
+    [_, ..] -> live
+    [] -> matches
+  }
+
+  // More than one candidate in the active pool is ambiguous and never guessed.
+  case pool {
+    [] -> Error(NoMatch)
+    [single] -> Ok(single.contact)
+    [_, _, ..] ->
+      Error(AmbiguousMatch(
+        "ambiguous contact \"" <> query <> "\"; pass its full hex id",
+      ))
+  }
+}
+
+/// Checks whether every character in `text` is a lowercase hex digit.
+fn is_hex_ascii(text: String) -> Bool {
+  list.all(string.to_graphemes(text), fn(ch) {
+    string.contains("0123456789abcdef", ch)
+  })
 }
 
 /// The required `--message` identifier.
@@ -781,7 +1229,7 @@ fn hex(text: String, name: String) -> Result(Id(kind), String) {
 /// ## Examples
 ///
 /// ```gleam
-/// cli.input_of(AcceptInvite(InputFile("bob.invite"), FromInvitation, ""))
+/// cli.input_of(AcceptInvite(InputFile("bob.invite"), FromInvitation, "", None))
 /// // -> InputFile("bob.invite")
 /// ```
 pub fn input_of(action: Action) -> Input {
@@ -851,21 +1299,23 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
       ]),
     )
 
-    AcceptInvite(form: FromInvitation, description:, ..) -> #(
+    AcceptInvite(form: FromInvitation, description:, budget:, ..) -> #(
       "accept",
       json.object([
         #("invitation", json.string(bit_array.base64_encode(input, True))),
         #("description", json.string(description)),
+        ..budget_args(budget)
       ]),
     )
 
     // The ticket goes as text; `cli_run` has already refused input that is
     // not, and the daemon drops the newline a paste leaves.
-    AcceptInvite(form: FromTicket, description:, ..) -> #(
+    AcceptInvite(form: FromTicket, description:, budget:, ..) -> #(
       "accept",
       json.object([
         #("ticket", json.string(result.unwrap(bit_array.to_string(input), ""))),
         #("description", json.string(description)),
+        ..budget_args(budget)
       ]),
     )
 
@@ -877,7 +1327,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     RaiseBudget(contact:, add:) -> #(
       "raise_budget",
       json.object([
-        #("contact", json.string(id.to_hex(contact))),
+        #("contact", contact_ref_json(contact)),
         #("by", json.int(add)),
       ]),
     )
@@ -885,7 +1335,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     SendMessage(contact:, content_type:, in_reply_to:, idempotency_key:, ..) -> #(
       "send",
       json.object([
-        #("contact", json.string(id.to_hex(contact))),
+        #("contact", contact_ref_json(contact)),
         #("content_type", json.string(content_type)),
         #("payload", json.string(bit_array.base64_encode(input, True))),
         #("in_reply_to", json.nullable(in_reply_to, hex_json)),
@@ -896,7 +1346,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     ReceiveMessages(contact:, max:, wait_seconds:, ..) -> #(
       "receive",
       json.object([
-        #("contact", json.nullable(contact, hex_json)),
+        #("contact", json.nullable(contact, contact_ref_json)),
         #("max", json.int(max)),
         #("wait_ms", json.int(wait_seconds * 1000)),
       ]),
@@ -908,7 +1358,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     ShowAudit(contact:, limit:) -> #(
       "audit",
       json.object([
-        #("contact", json.nullable(contact, hex_json)),
+        #("contact", json.nullable(contact, contact_ref_json)),
         #("limit", json.int(limit)),
       ]),
     )
@@ -954,6 +1404,14 @@ fn key_args(key: Option(String)) -> List(#(String, Json)) {
   }
 }
 
+/// Optional `budget` field on `accept`, omitted when `None` so wire requests stay minimal.
+fn budget_args(budget: Option(Int)) -> List(#(String, Json)) {
+  case budget {
+    Some(value) -> [#("budget", json.int(value))]
+    None -> []
+  }
+}
+
 /// The wire name of an approval mode.
 fn approval_name(approval: Approval) -> String {
   case approval {
@@ -967,9 +1425,17 @@ fn hex_json(identifier: Id(kind)) -> Json {
   json.string(id.to_hex(identifier))
 }
 
+/// Encodes a `ContactRef` to JSON after resolution.
+fn contact_ref_json(ref: ContactRef) -> Json {
+  case ref {
+    ExactContact(contact:) -> hex_json(contact)
+    LookupContact(query:) -> json.string(query)
+  }
+}
+
 /// The arguments of an operation on one contact.
-fn contact_args(contact: Id(Contact)) -> Json {
-  json.object([#("contact", hex_json(contact))])
+fn contact_args(contact: ContactRef) -> Json {
+  json.object([#("contact", contact_ref_json(contact))])
 }
 
 /// The arguments of an operation on one message.

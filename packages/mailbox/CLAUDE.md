@@ -48,19 +48,9 @@ process.
   with the bound port (port 0 is ephemeral); the mist handler, routing,
   bounded body read and one `info` line per request (`telemetry/log`,
   `component=http event=request method= status= response= elapsed_ms=`).
-- `mailbox` (`gleam run -m mailbox -- ...`): `main`, `parse` and the two
-  subcommands, `serve --db <path> --port <n> [--tor-bin <path> --tor-state
-  <dir>]` (prints `listening 127.0.0.1:<port>`; with the Tor options it then
-  starts the sidecar, bootstraps, hosts an onion service named `mailbox`
-  that forwards to that port, and prints `onion <host>.onion:80`, the
-  address a daemon dials; runs until stopped) and `grant --db <path> --queues <n> --out <file>` (writes
-  the 32-byte provisioning capability to a new 0600 file, prints the path
-  only, never overwrites). Bad arguments print one line and exit 1.
-  `--version` prints the build's identity (`mailbox/build`, the same shape
-  as `daemon/build`: `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`
-  from the release launcher, `dev` and `unknown` from source).
+- `mailbox` (`gleam run -m mailbox -- ...`): `main`, `parse` and three subcommands: `serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]]` (`--port` defaults to 0; with `--tor-state` it resolves `pondline-tor` via `--tor-bin`, `PONDLINE_TOR_BIN`, `PATH` or checkout build, hosts the onion service, writes `<dir>/onion` with mode 0600, and prints `onion <host>.onion:80`), `grant --db <path> --queues <n> [--out <file>] [--token (--mailbox <host:port> | --tor-state <dir>)]` (writes a 0600 capability file, prints a `plg1...` token on stdout, or both; ADR-015), and `status --db <path> [--tor-state <dir>] [--json]` (single-transaction aggregate counts and byte totals via `store.status`). `--version` prints the build's identity (`mailbox/build`).
 - `mailbox/internal/ffi_system`: the wall clock, a monotonic clock for
-  durations, an exclusive 0600 file create, the environment and `halt`
+  durations, exclusive and atomic 0600 file writes, checked fd-1 stdout, executable lookup, the environment and `halt`
   (`src/mailbox_ffi.erl`).
 - `mailbox/node`: the `rest_for_one` supervisor, `Names`, `Node`, and
   `handle`, which also performs the long poll in the caller's own process.

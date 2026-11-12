@@ -3,8 +3,8 @@
 ////
 //// This is the only module in the package that does I/O. It also applies
 //// the staging decision: **every rule warns except the ones
-//// `finding.error_by_default` names** — R0, R2, R4, R6, R10, R13, R14, R15,
-//// R16, R19 and R20, each with its census and its argument in that function.
+//// `finding.error_by_default` names** (R0, R1, R2, R4, R6, R7, R10, R11,
+//// R13 to R16, R19 to R22), each with its census and its argument in that function.
 //// `scripts/lint.sh` reads the trailing `# <errors> <warnings>` line to
 //// decide its exit code, exactly as `scripts/doc_check.sh` does. Promoting
 //// one of the rest is `--error=R5` and nothing else; the census is what
@@ -58,14 +58,14 @@ const usage: String =
 usage: gleam run -m lint/cli -- [options] <path>...
 
   --depth=N       R2 fires above this `case` nesting depth (default 3)
-  --error=R1,R5   promote these rules (R0, R2, R4, R6, R10, R13-R16, R19, R20 are)
+  --error=R5,R9   promote these rules (R0, R1, R2, R4, R6, R7, R10, R11, R13-R16, R19-R22 are)
   --tests         also lint test/ sources with every rule (R4 and R7 are off
                   for them); R19 and R20 read test/ in every run
   --limit=N       list at most N findings per rule (default 25; 0 = all)
   --quiet         print the census only
   --help          this
 
-R0, R2, R4, R6, R10, R13-R16, R19 and R20 gate by default and their censuses must stay
+R0, R1, R2, R4, R6, R7, R10, R11, R13-R16 and R19-R22 gate by default and their censuses must stay
 zero; every other rule warns unless named by --error. The last line of output
 is `# <errors> <warnings>`, which is what the wrapper script reads.
 "

@@ -264,10 +264,10 @@ Work:
             \* `process_batch` (:450): `engine.process` per envelope in
             \* order, stopping at the first that cannot commit. A poison
             \* envelope is quarantined, which commits it, after
-            \* `limits.max_process_attempts` failures (engine.gleam:1103);
+            \* `limits.max_process_attempts` failures (engine.gleam:1120);
             \* the fault budget stands for that bound. A repeat (already
             \* processed) marks its row unacknowledged (`repeat`,
-            \* engine.gleam:1076, ADR-010 addendum). Here that write changes
+            \* engine.gleam:1093, ADR-010 addendum). Here that write changes
             \* nothing: this model's mailbox never serves a deleted envelope
             \* again, so a repeat's row is always still unacknowledged. A
             \* failure of that write is the abandon step below.

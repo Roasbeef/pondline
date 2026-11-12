@@ -14,7 +14,9 @@
 //// and a new transport behind the mailbox command boundary (spec §6.2).
 
 import gleam/bit_array
+import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
 
 /// A syntactically valid v3 onion service hostname, lowercase, with the
@@ -213,5 +215,49 @@ pub fn admit(
     Onion(..), _ -> Ok(endpoint)
     Loopback(..), TorOrLoopback -> Ok(endpoint)
     Loopback(..), TorOnly -> Error(CarrierNotPermitted)
+  }
+}
+
+/// Formats an endpoint in canonical `HOST:PORT` text (`127.0.0.1:PORT` for
+/// loopback, `<56-char>.onion:PORT` for Tor).
+///
+/// ## Examples
+///
+/// ```gleam
+/// let assert Ok(p) = endpoint.port(8080)
+/// assert endpoint.to_string(endpoint.Loopback(p)) == "127.0.0.1:8080"
+/// ```
+pub fn to_string(endpoint: Endpoint) -> String {
+  case endpoint {
+    Onion(address:, port:) -> address.host <> ":" <> int.to_string(port.number)
+    Loopback(port:) -> "127.0.0.1:" <> int.to_string(port.number)
+  }
+}
+
+/// Parses `HOST:PORT` into an `Endpoint`: `127.0.0.1:PORT` or `localhost:PORT`
+/// becomes `Loopback`, and anything else must be a valid v3 `.onion:PORT`.
+/// Carrier admission stays a separate `admit` step.
+///
+/// ## Examples
+///
+/// ```gleam
+/// endpoint.parse("127.0.0.1:8080")
+/// // -> Ok(Loopback(_))
+/// endpoint.parse("example.com:80")
+/// // -> Error(NotAnOnionAddress)
+/// ```
+pub fn parse(text: String) -> Result(Endpoint, EndpointError) {
+  use #(host, port_text) <- result.try(
+    string.split_once(text, ":") |> result.replace_error(InvalidPort),
+  )
+  use number <- result.try(
+    int.parse(port_text) |> result.replace_error(InvalidPort),
+  )
+  use parsed_port <- result.try(port(number))
+
+  // Loopback accepts both local hostnames; everything else must be a v3 onion.
+  case host {
+    "127.0.0.1" | "localhost" -> Ok(Loopback(port: parsed_port))
+    _ -> parse_onion(host) |> result.map(Onion(_, port: parsed_port))
   }
 }

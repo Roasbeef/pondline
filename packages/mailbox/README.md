@@ -1,6 +1,6 @@
 # mailbox
 
-The `mailbox` package stores padded ciphertext for recipients who are offline and returns it when they ask (`docs/spec.md` §2.2, §6). It keeps queues, envelopes, sealed ticket blobs, the SHA-256 hashes of the capabilities that authorize each operation, and tombstones for acknowledged envelopes. It never sees plaintext. This README is the short map of the package at commit `632db2f`; the full walk-through of the append and long-poll paths, the state machines and the schema is [docs/architecture/mailbox.md](../../docs/architecture/mailbox.md). The per-package contract (key types, traffic, invariants) is in [CLAUDE.md](CLAUDE.md).
+The `mailbox` package stores padded ciphertext for recipients who are offline and returns it when they ask (`docs/spec.md` §2.2, §6). It keeps queues, envelopes, sealed ticket blobs, the SHA-256 hashes of the capabilities that authorize each operation, and tombstones for acknowledged envelopes. It never sees plaintext. This README is the short map of the package at commit `49a51b3`; the full walk-through of the append and long-poll paths, the state machines and the schema is [docs/architecture/mailbox.md](../../docs/architecture/mailbox.md). The per-package contract (key types, traffic, invariants) is in [CLAUDE.md](CLAUDE.md).
 
 The wire format is `core/mailbox/codec` and the request and response types are `core/mailbox/protocol`, both in `packages/core`. The Tor sidecar that forwards an onion service to the mailbox's loopback port is described in [ADR-001](../../docs/adr/001-tor-sidecar.md). Actor mechanics come from [weft](../../docs/weft.md).
 
@@ -38,7 +38,7 @@ flowchart TB
     db[("SQLite file")]
 
     serve --> conn
-    serve -. "--tor-bin, --tor-state" .-> onion
+    serve -. "--tor-state (auto pondline-tor)" .-> onion
     conn -- "codec.decode_request" --> handle
     handle -- "Handle(now, request)" --> coord
     handle -- "Wait, Forget" --> notifier
@@ -54,7 +54,7 @@ The connection process does all waiting, so a parked long poll blocks only its o
 
 | Module | Owns | Does not own |
 | --- | --- | --- |
-| `mailbox.gleam` | Argument parsing, the `serve` and `grant` commands, the optional onion service | Any request handling |
+| `mailbox.gleam` | Argument parsing, `serve`, `grant` (raw capability or `plg1` token), `status`, sidecar discovery, the optional onion service | Any request handling |
 | `mailbox/http` | Framing: the `413`, `404`, `405` and `400` decisions, the per-request log line | Protocol semantics; durable state |
 | `mailbox/node` | The `rest_for_one` supervisor, `Names`, and the long-poll sequence run in the caller's process | The waiter table; the database |
 | `mailbox/coordinator` | The one `Store`, and the order commands run in | What a request means |
@@ -92,22 +92,22 @@ flowchart TB
     commit --> reply["200 TLV Response"]
 ```
 
-1. **Frame.** `http.route` selects by path and then method (`http.gleam:197`). `http.exchange` refuses a declared `Content-Length` over `codec.max_request_bytes()` before reading the body, and answers `400` for a missing or invalid length or any transfer coding (`http.gleam:216`, `http.gleam:241`). `max_request_bytes()` is 263_168 (`codec.gleam:128`).
+1. **Frame.** `http.route` selects by path and then method (`http.gleam:197`). `http.exchange` refuses a declared `Content-Length` over `codec.max_request_bytes()` before reading the body, and answers `400` for a missing or invalid length or any transfer coding (`http.gleam:216`, `http.gleam:241`). `max_request_bytes()` is 263_168 (`codec.gleam:131`).
 2. **Decode.** `http.answer` runs `codec.decode_request`; a failure becomes `Refused(codec.refusal(error))` so the client reads one kind of answer (`http.gleam:259`).
 3. **Dispatch.** `node.handle` reads the clock and calls `coordinator.handle` with a 30_000 ms call timeout (`node.gleam:138`). A timeout or a missing coordinator is `Refused(Unavailable)`, and the command may still commit afterwards, so a client treats `Unavailable` as outcome unknown.
-4. **Apply.** `coordinator.handle_message` runs `service.handle` to completion before reading the next message (`coordinator.gleam:197`). Each write is one `store.transaction`, which issues `BEGIN IMMEDIATE` (`store.gleam:372`). A storage error becomes `Refused(Unavailable)` without the error text.
+4. **Apply.** `coordinator.handle_message` runs `service.handle` to completion before reading the next message (`coordinator.gleam:197`). Each write is one `store.transaction`, which issues `BEGIN IMMEDIATE` (`store.gleam:347`). A storage error becomes `Refused(Unavailable)` without the error text.
 5. **Wake.** After the commit, `announce` sends `Notify(queue)` for an `Appended` response only, then the reply goes to the caller (`coordinator.gleam:229`).
 6. **Long poll.** `wait_for_append` registers a wake subject with the notifier before its last look at the database, then waits `min(wait_seconds, limits.long_poll_seconds)` (25) seconds, fetches once more, and calls `notifier.forget` (`node.gleam:284`). The step-by-step sequence is in [docs/architecture/mailbox.md](../../docs/architecture/mailbox.md#pipeline-a-long-poll-fetch).
 
-The sweeper sends `Sweep(now)` to the coordinator on a fixed-delay `actor.periodic` tick every `sweep_period_ms` (60_000, set at `mailbox.gleam:63`), with a 30_000 ms reply timeout (`sweeper.gleam:55`). It drops the result; the next tick retries.
+The sweeper sends `Sweep(now)` to the coordinator on a fixed-delay `actor.periodic` tick every `sweep_period_ms` (60_000, set at `mailbox.gleam:71`), with a 30_000 ms reply timeout (`sweeper.gleam:55`). It drops the result; the next tick retries.
 
 ## Startup
 
-`mailbox serve --db <path> --port <n>` starts the node before the listener, so no request arrives before the database is open and migrated (`mailbox.gleam:255`). The coordinator opens the store in its initialiser with a 5000 ms start timeout, so a bad file fails the start (`coordinator.gleam:109`). The server binds `127.0.0.1` only. With `--tor-bin` and `--tor-state`, `host_onion` then starts the sidecar and hosts an onion service named `mailbox` that forwards to the bound port, and prints `onion <host>.onion:80` after the `listening` line.
+`pondline-mailbox serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]]` resolves any requested Tor sidecar before starting the node, and starts the node before the listener, so no request arrives before the database is open and migrated (`mailbox.gleam:553`). `--port` defaults to `0` (ephemeral loopback port). The coordinator opens the store in its initialiser with a 5000 ms start timeout, so a bad file fails the start (`coordinator.gleam:109`). The server binds `127.0.0.1` only. With `--tor-state`, `host_onion` starts the resolved `pondline-tor` sidecar, hosts an onion service named `mailbox` that forwards to the bound port, writes `<tor-state>/onion` (`0600`), and prints `onion <host>.onion:80` after the `listening` line ([ADR-015](../../docs/adr/015-grant-tokens-and-daemon-config.md)). `pondline-mailbox status --db <path>` queries `store.status` (`store.gleam:899`) directly in one read transaction without booting the supervisor.
 
 ## Storage
 
-One SQLite file, opened by `store.open_with` with WAL, `synchronous=FULL`, `fullfsync` and `foreign_keys` on, and a 5000 ms busy timeout (`store.gleam:83`). The schema is at version 2 (`schema.gleam:6`): `sql/001_initial.sql` creates `grants`, `queues`, `envelopes` and `tombstones`, and `sql/002_blobs.sql` adds `blobs`. `store.migrate` applies the list through `PRAGMA user_version` and refuses a file written by a newer build (`store.gleam:281`). Table detail and the missing foreign keys are explained in [docs/architecture/mailbox.md](../../docs/architecture/mailbox.md#storage).
+One SQLite file, opened by `store.open_with` with WAL, `synchronous=FULL`, `fullfsync` and `foreign_keys` on, and a 5000 ms busy timeout (`store.gleam:227`). The schema is at version 2 (`schema.gleam:6`): `sql/001_initial.sql` creates `grants`, `queues`, `envelopes` and `tombstones`, and `sql/002_blobs.sql` adds `blobs`. `store.migrate` applies the list through `PRAGMA user_version` and refuses a file written by a newer build (`store.gleam:298`). Table detail and the missing foreign keys are explained in [docs/architecture/mailbox.md](../../docs/architecture/mailbox.md#storage).
 
 ## Where to go next
 
@@ -122,6 +122,5 @@ One SQLite file, opened by `store.open_with` with WAL, `synchronous=FULL`, `full
 
 ## Known gaps
 
-- `docs/architecture/mailbox.md` is stale against this commit. It states commit `bf7d597`, says the schema version is 1 (the code has `schema.version = 2`), describes four tables and no `blobs`, lists the requests without `PutBlob` and `GetBlob`, and its `Config` and startup text omit `timer`, `interceptor` and `store_faults`. Its Components table has no `mailbox/mail`. Another writer owns it; this README does not repeat its numbers.
 - Nothing here was confirmed by running code. Restart behaviour under `RestForOne`, and whether mist stops a handler when a client disconnects mid long poll, are not checked.
 - The onion path is exercised only with `PONDLINE_TOR_NETWORK=1` (see `CLAUDE.md`); it is not described step by step here.
