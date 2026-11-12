@@ -1,0 +1,20 @@
+[Unit]
+Description=Pondline Tor-first blind ciphertext mailbox (user service)
+Documentation=https://github.com/Roasbeef/pondline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PONDLINE_LOG_LEVEL=info
+# Keep --tor-state on a short path because Arti places connect.sock inside it
+# and AF_UNIX socket paths are bounded to ~108 bytes.
+ExecStart=%h/.local/bin/pondline-mailbox serve --db %h/.local/state/pondline-mb/mailbox.db --tor-state %h/.local/state/pondline-mb/tor
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

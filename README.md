@@ -40,14 +40,23 @@ thinking. Pondline isn't a successor to Pond and shares no code with it.
 
 ## Quick start
 
-Building needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5 or newer
-(ML-KEM needs it), and a Rust toolchain for the Tor sidecar.
+Prebuilt self-contained releases (`darwin-arm64` and `linux-x86_64`, bundling
+ERTS, OpenSSL >= 3.5 and `pondline-tor`) install under `~/.local` and update
+atomically in place:
+
+```bash
+curl -fsSL https://github.com/Roasbeef/pondline/releases/latest/download/install.sh | bash
+pondline --version
+pondline-update --check
+```
+
+Building from source needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL
+3.5 or newer (ML-KEM needs it), and a Rust toolchain for the Tor sidecar:
 
 ```bash
 git clone https://github.com/Roasbeef/pondline.git
 cd pondline
 make install                        # PREFIX defaults to ~/.local
-pondline --version
 ```
 
 To see the whole system run once, `make demo` starts a mailbox, two daemons and

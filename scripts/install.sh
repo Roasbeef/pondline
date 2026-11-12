@@ -99,8 +99,8 @@ if [ -d "$LIBROOT" ]; then LIBROOT=$(cd "$LIBROOT" && pwd -P); fi
 LIB="$LIBROOT/pondline"
 MARKER="$LIB/.pondline-install"
 
-# The two commands, as "installed name:launcher in the tree".
-COMMANDS=("pondline:pondline" "pondline-mailbox:mailbox")
+# The installed commands, as "installed name:launcher in the tree".
+COMMANDS=("pondline:pondline" "pondline-mailbox:mailbox" "pondline-update:pondline-update")
 
 # The symlink each command must be, relative to $BIN.
 link_target() { echo "../lib/pondline/current/bin/$1"; }
@@ -246,6 +246,7 @@ switch_link "$NAME" "$LIB/current"
 for entry in "${COMMANDS[@]}"; do
   name=${entry%%:*}
   launcher=${entry#*:}
+  [ -x "$TREE/bin/$launcher" ] || continue
   switch_link "$(link_target "$launcher")" "$BIN/$name"
   echo "linked $BIN/$name -> $(link_target "$launcher")"
 done

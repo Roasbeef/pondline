@@ -38,14 +38,21 @@ fn env_int(name: String, default: Int) -> Int {
 }
 
 /// Small enough for a test's five seconds; a shell run sets its own.
-const default_runs = 40
+const default_runs = 20
 
 const default_generator_seed = 20_261_101
 
-pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_test() {
+pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_a_test() {
   swarm.campaign(
     env_int("PONDLINE_SWARM", default_runs),
     env_int("PONDLINE_SWARM_SEED", default_generator_seed),
+  )
+}
+
+pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_b_test() {
+  swarm.campaign(
+    env_int("PONDLINE_SWARM", default_runs),
+    env_int("PONDLINE_SWARM_SEED", default_generator_seed + 1),
   )
 }
 
@@ -126,21 +133,47 @@ fn held(w: world.World) -> Int {
 /// closes, the clock, held messages before the heal raises them, a mailbox
 /// losing a stored envelope, both retransmit paths (a message delivered from
 /// a copy, a receipt regenerated), and the excuses the audits know.
-pub fn the_swarm_reaches_the_audited_states_test() {
-  let seeds = list.map(swarm.runs(60), swarm.generate(11, _))
-  let scripted = list.map(seeds, walked)
-  let healed = list.map(seeds, swarm.run)
+fn audit_seeds() -> List(BitArray) {
+  list.map(swarm.runs(60), swarm.generate(11, _))
+}
 
-  assert list.all(healed, fn(w) { world.violations_of(w) == [] })
-  assert list.any(scripted, fn(w) { world.saw(w, "close-from-awaiting") })
-  assert list.any(scripted, fn(w) { world.saw(w, "offer-expired") })
-  assert list.any(scripted, fn(w) { held(w) > 0 })
-  assert list.any(scripted, fn(w) { world.saw(w, "lost-in-mailbox") })
-  assert list.any(healed, fn(w) { world.saw(w, "delivered-by-retransmit") })
-  assert list.any(healed, fn(w) { world.saw(w, "receipt-regenerated") })
-  assert list.any(healed, fn(w) {
+fn scripted_reaches(predicate: fn(world.World) -> Bool) -> Bool {
+  list.any(audit_seeds(), fn(seed) { predicate(walked(seed)) })
+}
+
+fn healed_reaches(predicate: fn(world.World) -> Bool) -> Bool {
+  list.any(audit_seeds(), fn(seed) { predicate(swarm.run(seed)) })
+}
+
+pub fn the_swarm_audit_seeds_hold_invariants_a_test() {
+  let first_half = list.take(audit_seeds(), 30)
+  assert list.all(first_half, fn(seed) {
+    world.violations_of(swarm.run(seed)) == []
+  })
+  assert string.length(swarm.hex(
+      first_half |> list.first |> result.unwrap(<<>>),
+    ))
+    > 6
+}
+
+pub fn the_swarm_audit_seeds_hold_invariants_b_test() {
+  let second_half = list.drop(audit_seeds(), 30)
+  assert list.all(second_half, fn(seed) {
+    world.violations_of(swarm.run(seed)) == []
+  })
+}
+
+pub fn the_swarm_reaches_scripted_states_test() {
+  assert scripted_reaches(fn(w) { world.saw(w, "close-from-awaiting") })
+  assert scripted_reaches(fn(w) { world.saw(w, "offer-expired") })
+  assert scripted_reaches(fn(w) { held(w) > 0 })
+  assert scripted_reaches(fn(w) { world.saw(w, "lost-in-mailbox") })
+}
+
+pub fn the_swarm_reaches_healed_states_test() {
+  assert healed_reaches(fn(w) { world.saw(w, "delivered-by-retransmit") })
+  assert healed_reaches(fn(w) { world.saw(w, "receipt-regenerated") })
+  assert healed_reaches(fn(w) {
     list.contains(world.excuses_of(w), "receiver-closed")
   })
-  assert string.length(swarm.hex(seeds |> list.first |> result.unwrap(<<>>)))
-    > 6
 }

@@ -234,10 +234,13 @@ fn walked() -> qcheck.Generator(world.World) {
   })
 }
 
-pub fn snapshots_round_trip_canonically_test() {
+fn check_snapshot_round_trips(seed: Int) -> Nil {
   let suite = fake_suite.suite()
 
-  property(walked(), fn(w) {
+  qcheck.default_config()
+  |> qcheck.with_test_count(50)
+  |> qcheck.with_seed(qcheck.seed(seed))
+  |> qcheck.run(walked(), fn(w) {
     list.each([0, 1, 2], fn(number) {
       let mine = world.party(w, number)
 
@@ -258,6 +261,18 @@ pub fn snapshots_round_trip_canonically_test() {
       }
     })
   })
+}
+
+pub fn snapshots_round_trip_canonically_a_test() {
+  check_snapshot_round_trips(property_seed)
+}
+
+pub fn snapshots_round_trip_canonically_b_test() {
+  check_snapshot_round_trips(property_seed + 1)
+}
+
+pub fn snapshots_round_trip_canonically_c_test() {
+  check_snapshot_round_trips(property_seed + 2)
 }
 
 pub fn corrupted_snapshots_never_crash_the_decoder_test() {

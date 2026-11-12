@@ -159,30 +159,58 @@ fn count(worlds: List(world.World), reached: fn(world.World) -> Bool) -> Int {
   list.length(list.filter(worlds, reached))
 }
 
-pub fn schedules_reach_the_interesting_states_test() {
+/// Whether any schedule in `sample()` reaches `predicate`, stopping at the
+/// first witness so EUnit per-test budgets are not spent recounting.
+fn reached(predicate: fn(world.World) -> Bool) -> Bool {
+  list.any(sample(), fn(case_) {
+    predicate(play(world.Correct, world.Chaotic, case_))
+  })
+}
+
+pub fn schedules_frequently_redeem_and_deliver_a_test() {
   let worlds =
-    list.map(sample(), fn(case_) { play(world.Correct, world.Chaotic, case_) })
+    sample()
+    |> list.take(25)
+    |> list.map(fn(case_) { play(world.Correct, world.Chaotic, case_) })
 
-  assert count(worlds, fn(w) { w.redeemed == 1 }) > 10
-  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 5
-  assert count(worlds, fn(w) { total_delivered(w, plan.Held) > 0 }) > 0
-  assert count(worlds, fn(w) { world.saw(w, "expired-message") }) > 0
-  assert count(worlds, fn(w) { world.saw(w, "offer-expired") }) > 0
-  assert count(worlds, fn(w) { world.saw(w, "close-from-joining") }) > 0
-  assert count(worlds, fn(w) { world.saw(w, "close-from-awaiting") }) > 0
-  assert count(worlds, fn(w) { world.saw(w, "decline") }) > 0
+  assert count(worlds, fn(w) { w.redeemed == 1 }) > 4
+  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 2
+}
 
+pub fn schedules_frequently_redeem_and_deliver_b_test() {
+  let worlds =
+    sample()
+    |> list.drop(25)
+    |> list.take(25)
+    |> list.map(fn(case_) { play(world.Correct, world.Chaotic, case_) })
+
+  assert count(worlds, fn(w) { w.redeemed == 1 }) > 4
+  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 2
+}
+
+pub fn schedules_reach_held_and_expiry_states_test() {
+  assert reached(fn(w) { total_delivered(w, plan.Held) > 0 })
+  assert reached(fn(w) { world.saw(w, "expired-message") })
+  assert reached(fn(w) { world.saw(w, "offer-expired") })
+}
+
+pub fn schedules_reach_close_and_decline_states_test() {
+  assert reached(fn(w) { world.saw(w, "close-from-joining") })
+  assert reached(fn(w) { world.saw(w, "close-from-awaiting") })
+  assert reached(fn(w) { world.saw(w, "decline") })
+}
+
+pub fn schedules_reach_joiner_race_test() {
   // The joiner race: both joiners have a relationship and one invitation
   // was consumed.
-  assert count(worlds, fn(w) {
-      w.redeemed == 1
-      && world.party(w, 1).relationship != world.party(w, 0).relationship
-      && world.party(w, 1).queue != world.party(w, 2).queue
-      && world.relationship(w, 1) != world.relationship(w, 2)
-      && world.party(w, 2).queue != world.party(w, 0).queue
-      && world.relationship(w, 2) != world.relationship(w, 0)
-    })
-    > 0
+  assert reached(fn(w) {
+    w.redeemed == 1
+    && world.party(w, 1).relationship != world.party(w, 0).relationship
+    && world.party(w, 1).queue != world.party(w, 2).queue
+    && world.relationship(w, 1) != world.relationship(w, 2)
+    && world.party(w, 2).queue != world.party(w, 0).queue
+    && world.relationship(w, 2) != world.relationship(w, 0)
+  })
 }
 
 /// Whether a broken shell is flagged on some sampled schedule. It stops at

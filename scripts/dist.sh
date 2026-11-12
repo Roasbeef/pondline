@@ -16,6 +16,9 @@
 
 set -euo pipefail
 
+# Prevent macOS BSD tar from packing AppleDouble `._*` resource-fork members.
+export COPYFILE_DISABLE=1
+
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 REL="$ROOT/build/release/$PLATFORM/pondline"

@@ -70,6 +70,12 @@ release-smoke: ## Boot the release with no erl, gleam or Homebrew: mailbox, two 
 dist: release release-smoke ## Package the release as dist/pondline-<version>-<platform>.tar.gz + .sha256
 	@scripts/dist.sh
 
+.PHONY: release-linux
+release-linux: ## Build and bare-Ubuntu-24.04 smoke-test the linux-x86_64 release via Docker
+	DOCKER_BUILDKIT=1 docker build --platform=linux/amd64 -f docker/release-builder.Dockerfile -t pondline-release-builder:local .
+	docker run --rm --platform=linux/amd64 --ulimit nofile=65536:65536 -e HOST_UID=$$(id -u) -e HOST_GID=$$(id -g) -v "$(CURDIR):/work" -w /work pondline-release-builder:local bash -lc 'scripts/release.sh && scripts/dist.sh && chown -R "$$HOST_UID:$$HOST_GID" build dist native/pondline-tor/target'
+	docker run --rm --platform=linux/amd64 --ulimit nofile=65536:65536 -v "$(CURDIR):/work" -w /work ubuntu:24.04 bash -lc 'apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates procps >/dev/null && scripts/release-smoke.sh && scripts/test-update.sh'
+
 # Installs the release under $(PREFIX): the tree in $(PREFIX)/lib/pondline and
 # the pondline and pondline-mailbox commands in $(PREFIX)/bin.
 # scripts/install.sh says what lands where and why.

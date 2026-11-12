@@ -1,0 +1,235 @@
+# Build and publish self-contained Pondline binary releases on `v*` tags.
+#
+# Modeled on Loom's release pipeline:
+#   1. `prepare` validates tag syntax (`vX.Y.Z` or `vX.Y.Z-rc.N`), verifies
+#      `packages/{daemon,mailbox}/gleam.toml` match the tag version, and binds
+#      the exact source commit SHA so every downstream job checks out that
+#      immutable commit rather than a mutable ref.
+#   2. `linux-x86_64` builds inside the SHA-256-pinned Ubuntu 24.04 + OpenSSL
+#      3.5.9 + OTP 29.1.2 builder container from a clean clone, then runs
+#      `scripts/release-smoke.sh` and `scripts/test-update.sh` inside a bare
+#      `ubuntu:24.04` container with no Erlang, Gleam, Rust, or OpenSSL >= 3.5.
+#   3. `darwin-arm64` builds from a clean clone on `macos-15`, runs
+#      `make dist` (`release` + scrubbed `release-smoke` + tarball) and
+#      `scripts/test-update.sh`.
+#   4. `publish` verifies all platform tarballs, emits a unified `SHA256SUMS`
+#      plus the bootstrap `install.sh` (`scripts/fetch-release.sh`), and creates
+#      the GitHub Release bound to the verified tag.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build (e.g. v0.1.0).
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.identity.outputs.tag }}
+      version: ${{ steps.identity.outputs.version }}
+      commit: ${{ steps.identity.outputs.commit }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Validate release tag and package versions
+        id: identity
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          scripts/release-tag.sh "$RELEASE_TAG"
+          commit=$(git rev-parse HEAD)
+          [[ "$commit" =~ ^[0-9a-f]{40}$ ]]
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${RELEASE_TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+  linux-x86_64:
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build pinned Linux release-builder image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/release-builder.Dockerfile
+          platforms: linux/amd64
+          load: true
+          tags: pondline-release-builder:release
+          cache-from: type=gha,scope=release-builder-amd64
+          cache-to: type=gha,scope=release-builder-amd64,mode=max
+
+      - name: Build linux-x86_64 release from clean clone
+        env:
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/out"
+          docker run --rm \
+            --ulimit nofile=65536:65536 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/out,dst=/out" \
+            -e "SOURCE_COMMIT=$SOURCE_COMMIT" \
+            pondline-release-builder:release \
+            bash -lc '
+              set -euo pipefail
+              git config --global --add safe.directory /source/.git
+              git clone --no-hardlinks /source /work/pondline
+              cd /work/pondline
+              [ "$(git rev-parse HEAD)" = "$SOURCE_COMMIT" ]
+              scripts/release.sh
+              scripts/dist.sh
+              cp -Rp build /out/build
+              cp -Rp dist /out/dist
+            '
+
+      - name: Smoke-test Linux bundle in bare ubuntu:24.04
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            --ulimit nofile=65536:65536 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/source,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/out,dst=/out" \
+            ubuntu:24.04 \
+            bash -lc '
+              set -euo pipefail
+              apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates procps >/dev/null
+              mkdir -p /verify
+              cp -Rp /source/scripts /verify/scripts
+              ln -s /out/build /verify/build
+              ln -s /out/dist /verify/dist
+              /verify/scripts/release-smoke.sh --release /out/build/release/linux-x86_64/pondline
+              /verify/scripts/test-update.sh
+            '
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-linux-x86_64
+          path: ${{ runner.temp }}/out/dist/*
+          if-no-files-found: error
+
+  darwin-arm64:
+    needs: prepare
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install OTP 29 (Homebrew OpenSSL >= 3.5) and pinned Gleam 1.19.2
+        run: |
+          set -euo pipefail
+          brew update
+          brew install erlang rebar3 openssl@3
+          curl -fsSL -o /tmp/gleam.tar.gz https://github.com/gleam-lang/gleam/releases/download/v1.19.2/gleam-v1.19.2-aarch64-apple-darwin.tar.gz
+          echo "fa7c6113e162ab1d979f72e7dde3e907b87e4b30c518af178768e577d180324d  /tmp/gleam.tar.gz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf /tmp/gleam.tar.gz -C "$RUNNER_TEMP/bin" gleam
+          chmod +x "$RUNNER_TEMP/bin/gleam"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          erl -noshell -noinput -eval '[{_, _, V}] = crypto:info_lib(), true = lists:member(mlkem1024, proplists:get_value(kems, crypto:supports())), io:format("OTP ~s + ~s~n", [erlang:system_info(otp_release), V]), halt(0).'
+
+      - name: Install Rust 1.98.1
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.98.1
+
+      - name: Build darwin-arm64 release from clean clone and smoke-test
+        env:
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          set -euo pipefail
+          [ "$(uname -m)" = arm64 ]
+          ulimit -n 10240
+          clean_dir="$RUNNER_TEMP/pondline-release"
+          git clone --no-hardlinks "$GITHUB_WORKSPACE" "$clean_dir"
+          cd "$clean_dir"
+          [ "$(git rev-parse HEAD)" = "$SOURCE_COMMIT" ]
+          make dist
+          scripts/test-update.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-darwin-arm64
+          path: ${{ runner.temp }}/pondline-release/dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, linux-x86_64, darwin-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.commit }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Verify staged artifacts and generate SHA256SUMS
+        env:
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          for platform in linux-x86_64 darwin-arm64; do
+            stem="pondline-${VERSION}-${platform}"
+            [ -f "artifacts/${stem}.tar.gz" ]
+            [ -f "artifacts/${stem}.tar.gz.sha256" ]
+            (cd artifacts && sha256sum -c "${stem}.tar.gz.sha256")
+            cp "artifacts/${stem}.tar.gz" "artifacts/${stem}.tar.gz.sha256" upload/
+          done
+          (cd upload && sha256sum pondline-"${VERSION}"-*.tar.gz > SHA256SUMS)
+          cp scripts/fetch-release.sh upload/install.sh
+          chmod +x upload/install.sh
+          cat upload/SHA256SUMS
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          SOURCE_COMMIT: ${{ needs.prepare.outputs.commit }}
+        run: |
+          set -euo pipefail
+          actual=$(gh api "repos/$GH_REPO/commits/$RELEASE_TAG" --jq .sha)
+          [ "$actual" = "$SOURCE_COMMIT" ]
+          args=(--verify-tag --title "Pondline $RELEASE_TAG" --generate-notes)
+          if [[ "$RELEASE_TAG" == *-* ]]; then
+            args+=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${args[@]}" upload/*
