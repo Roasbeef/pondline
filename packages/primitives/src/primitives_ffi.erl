@@ -1,11 +1,13 @@
 %% The one Erlang shim of the primitives package: thin wrappers over OTP's
 %% crypto module, which is linked against OpenSSL.
 %%
-%% Every wrapper catches every exception and returns {error, nil}. That is a
-%% security property, not tidiness: OTP's crypto raises errors whose
-%% arguments include the key material it was handed, so an uncaught error
-%% here would print a private key into a crash report. No stack trace or
-%% reason ever leaves this module.
+%% Every fallible key or verification wrapper catches every exception and
+%% returns {error, nil} or false. That is a security property, not tidiness:
+%% OTP's crypto raises errors whose arguments include the key material it was
+%% handed, so an uncaught error there would print a private key into a crash
+%% report. Unkeyed helpers and total digests (sha256/1, hmac_sha256/2, equal/2,
+%% random_bytes/1, keypair generation, openssl_version/0) stay plain calls; see
+%% sha256/1 below.
 -module(primitives_ffi).
 
 -export([random_bytes/1,

@@ -255,7 +255,9 @@ pub type DeliveryStatus {
   /// raising the budget.
   Held
 
-  /// Past its `expires_at`: recorded for audit, never actionable.
+  /// Past its `expires_at` and never actionable. `relationship` drops expired
+  /// messages without storing a `Delivered` record; the variant stays in the
+  /// schema vocabulary so older or synthetic rows remain representable.
   Expired
 }
 

@@ -16,15 +16,15 @@
 # never names); `packages/lint/CLAUDE.md` says what each is for. Two rules
 # read `test/` rather than `src/`: R19 a SKIP diagnostic printed to stdout,
 # which EUnit discards on a green run, and R20 a test whose import graph
-# crosses a package's wall (`policy.import_walls`, empty today).
+# crosses a package's wall (`policy.import_walls`, empty today). R21 checks
+# `case` stanza spacing and headings, and R22 checks `///` function docs.
 #
-# R0, R2, R4, R6, R10, R13, R14, R15, R16, R19 and R20 are at ERROR level and
-# this script exits non-zero on any of them; every other rule warns and costs
-# nothing. A rule earns the error tier by a census that is zero, decidable
-# and argued — the staging scripts/doc_check.sh went through (loom's
-# D2) — and the argument for each of the
-# eleven is in `finding.error_by_default`. R3, R8, R17 and R18 can never be
-# promoted: they over-report by construction.
+# R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21 and R22
+# are at ERROR level and this script exits non-zero on any of them; every other
+# rule warns and costs nothing. A rule earns the error tier by a census that is
+# zero, decidable and argued; the argument for each of the sixteen is in
+# `finding.error_by_default`. R3, R8, R12, R17 and R18 warn permanently because
+# they over-report or depend on information absent from the AST.
 # Promoting one of the rest is a decision its census has to argue for, and
 # costs one flag:
 #

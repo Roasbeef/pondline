@@ -17,7 +17,7 @@ classification of every source. Sixteen of the twenty-three rules gate globally 
 R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21
 and R22 — and each enforces its stated invariant. R21 and R22 are now global
 errors; `policy.literate_packages()` remains the public census/sweep ratchet,
-with all 29 packages included. The whole-tree census is zero for R11, R21
+with all 8 packages included. The whole-tree census is zero for R11, R21
 and R22. See **Staging** below before wiring anything else to the
 exit code.
 
@@ -182,46 +182,20 @@ wrote ourselves. Nothing here is a security control.
 - `lint/test_imports.findings(wall, tests, modules)` — R20, a pure
   breadth-first walk of a walled package's import graph from its tests, over a
   dictionary of the package's modules that `lint/cli` reads from `src/`.
-  `policy.import_walls` (`Wall(package, forbidden)`) is its table as data:
-  `web_client` forbids `lustre` and `web_client/internal`.
+  `policy.import_walls` (`Wall(package, forbidden)`) is its table as data,
+  currently empty (`[]`).
 - `lint/cli.main` — argument parsing, file discovery, the generated-source
-  skip, the report and the census. With `lint/affected_cli`, one of the two
-  modules here that do I/O.
-- `lint/affected.{select, affected_closure, daemon_packages, classify, prep,
-  lanes, render, render_lanes, Selection, Graph}` — not a lint rule: the
-  affected-gate selector that replaced `scripts/affected.py`. A pure function
-  from a package graph and a list of changed paths to the gates a change can
-  observe (`make affected`, `make check-affected`, docs/execution.md section
-  4). `affected_closure` follows `[dependencies]` edges transitively and a
-  dev-dependency edge one step, checked against the regular closure alone so
-  a dev edge never propagates; two qcheck properties pin that and monotonicity
-  over generated graphs (`test/affected_test.gleam`). `check_order` copies
-  `scripts/check.sh`'s package order and a test fails when a package directory
-  is missing from it.
-- `lint/affected_graph.{build_graph, parse_manifest, patterns, normpath, Graph,
-  Entry, Reading}` — the graph half: path dependencies read from each
-  `gleam.toml` with `tom`, and the relative path literals (`gleam_regexp`) a
-  package's sources use to read a file outside it. Handed text, never a path.
-- `lint/affected_cli.main` — reads the tree for the selector: `--root`,
-  `--tracked FILE` (`git ls-files`), `--paths FILE` (the changed paths),
-  `--format text|lanes`. Git runs in `scripts/check_affected.sh`, never here.
-  It cannot set an exit status without FFI, so its last line is `# ok` or
-  `# error <why>`, the way `lint/cli` ends with its census, and the script
-  reads it.
+  skip, the report and the census. The only module in this package that does I/O.
 
 ## Relationships
 
 - **Depends on**: `glance` (>= 7, for an AST that carries a `Span` on
   every expression and pattern), `glexer` (the R4 backstop and R6's
-  `@external` scan), `simplifile` (file and manifest discovery), `argv`, and
-  for the affected-gate selector `tom` (`gleam.toml` parsing) and
-  `gleam_regexp` (path literals); `qcheck` is a dev dependency of its
-  properties. **No Pondline package**, in either direction —
-  `lint` is a developer tool, not part of any plane, and nothing in the
-  harness may call it.
-- **Depended on by**: nothing. `scripts/lint.sh` runs it, `make lint`
-  and `scripts/check.sh` call that; `scripts/check_affected.sh` runs
-  `lint/affected_cli`, which `make affected` and `make check-affected` use.
+  `@external` scan), `simplifile` and `filepath` (file and manifest discovery),
+  `argv`, `tom` and `gleam_regexp`; `qcheck` is a dev dependency. **No Pondline package**, in either direction —
+  `lint` is a developer tool, not part of any plane.
+- **Depended on by**: nothing. `scripts/lint.sh` runs it, and `make lint`
+  and `make check` call that.
 - **FFI**: none.
 - **Note on `glance` versions**: `codemode` pins `glance` 1.x because
   `vet`'s rules and its `Vetted` token are written against that AST.
@@ -343,12 +317,8 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   them in the first census). **R3 still over-reports and cannot stop**:
   see below.
 - **R4 `panic-in-src`** — `panic` or `let assert` outside `test/`, and
-  outside the `src/` of a package `policy.harness_packages` names.
-  Pondline policy forbids both; nothing else enforced it. The exemption is
-  `conformance`, a test harness that compiles as a library, and it is
-  about *presence* only: Part IV rule 3 also demands an `as "message"` on
-  every admitted `let assert`, none of those ninety carries one, and no
-  rule checks it yet (issue loom#73, item F).
+  outside the `src/` of a package `policy.harness_packages` names (`["sim"]`).
+  Pondline policy forbids both; nothing else enforced it. `sim` is exempt because its `src/` is test infrastructure compiled as a library, and R7 checks that every admitted `let assert` there still carries an `as "message"` naming its invariant.
 - **R5 `bounded-length`** — a count compared against anything that is not
   another count. Two counts, from `policy.counted_calls`: `list.length`
   and `string.length`. The bound need not be a literal:
@@ -365,10 +335,7 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   against `[]`, `string.drop_start(text, k)` against `""` — because the
   advice for a string is not the advice for a list.
 - **R6 `portable-purity`** — an `@external`, a BEAM-only import, or a
-  BEAM-only dependency in `core`, `machine` or `prompt` (the founding
-  three; the table is `policy.portable_packages`, seven today with
-  `session_view`, `statem`, `evalstat` and `gepa`, each argued in
-  `lint/portable`'s module doc). Those packages hold
+  BEAM-only dependency in a package held to the portable subset (`policy.portable_packages()`, `["core"]` in Pondline; argued in `lint/portable`'s module doc). `core` holds
   none of the three today, by rule rather than by coincidence, and two
   properties rest on that: the operation state space stays
   property-testable without spawning processes (the reason `machine`'s
@@ -567,15 +534,7 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
   silent. It replaced the regular expression in
   `scripts/test_skip_reporting.py`; what remains there is the real-EUnit
   proof that stdout is discarded. Census zero.
-- **R20 `test-import-wall`** (`lint/test_imports`, `web_client` tests only) —
-  a test whose import graph reaches `lustre` or `web_client/internal`.
-  `lustre/runtime/client/runtime.ffi.mjs` declares `class LustreEvent extends
-  CustomEvent` at load and Node 18 has no `CustomEvent`, so one such import
-  throws before any test runs; it typechecks and passes on a newer Node, which
-  is why a rule rather than a test holds it. The walk is transitive, reports
-  at the importing line in the file that wrote it with the chain from the
-  test, never enters a forbidden module, and reads each module once. It
-  replaced `check_imports` in `scripts/web_client_test.sh`. Census zero.
+- **R20 `test-import-wall`** (`lint/test_imports`) — a test whose import graph reaches a module forbidden by `policy.import_walls` (empty today; ported from loom's `web_client` rule). The walk is transitive, reports at the importing line in the file that wrote it with the chain from the test, never enters a forbidden module, and reads each module once. Census zero.
 - **R21 `case-stanza`** (`lint/layout`) — a `case` statement (`case …`,
   `let x = case …`, or `use x <- f(case …)`) in a multi-statement body without
   a `//` comment above it or welded to an adjacent statement without a blank
@@ -598,9 +557,9 @@ The last line of a run is `# <errors> <warnings>`, which is the contract
 **R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21
 and R22 gate globally; R3, R5, R8, R9, R12, R17 and R18 warn.** `make lint`
 and `make check` fail on any gated finding. `policy.literate_packages()`
-remains the public record of the literacy sweep, now including `client`; it is
+remains the public record of the literacy sweep across all 8 Pondline packages; it is
 not an exemption from the global gate. Both rules have a measured zero
-census across all 29 packages. The warning default is deliberate and follows the
+census across the repository. The warning default is deliberate and follows the
 `scripts/doc_check.sh` precedent (D2, `docs/design-notes/four-decisions.md`):
 a check earns the error tier by producing a census that is zero, decidable,
 and argued — not by being written. A lint that fails correct code gets disabled.
@@ -863,10 +822,7 @@ that a rule *fires* is not a test that it gates.
   `lint` converts them in one merged pass over the file's line index.
   Keeping the conversion out of the walk is what keeps the walk pure of
   string handling and linear rather than quadratic.
-- **`lint/cli` and `lint/affected_cli` are the only modules that do I/O.**
-  `lint`, `lint/scan`, `lint/policy`, `lint/finding`, `lint/source`,
-  `lint/affected` and `lint/affected_graph` are pure functions of their
-  arguments; the selector is handed text and never a path.
+- **`lint/cli` is the only module that does I/O.** `lint`, `lint/scan`, `lint/policy`, `lint/finding` and `lint/source` are pure functions of their arguments.
 - **Findings are advice, never authority.** Nothing in the harness may
   import this package, and no rule here may be cited as a security
   control; `codemode/vet` is the security control.

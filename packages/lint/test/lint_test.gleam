@@ -2186,10 +2186,10 @@ pub fn r6_names_what_it_protects_test() {
 // asks for the count of *errors* rather than for the rule firing: the rule
 // fired before the promotion too, into a report nothing reads.
 
-/// The staging decision, pinned: R0, R2, R4, R6, R10, R11, R13, R14, R15, R16,
-/// R19, R20, R21 and R22 gate; R1, R3, R5, R7, R8, R9, R12, R17 and R18 warn.
-/// R3, R8, R17 and R18 can never join them, and R1, R5 and R9 have a census to
-/// clear first, so a change here is a change of policy and not of implementation.
+/// The staging decision, pinned: R0, R1, R2, R4, R6, R7, R10, R11, R13, R14,
+/// R15, R16, R19, R20, R21 and R22 gate; R3, R5, R8, R9, R12, R17 and R18 warn.
+/// R3, R8, R12, R17 and R18 never gate, and R5 and R9 have a census to clear
+/// first, so a change here is a change of policy and not of implementation.
 pub fn the_gating_rules_are_pinned_test() {
   should.equal(finding.error_by_default(), [
     finding.Unparseable,

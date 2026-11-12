@@ -334,8 +334,10 @@ pub fn aead_open(
   ffi_crypto.aead_open(key, nonce, aad, sealed)
 }
 
-/// The OpenSSL version OTP's `crypto` is linked against. ML-KEM needs 3.5
-/// or newer, so a release checks this at startup.
+/// The OpenSSL version string OTP's `crypto` is linked against. Release
+/// launchers enforce the 3.5 floor directly via `crypto:info_lib/0` before
+/// Gleam runs (ADR-003); this helper exposes the human-readable banner for
+/// diagnostics and tests.
 ///
 /// ## Examples
 ///

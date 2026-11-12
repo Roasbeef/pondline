@@ -20,10 +20,9 @@
 //// disabled, so the false-positive rate on this corpus is a thing to
 //// measure before gating on it — the same staging `scripts/doc_check.sh`
 //// went through, and for the same reason
-//// (docs/design-notes/four-decisions.md, D2). R0, R2, R4, R6, R10, R13, R14,
-//// R15, R16, R19 and R20 have made that argument and gate; R1, R5, R9 and R11 have a
-//// census to clear first; R3, R8, R17 and R18 over-report by construction
-//// and warn forever. The
+//// R0, R1, R2, R4, R6, R7, R10, R11, R13, R14, R15, R16, R19, R20, R21 and
+//// R22 have made that argument and gate; R5 and R9 have a census to clear
+//// first; R3, R8, R12, R17 and R18 warn permanently. The
 //// decision is data, in `finding.error_by_default`, which is where each
 //// argument is written down; `lint/cli`'s `--error` promotes one for a
 //// single run.
@@ -39,13 +38,14 @@
 ////
 //// # Layout is not in the tree
 ////
-//// Three of the twenty-one rules are not questions about the AST. R9 reads
-//// annotations, which `glance` does carry; R10 and R11 ask where the blank
-//// lines and comments *are*, which it throws away entirely. `lint/layout`
-//// is that half: it reads the tree for where each sibling begins and the
-//// file's own line table (`source.classify`) for what was written between
-//// them. Both halves resolve in one merged pass per file, so a rule about
-//// blank lines costs a walk of the file rather than a walk per statement.
+//// Four of the twenty-three rules are not questions about the AST. R9 reads
+//// annotations, which `glance` does carry; R10, R11 and R21 ask where the blank
+//// lines and comments *are*, which it throws away entirely, and R22 lexes `///`
+//// doc-comment tokens. `lint/layout` handles the stanza half: it reads the tree
+//// for where each sibling begins and the file's own line table (`source.classify`)
+//// for what was written between them. Both halves resolve in one merged pass per
+//// file, so a rule about blank lines costs a walk of the file rather than a walk
+//// per statement.
 ////
 //// # Totality
 ////

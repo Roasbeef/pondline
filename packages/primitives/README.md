@@ -90,10 +90,10 @@ Not every function is wrapped, and the reason is stated in the source. These fun
 ## Behaviour a caller must know
 
 - **ML-KEM uses implicit rejection.** Decapsulating a well-sized but forged ciphertext returns an unrelated shared secret, not an error. The only error is a malformed key or ciphertext size. Authentication comes from what the secret later keys (`src/primitives.gleam:234`).
-- **ML-DSA signing is hedged.** OpenSSL mixes fresh randomness into every signature, so two signatures of one message differ and both verify (`src/primitives.gleam:265`). Signing uses an empty context string. The secret key is OpenSSL's 4032-byte expanded form, because OTP 29 cannot rebuild a key from a seed through `generate_key/3` (`src/primitives_ffi.erl:90`).
-- **X25519 refuses a zero shared secret.** OpenSSL rejects the all-zero output of a low-order public key, and the guard turns the rejection into `Error(Nil)` (`src/primitives_ffi.erl:47`).
-- **Ed25519 is pure Ed25519.** `crypto:sign(eddsa, none, ...)` with a 32-byte secret (`src/primitives_ffi.erl:63`).
-- **The OpenSSL version.** ML-KEM needs OpenSSL 3.5 or newer. `openssl_version` returns the string `crypto:info_lib` reports (`src/primitives_ffi.erl:134`). The function's comment says a release checks it at startup; no module outside this package calls it.
+- **ML-DSA signing is hedged.** OpenSSL mixes fresh randomness into every signature, so two signatures of one message differ and both verify (`src/primitives.gleam:265`). Signing uses an empty context string. The secret key is OpenSSL's 4032-byte expanded form, because OTP 29 cannot rebuild a key from a seed through `generate_key/3` (`src/primitives_ffi.erl:92`).
+- **X25519 refuses a zero shared secret.** OpenSSL rejects the all-zero output of a low-order public key, and the guard turns the rejection into `Error(Nil)` (`src/primitives_ffi.erl:49`).
+- **Ed25519 is pure Ed25519.** `crypto:sign(eddsa, none, ...)` with a 32-byte secret (`src/primitives_ffi.erl:65`).
+- **The OpenSSL version.** ML-KEM needs OpenSSL 3.5 or newer. Release launchers enforce that floor directly via `crypto:info_lib/0` before Gleam runs (ADR-003), while `openssl_version` returns the human-readable banner (`src/primitives_ffi.erl:136`) and `openssl_supports_mlkem_test` asserts `>= 3.5` (`test/primitives/known_answer_test.gleam:182`).
 
 ## Vector tests
 
@@ -133,6 +133,5 @@ None. Every function runs in the calling process and holds no state. The one sha
 ## Known gaps
 
 - Not run: this document was written from the code without building or testing. The vector counts come from the assertions in the test files, not from a run.
-- `openssl_version`'s comment promises a startup check for OpenSSL 3.5; no caller exists. The test that touches it only asserts the string starts with `OpenSSL 3.` (`test/primitives/known_answer_test.gleam:181`), which a 3.0 build would also satisfy. `CLAUDE.md` says every wrapper catches every exception, while the code leaves the functions in the table above unwrapped; the source comments explain why for the hash and HMAC pair only.
 - Constant-time behaviour of `equal` rests on `crypto:hash_equals`; it was not measured.
 - Side-channel and memory-zeroisation properties of OpenSSL are outside the package and were not examined.

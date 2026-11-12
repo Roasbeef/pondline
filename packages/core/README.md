@@ -597,14 +597,9 @@ of `core/tlv`, `limits.padded_size`, `envelope.pad`, `retention.offers` and
 
 - Nothing was compiled or run to write this document. Every claim comes from
   reading the source, and no test result is asserted.
-- The code contradicts its own documentation in one place. The
-  `relationship` module doc says an expired application message is "recorded
-  expired", and `plan.DeliveryStatus` documents `Expired` as "recorded for
-  audit". `store_application` stores nothing for an expired message: it
-  returns `stay(arrival, Active, [])`, with only the `Processed` record, and
-  no core code constructs a `Delivered` with status `Expired`. Only the
-  daemon store maps the variant to text
-  (`packages/daemon/src/daemon/store.gleam:2154`).
+- `DeliveryStatus.Expired` is retained in `core/plan` and mapped in `daemon/store`
+  (`packages/daemon/src/daemon/store.gleam:2154`), though `relationship` drops
+  expired application messages without emitting a `Delivered` record.
 - `packages/core/CLAUDE.md` Key Types does not list `offer`, `message`,
   `frame`, `invitation`, `route`, `snapshot` or `field`, which this document
   covers.
