@@ -2,16 +2,16 @@
 ////
 //// Run it with `gleam run -m mailbox -- <subcommand> ...`:
 ////
-//// - `serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>]`
+//// - `serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]]`
 ////   opens the database, starts the node and the HTTP server on
 ////   `127.0.0.1`, prints `listening 127.0.0.1:<port>` on stdout, and runs
-////   until the VM is stopped. Port 0 asks the system for a free port, and
-////   the line names the one it chose. With the two Tor options it then
-////   starts the `pondline-tor` sidecar, bootstraps it, hosts an onion
-////   service that forwards to that port, and prints one more line,
-////   `onion <host>.onion:80`, which is the address a daemon dials. The Tor
-////   state directory holds the service's key, and its path must be short
-////   enough for a Unix socket.
+////   until the VM is stopped. Port 0 (the default) asks the system for a free
+////   port, and the line names the one it chose. With `--tor-state` it resolves
+////   `pondline-tor` (from `--tor-bin`, `PONDLINE_TOR_BIN`, `PATH`, or the
+////   checkout build), starts and bootstraps the sidecar, hosts an onion service
+////   that forwards to that port, and prints `onion <host>.onion:80`, which is
+////   the address a daemon dials. The Tor state directory holds the service's
+////   key, and its path must be short enough for a Unix socket.
 //// - `grant --db <path> --queues <n> --out <file>` creates a provisioning
 ////   grant allowing `n` queues and writes its 32-byte capability to `file`
 ////   with mode 0600. It refuses to overwrite a file and prints only the
@@ -73,7 +73,7 @@ const bootstrap_timeout_ms = 180_000
 /// How long the sidecar may take to create the onion service.
 const host_timeout_ms = 120_000
 
-/// Where the Tor sidecar lives and keeps its state.
+/// Where the Tor sidecar lives and keeps its state once resolved.
 pub type TorHosting {
   TorHosting(
     /// The `pondline-tor` binary.
@@ -83,9 +83,19 @@ pub type TorHosting {
   )
 }
 
+/// The Tor options parsed from `serve`, before sidecar auto-discovery runs.
+pub type TorOptions {
+  TorOptions(
+    /// Explicit `--tor-bin`, or `None` to resolve automatically.
+    binary: Option(String),
+    /// The sidecar's state directory, which holds the service key.
+    state_dir: String,
+  )
+}
+
 /// A parsed command line.
 pub type Command {
-  Serve(db: String, port: Int, tor: Option(TorHosting))
+  Serve(db: String, port: Int, tor: Option(TorOptions))
   Grant(db: String, queues: Int, out: String)
 
   /// Print the build's version and commit and exit.
@@ -122,10 +132,10 @@ pub fn main() -> Nil {
 /// ## Examples
 ///
 /// ```gleam
-/// mailbox.parse(["serve", "--db", "m.db", "--port", "0"])
+/// mailbox.parse(["serve", "--db", "m.db"])
 /// // -> Ok(Serve("m.db", 0, None))
-/// mailbox.parse(["serve", "--db", "m.db", "--port", "0", "--tor-bin", "t"])
-/// // -> Error("--tor-bin and --tor-state go together")
+/// mailbox.parse(["serve", "--db", "m.db", "--tor-bin", "t"])
+/// // -> Error("--tor-bin requires --tor-state")
 /// ```
 pub fn parse(arguments: List(String)) -> Result(Command, String) {
   // The first word names the subcommand; its options are checked against
@@ -138,8 +148,8 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
         pairs(rest, ["--db", "--port", "--tor-bin", "--tor-state"]),
       )
       use db <- result.try(required(options, "--db"))
-      use port <- result.try(number(options, "--port", 0, 65_535))
-      use tor <- result.try(tor_hosting(options))
+      use port <- result.try(optional_number(options, "--port", 0, 0, 65_535))
+      use tor <- result.try(tor_options(options))
 
       Ok(Serve(db:, port:, tor:))
     }
@@ -155,22 +165,24 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
 
     _ ->
       Error(
-        "usage: serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>] | grant --db <path> --queues <n> --out <file> | --version",
+        "usage: serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]] | grant --db <path> --queues <n> --out <file> | --version",
       )
   }
 }
 
-/// The Tor options, which are given both or neither: a binary without a
-/// state directory has nowhere to keep the service key.
-fn tor_hosting(
+/// The Tor options on `serve`: `--tor-state` enables onion hosting (resolving
+/// the sidecar automatically when `--tor-bin` is omitted), while `--tor-bin`
+/// alone has nowhere to store the service key and is refused.
+fn tor_options(
   options: Dict(String, String),
-) -> Result(Option(TorHosting), String) {
-  // Each option is present or absent, so there are four combinations and
-  // only two of them are meaningful.
+) -> Result(Option(TorOptions), String) {
+  // Only `--tor-bin` without `--tor-state` is invalid; `--tor-state` alone
+  // asks `serve` to locate `pondline-tor` from the environment or PATH.
   case dict.get(options, "--tor-bin"), dict.get(options, "--tor-state") {
     Error(Nil), Error(Nil) -> Ok(None)
-    Ok(binary), Ok(state_dir) -> Ok(Some(TorHosting(binary:, state_dir:)))
-    _, _ -> Error("--tor-bin and --tor-state go together")
+    binary, Ok(state_dir) ->
+      Ok(Some(TorOptions(binary: option.from_result(binary), state_dir:)))
+    Ok(_), Error(Nil) -> Error("--tor-bin requires --tor-state")
   }
 }
 
@@ -213,6 +225,20 @@ fn required(
   |> result.map_error(fn(_) { "missing option " <> name })
 }
 
+/// The value of an optional integer option, defaulting to `default_value`.
+fn optional_number(
+  options: Dict(String, String),
+  name: String,
+  default_value: Int,
+  low: Int,
+  high: Int,
+) -> Result(Int, String) {
+  case dict.get(options, name) {
+    Error(Nil) -> Ok(default_value)
+    Ok(_) -> number(options, name, low, high)
+  }
+}
+
 /// The value of a required integer option, within `low` to `high`.
 fn number(
   options: Dict(String, String),
@@ -251,12 +277,107 @@ fn run(command: Command) -> Result(Nil, String) {
   }
 }
 
+/// Resolves the `pondline-tor` binary path from an explicit `--tor-bin`,
+/// `PONDLINE_TOR_BIN`, `PATH`, or the repository checkout build.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.resolve_tor_bin(Some("/bin/tor"), fn(_) { Error(Nil) }, fn(_) { Error(Nil) }, fn(_) { True })
+/// // -> Ok("/bin/tor")
+/// ```
+pub fn resolve_tor_bin(
+  explicit: Option(String),
+  lookup_env: fn(String) -> Result(String, Nil),
+  find_exec: fn(String) -> Result(String, Nil),
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  // An explicit flag or environment variable must exist where named rather than
+  // silently falling through to a different binary on the machine.
+  case explicit {
+    Some(path) ->
+      check_binary(path, "pondline-tor binary not found at ", exists)
+    None -> resolve_implicit_tor_bin(lookup_env, find_exec, exists)
+  }
+}
+
+/// Searches `PONDLINE_TOR_BIN`, `PATH`, and local checkout build paths.
+fn resolve_implicit_tor_bin(
+  lookup_env: fn(String) -> Result(String, Nil),
+  find_exec: fn(String) -> Result(String, Nil),
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  case lookup_env("PONDLINE_TOR_BIN") {
+    Ok(path) if path != "" ->
+      check_binary(path, "PONDLINE_TOR_BIN points to missing binary ", exists)
+
+    Ok(_) | Error(Nil) ->
+      case find_exec("pondline-tor") {
+        Ok(path) -> Ok(path)
+        Error(Nil) -> find_checkout_tor_bin(exists)
+      }
+  }
+}
+
+/// Checks checkout-relative build locations so `gleam run` works after `make sidecar`.
+fn find_checkout_tor_bin(exists: fn(String) -> Bool) -> Result(String, String) {
+  let candidates = [
+    "native/pondline-tor/target/release/pondline-tor",
+    "../../native/pondline-tor/target/release/pondline-tor",
+  ]
+
+  // Pick the first checkout build artifact present on disk, or report how to supply one.
+  case list.find(candidates, exists) {
+    Ok(path) -> Ok(path)
+    Error(Nil) ->
+      Error(
+        "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
+      )
+  }
+}
+
+/// Verifies that a named sidecar path exists as a regular file.
+fn check_binary(
+  path: String,
+  prefix: String,
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  case exists(path) {
+    True -> Ok(path)
+    False -> Error(prefix <> path)
+  }
+}
+
+/// Resolves `TorOptions` against the live process environment and filesystem.
+fn resolve_hosting(
+  options: Option(TorOptions),
+) -> Result(Option(TorHosting), String) {
+  // Resolve the binary only when `--tor-state` enabled onion hosting.
+  case options {
+    None -> Ok(None)
+    Some(TorOptions(binary:, state_dir:)) -> {
+      use resolved <- result.map(
+        resolve_tor_bin(
+          binary,
+          ffi_system.getenv,
+          ffi_system.find_executable,
+          fn(path) { simplifile.is_file(path) == Ok(True) },
+        ),
+      )
+      Some(TorHosting(binary: resolved, state_dir:))
+    }
+  }
+}
+
 /// Starts the node and the server, announces the port and never returns.
 fn serve(
   db: String,
   port: Int,
-  hosting: Option(TorHosting),
+  tor_options: Option(TorOptions),
 ) -> Result(Nil, String) {
+  // Resolve any requested Tor binary first so a missing sidecar fails before
+  // opening the database or binding a local port.
+  use hosting <- result.try(resolve_hosting(tor_options))
   let started =
     node.start(node.Config(
       path: db,

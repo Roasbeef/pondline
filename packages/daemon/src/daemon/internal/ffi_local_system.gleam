@@ -39,6 +39,10 @@ pub fn read_stdin(max: Int) -> Result(BitArray, String)
 @external(erlang, "daemon_local_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)
 
+/// Finds an executable named `name` on `PATH`.
+@external(erlang, "daemon_local_ffi", "find_executable")
+pub fn find_executable(name: String) -> Result(String, Nil)
+
 /// Stops the VM with `code` after flushing output.
 @external(erlang, "erlang", "halt")
 pub fn halt(code: Int) -> Nil

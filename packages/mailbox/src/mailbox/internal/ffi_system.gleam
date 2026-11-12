@@ -24,6 +24,10 @@ pub fn create_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
 @external(erlang, "mailbox_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)
 
+/// Finds an executable named `name` on `PATH`.
+@external(erlang, "mailbox_ffi", "find_executable")
+pub fn find_executable(name: String) -> Result(String, Nil)
+
 /// Stops the VM with `code` after flushing output.
 @external(erlang, "erlang", "halt")
 pub fn halt(code: Int) -> Nil

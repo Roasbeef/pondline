@@ -1,5 +1,5 @@
 -module(mailbox_ffi).
--export([unix_seconds/0, monotonic_ms/0, create_private_file/2, getenv/1]).
+-export([unix_seconds/0, monotonic_ms/0, create_private_file/2, getenv/1, find_executable/1]).
 
 %% Whole seconds since the Unix epoch. `erlang:system_time/1` takes the unit
 %% as an atom, which Gleam cannot build without creating one.
@@ -38,6 +38,13 @@ getenv(Name) ->
     case os:getenv(binary_to_list(Name)) of
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
+    end.
+
+%% Finds an executable on PATH, returning its resolved path.
+find_executable(Name) ->
+    case os:find_executable(binary_to_list(Name)) of
+        false -> {error, nil};
+        Path -> {ok, unicode:characters_to_binary(Path)}
     end.
 
 reason(Reason) when is_atom(Reason) ->

@@ -19,6 +19,7 @@ import daemon/api
 import daemon/build
 import daemon/cli.{type DaemonOptions}
 import daemon/config
+import daemon/internal/ffi_local_system
 import daemon/local_api_types.{
   type ApiError, type Backend, type Event, Backend, Health, Unavailable,
 }
@@ -27,9 +28,10 @@ import daemon/status
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import simplifile
 
 /// A backend that refuses every call as `Unavailable`. It answers `health`
 /// with a state saying why. Tests of the local API use it as a stand-in.
@@ -76,12 +78,16 @@ pub fn start_node(options: DaemonOptions) -> Result(Backend, String) {
   use mailbox <- result.try(parse_mailbox(options.mailbox))
 
   // The carrier option decides both the policy and whether a sidecar runs:
-  // Tor admits only onion mailboxes and needs the sidecar binary, while
-  // loopback is the explicit operator choice for tests and the offline demo.
-  let #(policy, tor) = case options.carrier {
-    cli.Tor -> #(TorOnly, options.tor_bin)
-    cli.Loopback -> #(TorOrLoopback, None)
-  }
+  // Tor admits only onion mailboxes and requires a resolved `pondline-tor`
+  // binary, while loopback is the explicit choice for tests and local demos.
+  use #(policy, tor) <- result.try(case options.carrier {
+    cli.Tor -> {
+      use path <- result.map(resolve_default_tor_bin(options.tor_bin))
+      #(TorOnly, Some(path))
+    }
+
+    cli.Loopback -> Ok(#(TorOrLoopback, None))
+  })
 
   let base =
     config.new(
@@ -175,6 +181,87 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     subscribe: fn(subscriber) { subscribe(daemon, subscriber) },
     health: fn() { health(api.health(daemon)) },
   )
+}
+
+/// Resolves the `pondline-tor` binary path from an explicit `--tor-bin`,
+/// `PONDLINE_TOR_BIN`, `PATH`, or a local repository checkout build.
+///
+/// ## Examples
+///
+/// ```gleam
+/// local_api_backend.resolve_tor_bin(Some("/bin/tor"), fn(_) { Error(Nil) }, fn(_) { Error(Nil) }, fn(_) { True })
+/// // -> Ok("/bin/tor")
+/// ```
+pub fn resolve_tor_bin(
+  explicit: Option(String),
+  lookup_env: fn(String) -> Result(String, Nil),
+  find_exec: fn(String) -> Result(String, Nil),
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  // An explicit `--tor-bin` or `PONDLINE_TOR_BIN` must exist where named, so a
+  // typo fails at start instead of falling through to another binary.
+  case explicit {
+    Some(path) ->
+      check_binary(path, "pondline-tor binary not found at ", exists)
+    None -> resolve_implicit_tor_bin(lookup_env, find_exec, exists)
+  }
+}
+
+/// Resolves `pondline-tor` against the live environment and filesystem.
+fn resolve_default_tor_bin(explicit: Option(String)) -> Result(String, String) {
+  resolve_tor_bin(
+    explicit,
+    ffi_local_system.getenv,
+    ffi_local_system.find_executable,
+    fn(path) { simplifile.is_file(path) == Ok(True) },
+  )
+}
+
+/// Searches `PONDLINE_TOR_BIN`, `PATH`, and checkout-relative release paths.
+fn resolve_implicit_tor_bin(
+  lookup_env: fn(String) -> Result(String, Nil),
+  find_exec: fn(String) -> Result(String, Nil),
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  case lookup_env("PONDLINE_TOR_BIN") {
+    Ok(path) if path != "" ->
+      check_binary(path, "PONDLINE_TOR_BIN points to missing binary ", exists)
+
+    Ok(_) | Error(Nil) ->
+      case find_exec("pondline-tor") {
+        Ok(path) -> Ok(path)
+        Error(Nil) -> find_checkout_tor_bin(exists)
+      }
+  }
+}
+
+/// Checks checkout-relative build locations so `gleam run` works after `make sidecar`.
+fn find_checkout_tor_bin(exists: fn(String) -> Bool) -> Result(String, String) {
+  let candidates = [
+    "native/pondline-tor/target/release/pondline-tor",
+    "../../native/pondline-tor/target/release/pondline-tor",
+  ]
+
+  // Pick the first checkout build artifact present on disk, or report how to supply one.
+  case list.find(candidates, exists) {
+    Ok(path) -> Ok(path)
+    Error(Nil) ->
+      Error(
+        "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
+      )
+  }
+}
+
+/// Verifies that a named sidecar path exists as a regular file.
+fn check_binary(
+  path: String,
+  prefix: String,
+  exists: fn(String) -> Bool,
+) -> Result(String, String) {
+  case exists(path) {
+    True -> Ok(path)
+    False -> Error(prefix <> path)
+  }
 }
 
 /// Parses the `--mailbox` option: `127.0.0.1:PORT` or `localhost:PORT` is

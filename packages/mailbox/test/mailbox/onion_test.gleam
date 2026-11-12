@@ -11,7 +11,7 @@ import gleam/io
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import mailbox.{Serve, TorHosting}
+import mailbox.{Serve, TorHosting, TorOptions}
 import mailbox/build
 import mailbox/http
 import mailbox/node
@@ -28,6 +28,7 @@ fn make_scratch_dir() -> String
 fn remove_dir(dir: String) -> Nil
 
 pub fn serve_without_tor_test() {
+  assert mailbox.parse(["serve", "--db", "m.db"]) == Ok(Serve("m.db", 0, None))
   assert mailbox.parse(["serve", "--db", "m.db", "--port", "0"])
     == Ok(Serve("m.db", 0, None))
 }
@@ -39,21 +40,58 @@ pub fn serve_with_tor_test() {
   ]
 
   assert mailbox.parse(arguments)
-    == Ok(Serve("m.db", 8080, Some(TorHosting("./rt", "/tmp/t"))))
+    == Ok(Serve("m.db", 8080, Some(TorOptions(Some("./rt"), "/tmp/t"))))
 }
 
-pub fn tor_options_go_together_test() {
+pub fn tor_state_allows_auto_discovery_and_tor_bin_requires_state_test() {
   let binary_only = [
     "serve", "--db", "m.db", "--port", "0", "--tor-bin", "./rt",
   ]
-  let state_only = [
-    "serve", "--db", "m.db", "--port", "0", "--tor-state", "/tmp/t",
-  ]
+  let state_only = ["serve", "--db", "m.db", "--tor-state", "/tmp/t"]
 
-  assert mailbox.parse(binary_only)
-    == Error("--tor-bin and --tor-state go together")
+  assert mailbox.parse(binary_only) == Error("--tor-bin requires --tor-state")
   assert mailbox.parse(state_only)
-    == Error("--tor-bin and --tor-state go together")
+    == Ok(Serve("m.db", 0, Some(TorOptions(None, "/tmp/t"))))
+}
+
+pub fn resolve_tor_bin_precedence_and_errors_test() {
+  let none = fn(_) { Error(Nil) }
+  let has = fn(expected) { fn(path) { path == expected } }
+
+  assert mailbox.resolve_tor_bin(
+      Some("/custom/tor"),
+      none,
+      none,
+      has("/custom/tor"),
+    )
+    == Ok("/custom/tor")
+  assert mailbox.resolve_tor_bin(Some("/missing"), none, none, fn(_) { False })
+    == Error("pondline-tor binary not found at /missing")
+  assert mailbox.resolve_tor_bin(
+      None,
+      fn(_) { Ok("/rel/bin/pondline-tor") },
+      none,
+      has("/rel/bin/pondline-tor"),
+    )
+    == Ok("/rel/bin/pondline-tor")
+  assert mailbox.resolve_tor_bin(
+      None,
+      fn(_) { Ok("/gone/pondline-tor") },
+      fn(_) { Ok("/usr/bin/pondline-tor") },
+      has("/usr/bin/pondline-tor"),
+    )
+    == Error("PONDLINE_TOR_BIN points to missing binary /gone/pondline-tor")
+  assert mailbox.resolve_tor_bin(
+      None,
+      none,
+      fn(_) { Ok("/usr/local/bin/pondline-tor") },
+      fn(_) { False },
+    )
+    == Ok("/usr/local/bin/pondline-tor")
+  assert mailbox.resolve_tor_bin(None, none, none, fn(_) { False })
+    == Error(
+      "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
+    )
 }
 
 pub fn grant_takes_no_tor_options_test() {

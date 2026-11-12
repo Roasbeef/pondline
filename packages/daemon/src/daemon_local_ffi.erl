@@ -3,7 +3,7 @@
     listen/1, accept/1, connect/2, recv_line/4, send/2, close/1,
     monotonic_ms/0, create_private_file/2,
     make_private_dir/1, file_mode/1, write_stdout/1, read_stdin/1,
-    getenv/1, halt/1
+    getenv/1, find_executable/1, halt/1
 ]).
 
 %% Binds a Unix domain socket at `Path`. A stale socket file is removed
@@ -165,6 +165,12 @@ getenv(Name) ->
     case os:getenv(binary_to_list(Name)) of
         false -> {error, nil};
         Value -> {ok, unicode:characters_to_binary(Value)}
+    end.
+
+find_executable(Name) ->
+    case os:find_executable(binary_to_list(Name)) of
+        false -> {error, nil};
+        Path -> {ok, unicode:characters_to_binary(Path)}
     end.
 
 halt(Code) -> erlang:halt(Code).

@@ -3,6 +3,7 @@ import core/limits
 import daemon/credential
 import daemon/internal/ffi_local_system
 import daemon/local_api
+import daemon/local_api_backend
 import daemon/local_api_client
 import daemon/local_api_fixture as fixture
 import daemon/local_api_protocol as protocol
@@ -13,6 +14,7 @@ import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/string
 import simplifile
 
@@ -544,4 +546,28 @@ pub fn a_send_carries_its_idempotency_key_test() {
       "send " <> contact_hex() <> " text/plain 01 None key=k-1",
       "send " <> contact_hex() <> " text/plain 01 None",
     ]
+}
+
+pub fn daemon_tor_sidecar_resolution_and_fail_fast_test() {
+  let none = fn(_) { Error(Nil) }
+  let has = fn(expected) { fn(path) { path == expected } }
+
+  assert local_api_backend.resolve_tor_bin(
+      Some("/opt/pondline-tor"),
+      none,
+      none,
+      has("/opt/pondline-tor"),
+    )
+    == Ok("/opt/pondline-tor")
+  assert local_api_backend.resolve_tor_bin(
+      None,
+      fn(_) { Ok("/bundle/bin/pondline-tor") },
+      none,
+      has("/bundle/bin/pondline-tor"),
+    )
+    == Ok("/bundle/bin/pondline-tor")
+  assert local_api_backend.resolve_tor_bin(None, none, none, fn(_) { False })
+    == Error(
+      "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
+    )
 }

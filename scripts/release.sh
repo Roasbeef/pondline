@@ -401,10 +401,12 @@ OPENSSL_CONF=/dev/null
 OPENSSL_MODULES=\$REL/lib/ossl-modules
 export OPENSSL_CONF OPENSSL_MODULES
 
-# The build identity the program reports (daemon/build, mailbox/build).
+# The build identity the program reports (daemon/build, mailbox/build), and
+# the bundled Tor sidecar path unless the operator explicitly set one.
 PONDLINE_BUILD_VERSION=$VERSION
 PONDLINE_BUILD_COMMIT=$COMMIT
-export PONDLINE_BUILD_VERSION PONDLINE_BUILD_COMMIT
+PONDLINE_TOR_BIN=\${PONDLINE_TOR_BIN:-\$REL/bin/pondline-tor}
+export PONDLINE_BUILD_VERSION PONDLINE_BUILD_COMMIT PONDLINE_TOR_BIN
 
 # The OpenSSL floor, then the program, with every argument after -extra.
 # -noinput keeps the VM from reading standard input itself, so a command
