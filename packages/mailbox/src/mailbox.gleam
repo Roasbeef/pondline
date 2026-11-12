@@ -742,8 +742,8 @@ fn check_grant_file(output: GrantOutput) -> Result(Nil, String) {
   case grant_file_path(output) {
     None -> Ok(Nil)
     Some(out) ->
-      case simplifile.is_file(out) {
-        Ok(False) -> Ok(Nil)
+      case simplifile.file_info(out) {
+        Error(simplifile.Enoent) -> Ok(Nil)
         _ -> Error("refusing to overwrite " <> out)
       }
   }
@@ -859,7 +859,10 @@ fn read_optional_onion(tor_state: Option(String)) -> Option(String) {
     None -> None
     Some(dir) ->
       case simplifile.read(dir <> "/onion") {
-        Ok(text) -> Some(string.trim(text))
+        Ok(text) ->
+          endpoint.parse(string.trim(text))
+          |> result.map(endpoint.to_string)
+          |> option.from_result
         Error(_) -> None
       }
   }

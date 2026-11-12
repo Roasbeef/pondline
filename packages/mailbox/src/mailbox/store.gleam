@@ -898,37 +898,42 @@ pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
 /// ```
 pub fn status(store: Store, now: Instant) -> Result(StatusReport, Error) {
   let Instant(unix_seconds) = now
-  use grant_rows <- result.try(query(store, sql.grant_summary()))
-  use queue_rows <- result.try(query(store, sql.queue_summary()))
-  use envelope_rows <- result.try(query(
-    store,
-    sql.envelope_summary(now: unix_seconds),
-  ))
-  use blob_rows <- result.try(query(store, sql.blob_summary(now: unix_seconds)))
-  use tombstone_rows <- result.try(query(
-    store,
-    sql.live_tombstones(now: unix_seconds),
-  ))
+  transaction(store, fn() {
+    use grant_rows <- result.try(query(store, sql.grant_summary()))
+    use queue_rows <- result.try(query(store, sql.queue_summary()))
+    use envelope_rows <- result.try(query(
+      store,
+      sql.envelope_summary(now: unix_seconds),
+    ))
+    use blob_rows <- result.try(query(
+      store,
+      sql.blob_summary(now: unix_seconds),
+    ))
+    use tombstone_rows <- result.try(query(
+      store,
+      sql.live_tombstones(now: unix_seconds),
+    ))
 
-  // Aggregate queries always return one row; missing rows report Corrupt.
-  case grant_rows, queue_rows, envelope_rows, blob_rows, tombstone_rows {
-    [g], [q], [e], [b], [t] ->
-      Ok(StatusReport(
-        grants: g.grants,
-        allowance_total: g.allowance_total,
-        queues_used_total: g.queues_used_total,
-        queues: q.queues,
-        bytes_used: q.bytes_used,
-        capacity_total: q.capacity_total,
-        live_envelopes: e.envelopes,
-        envelope_bytes: e.envelope_bytes,
-        live_blobs: b.blobs,
-        blob_bytes: b.blob_bytes,
-        live_tombstones: t.tombstones,
-      ))
-    _, _, _, _, _ ->
-      Error(Corrupt("summary query returned unexpected row count"))
-  }
+    // Aggregate queries always return one row; missing rows report Corrupt.
+    case grant_rows, queue_rows, envelope_rows, blob_rows, tombstone_rows {
+      [g], [q], [e], [b], [t] ->
+        Ok(StatusReport(
+          grants: g.grants,
+          allowance_total: g.allowance_total,
+          queues_used_total: g.queues_used_total,
+          queues: q.queues,
+          bytes_used: q.bytes_used,
+          capacity_total: q.capacity_total,
+          live_envelopes: e.envelopes,
+          envelope_bytes: e.envelope_bytes,
+          live_blobs: b.blobs,
+          blob_bytes: b.blob_bytes,
+          live_tombstones: t.tombstones,
+        ))
+      _, _, _, _, _ ->
+        Error(Corrupt("summary query returned unexpected row count"))
+    }
+  })
 }
 
 // ---------------------------------------------------------------- helpers

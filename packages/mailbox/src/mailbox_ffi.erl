@@ -16,7 +16,12 @@ create_private_file(Path, Bytes) ->
         {ok, Fd} ->
             Result = write_private(Fd, Path, Bytes),
             _ = file:close(Fd),
-            Result;
+            case Result of
+                {ok, nil} -> {ok, nil};
+                {error, _} ->
+                    _ = file:delete(binary_to_list(Path)),
+                    Result
+            end;
         {error, Reason} ->
             reason(Reason)
     end.
@@ -24,8 +29,9 @@ create_private_file(Path, Bytes) ->
 %% Atomically writes `Bytes` to `Path` with mode 0600 by staging into an
 %% exclusive 0600 sibling file and renaming into place.
 write_private_file(Path, Bytes) ->
+    Pid = list_to_binary(os:getpid()),
     Suffix = integer_to_binary(erlang:unique_integer([positive])),
-    Tmp = <<Path/binary, ".tmp.", Suffix/binary>>,
+    Tmp = <<Path/binary, ".tmp.", Pid/binary, ".", Suffix/binary>>,
     case create_private_file(Tmp, Bytes) of
         {ok, nil} ->
             case file:rename(binary_to_list(Tmp), binary_to_list(Path)) of
@@ -54,18 +60,25 @@ write_private(Fd, Path, Bytes) ->
 write_stdout(<<>>) ->
     {ok, nil};
 write_stdout(Bytes) ->
-    Old = proplists:get_value(encoding, io:getopts(standard_io), unicode),
-    case io:setopts(standard_io, [binary, {encoding, latin1}]) of
-        ok ->
-            Result = file:write(standard_io, Bytes),
-            _ = io:setopts(standard_io, [{encoding, Old}]),
-            case Result of
-                ok -> {ok, nil};
-                {error, Reason} -> reason(Reason)
+    case io:getopts(standard_io) of
+        Opts when is_list(Opts) ->
+            Old = proplists:get_value(encoding, Opts, unicode),
+            case io:setopts(standard_io, [binary, {encoding, latin1}]) of
+                ok ->
+                    Result = file:write(standard_io, Bytes),
+                    _ = io:setopts(standard_io, [{encoding, Old}]),
+                    write_result(Result);
+                {error, Reason} ->
+                    reason(Reason)
             end;
+        {error, enotsup} ->
+            write_result(file:write(standard_io, Bytes));
         {error, Reason} ->
             reason(Reason)
     end.
+
+write_result(ok) -> {ok, nil};
+write_result({error, Reason}) -> reason(Reason).
 
 %% The value of an environment variable. The name and value are binaries
 %% on the Gleam side; an unset variable is an error.

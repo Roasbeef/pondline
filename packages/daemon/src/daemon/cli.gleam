@@ -14,19 +14,21 @@
 ////
 //// ## Commands
 ////
-//// - `daemon --state-dir D --mailbox HOST:PORT --provision-file F
-////   [--carrier tor|loopback] [--tor-bin PATH]` runs the daemon.
-//// - `invite create --description TEXT --budget N [--auto-approve]
-////   [--out FILE] [--ticket]` (at least one of the two) and `invite accept
-////   [--ticket] (--file FILE | --stdin) [--description TEXT]`. With
-////   `--ticket`, create prints a ticket (ADR-009) and accept reads one.
-//// - `contacts list`, `contact approve|decline|close --contact HEX` and
-////   `contact budget --contact HEX --add N`.
-//// - `send --contact HEX [--content-type T] (--file F | --stdin)
-////   [--reply-to HEX] [--idempotency-key KEY]`.
-//// - `receive [--contact HEX] [--max N] [--wait SECONDS] [--raw]`.
-//// - `ack --message HEX`, `status --message HEX`, `audit [--contact HEX]
-////   [--limit N]`, `incidents [--limit N]` and `health`.
+//// - `init (--stdin | --file F | --mailbox HOST:PORT --provision-file F)`
+////   `[--state-dir D] [--carrier tor|loopback] [--tor-bin PATH] [--json]`
+////   initializes a state directory (`~/.pondline` by default) and writes `config.json`.
+//// - `daemon [--state-dir D] [--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin]`
+////   `[--carrier tor|loopback] [--tor-bin PATH]` runs the daemon.
+//// - `invite create --description TEXT --budget N [--auto-approve]`
+////   `[--out FILE] [--ticket]` (at least one of the two) and `invite accept`
+////   `[--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]`.
+//// - `contacts list`, `contact approve|decline|close --contact CONTACT` and
+////   `contact budget --contact CONTACT --add N`.
+//// - `send --contact CONTACT [--content-type T] (--file F | --stdin)`
+////   `[--reply-to HEX] [--idempotency-key KEY]`.
+//// - `receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]`.
+//// - `ack --message HEX`, `status --message HEX`, `audit [--contact CONTACT]`
+////   `[--limit N]`, `incidents [--limit N]` and `health`.
 //// - `--version` prints the build's version and commit.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
@@ -51,6 +53,7 @@
 //// being repeated, since it may be exactly the secret that was misplaced.
 
 import core/id.{type Contact, type Id, type Message}
+import core/limits
 import core/offer.{type Approval, AutoApprove, OperatorApproves}
 import daemon/local_api_protocol as protocol
 import gleam/bit_array
@@ -348,7 +351,12 @@ pub fn parse_with_env(
         ["--auto-approve", "--ticket"],
         fn(options) {
           use description <- result.try(required(options, "--description"))
-          use budget <- result.try(number(options, "--budget", 1, 1_000_000))
+          use budget <- result.try(number(
+            options,
+            "--budget",
+            1,
+            limits.max_budget_messages,
+          ))
           use output <- result.try(invite_output(options))
           let approval = approval_of(options)
 
@@ -368,7 +376,7 @@ pub fn parse_with_env(
             options,
             "--budget",
             1,
-            1_000_000,
+            limits.max_budget_messages,
           ))
           let description = dict_get(options, "--description", "")
 
@@ -403,7 +411,12 @@ pub fn parse_with_env(
     ["contact", "budget", ..rest] ->
       client(rest, env, ["--contact", "--add"], [], fn(options) {
         use contact <- result.try(contact(options))
-        use add <- result.try(number(options, "--add", 1, 1_000_000))
+        use add <- result.try(number(
+          options,
+          "--add",
+          1,
+          limits.max_budget_messages,
+        ))
 
         Ok(RaiseBudget(contact:, add:))
       })
@@ -1002,11 +1015,22 @@ fn optional_contact(options: Options) -> Result(Option(ContactRef), String) {
 /// Parses `--contact` as `ExactContact` when it is 32-digit hex, else `LookupContact`.
 fn parse_contact_ref(text: String) -> Result(ContactRef, String) {
   let trimmed = string.trim(text)
+  let looks_secret =
+    string.starts_with(trimmed, "pl1") || string.starts_with(trimmed, "plg1")
 
-  // Empty selectors are usage errors; 32-digit hex skips any lookup RPC.
-  case trimmed {
-    "" -> Error("--contact must not be empty")
-    _ ->
+  // Reject empty, overlong, or misplaced ticket/grant strings without echoing them.
+  case
+    trimmed == "",
+    looks_secret,
+    string.byte_size(trimmed) > limits.max_description_bytes
+  {
+    True, _, _ -> Error("--contact must not be empty")
+    False, True, _ ->
+      Error(
+        "--contact takes a contact id or petname, not a ticket or grant token",
+      )
+    False, False, True -> Error("--contact exceeds maximum description length")
+    False, False, False ->
       case id.from_hex(trimmed) {
         Ok(parsed) -> Ok(ExactContact(parsed))
         Error(Nil) -> Ok(LookupContact(trimmed))

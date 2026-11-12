@@ -48,6 +48,8 @@ import daemon/local_api
 import daemon/local_api_backend
 import daemon/local_api_client.{CannotConnect, ConnectionFailed, MalformedReply}
 import daemon/local_api_protocol as protocol
+import daemon/lock
+import daemon/node
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -103,6 +105,8 @@ fn run_daemon(command: cli.DaemonCommand) -> Outcome {
 /// Boots a daemon whose mailbox endpoint and provisioning file are resolved.
 fn start_resolved_daemon(options: cli.DaemonOptions) -> Outcome {
   let started = {
+    use Nil <- result.try(check_daemon_sidecar(options))
+    use Nil <- result.try(check_state_dir_unlocked_msg(options.state_dir))
     use credentials <- result.try(credential.ensure(options.state_dir))
     use backend <- result.try(local_api_backend.start_node(options))
 
@@ -128,6 +132,7 @@ fn start_resolved_daemon(options: cli.DaemonOptions) -> Outcome {
 /// Runs `pondline init`: materializes `provision.cap`, `config.json`, and credentials.
 fn run_init(command: cli.InitCommand) -> Outcome {
   let initialized = {
+    use Nil <- result.try(check_explicit_tor_bin(command.tor_bin))
     use options <- result.try(materialize_and_save_config(
       command.state_dir,
       command.setup,
@@ -191,6 +196,10 @@ fn resolve_daemon_options(
 
     ExplicitMailbox(..) | GrantMailbox(..) -> {
       let chosen_carrier = option.unwrap(command.carrier, Tor)
+      use Nil <- result.try(check_carrier_sidecar(
+        chosen_carrier,
+        command.tor_bin,
+      ))
       materialize_and_save_config(
         command.state_dir,
         command.setup,
@@ -225,6 +234,7 @@ fn materialize_and_save_config(
     mailbox_text,
     chosen_carrier,
   ))
+  use Nil <- result.try(check_state_dir_unlocked(state_dir))
   use Nil <- result.try(prepare_private_state_dir(state_dir))
   let provision_file = state_dir <> "/provision.cap"
   use Nil <- result.try(write_private_state_file(provision_file, cap_bytes))
@@ -241,6 +251,67 @@ fn materialize_and_save_config(
     carrier: chosen_carrier,
     tor_bin:,
   )
+}
+
+/// Verifies `state_dir` is not currently held by a running daemon before mutating files.
+fn check_state_dir_unlocked(state_dir: String) -> Result(Nil, Outcome) {
+  check_state_dir_unlocked_msg(state_dir)
+  |> result.map_error(failure(cli.exit_unavailable, _))
+}
+
+/// Returns an error string when `<state_dir>/lock.db` exists and is held by a live daemon.
+fn check_state_dir_unlocked_msg(state_dir: String) -> Result(Nil, String) {
+  let lock_path = state_dir <> "/" <> node.lock_file
+
+  // Only an existing lock file can be held; probing a missing directory would create nothing.
+  case simplifile.is_file(lock_path) {
+    Ok(True) ->
+      case lock.is_free(lock_path) {
+        True -> Ok(Nil)
+        False -> Error("another daemon holds this state directory")
+      }
+    _ -> Ok(Nil)
+  }
+}
+
+/// Resolves `pondline-tor` upfront when `daemon` runs under `--carrier tor`.
+fn check_carrier_sidecar(
+  chosen_carrier: Carrier,
+  tor_bin: Option(String),
+) -> Result(Nil, Outcome) {
+  case chosen_carrier {
+    Loopback -> check_explicit_tor_bin(tor_bin)
+    Tor ->
+      local_api_backend.resolve_default_tor_bin(tor_bin)
+      |> result.replace(Nil)
+      |> result.map_error(failure(cli.exit_unavailable, _))
+  }
+}
+
+/// Checks `pondline-tor` for `start_resolved_daemon` before creating credentials.
+fn check_daemon_sidecar(options: cli.DaemonOptions) -> Result(Nil, String) {
+  case options.carrier {
+    Loopback -> Ok(Nil)
+    Tor ->
+      local_api_backend.resolve_default_tor_bin(options.tor_bin)
+      |> result.replace(Nil)
+  }
+}
+
+/// Verifies an explicit `--tor-bin` file exists before saving it in `config.json`.
+fn check_explicit_tor_bin(tor_bin: Option(String)) -> Result(Nil, Outcome) {
+  case tor_bin {
+    None -> Ok(Nil)
+    Some(path) ->
+      case simplifile.is_file(path) {
+        Ok(True) -> Ok(Nil)
+        _ ->
+          Error(failure(
+            cli.exit_local,
+            "pondline-tor binary not found at " <> path,
+          ))
+      }
+  }
 }
 
 /// Reads and validates a 32-byte provisioning capability file in memory.
@@ -653,8 +724,8 @@ fn check_output_file(action: Action) -> Result(Nil, Outcome) {
     CreateInvite(output:, ..) ->
       case cli.invitation_path(output) {
         Some(out) ->
-          case simplifile.is_file(out) {
-            Ok(False) -> Ok(Nil)
+          case simplifile.file_info(out) {
+            Error(simplifile.Enoent) -> Ok(Nil)
             _ ->
               Error(failure(cli.exit_refused, "refusing to overwrite " <> out))
           }
@@ -701,10 +772,22 @@ fn read_input(input: Input) -> Result(BitArray, Outcome) {
 
 /// A failure to read an input file.
 fn unreadable(path: String, error: simplifile.FileError) -> Outcome {
-  failure(
-    cli.exit_local,
-    "could not read " <> path <> ": " <> simplifile.describe_error(error),
-  )
+  let looks_secret =
+    string.starts_with(path, "pl1") || string.starts_with(path, "plg1")
+
+  // Never echo a misplaced ticket or grant token typed after `--file`.
+  case looks_secret {
+    True ->
+      failure(
+        cli.exit_refused,
+        "expected a file path, not a ticket or grant token; use --stdin",
+      )
+    False ->
+      failure(
+        cli.exit_local,
+        "could not read " <> path <> ": " <> simplifile.describe_error(error),
+      )
+  }
 }
 
 /// The outcome for a daemon that could not be reached.

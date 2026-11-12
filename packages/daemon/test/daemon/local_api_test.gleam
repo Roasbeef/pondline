@@ -632,7 +632,7 @@ pub fn init_and_saved_config_round_trip_test() {
         dir,
         cli.GrantMailbox(cli.InputFile(grant_file)),
         cli.Loopback,
-        Some("/bin/tor"),
+        None,
         cli.JsonOutput,
       )),
     )
@@ -648,7 +648,7 @@ pub fn init_and_saved_config_round_trip_test() {
       "127.0.0.1:4299",
       dir <> "/provision.cap",
       cli.Loopback,
-      Some("/bin/tor"),
+      None,
     )
   // A refused re-init must leave the existing `provision.cap` and `config.json` intact.
   let assert Ok(other_token) = grant.from_parts(ep, <<99:256>>)

@@ -208,7 +208,17 @@ pub fn resolve_tor_bin(
 }
 
 /// Resolves `pondline-tor` against the live environment and filesystem.
-fn resolve_default_tor_bin(explicit: Option(String)) -> Result(String, String) {
+/// Public so `cli_run` can fail fast before touching state files.
+///
+/// ## Examples
+///
+/// ```gleam
+/// local_api_backend.resolve_default_tor_bin(Some("/missing"))
+/// // -> Error("pondline-tor binary not found at /missing")
+/// ```
+pub fn resolve_default_tor_bin(
+  explicit: Option(String),
+) -> Result(String, String) {
   resolve_tor_bin(
     explicit,
     ffi_local_system.getenv,

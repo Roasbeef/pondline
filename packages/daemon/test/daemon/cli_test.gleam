@@ -402,6 +402,7 @@ fn every_command() -> List(List(String)) {
     ["audit"],
     ["incidents"],
     ["health"],
+    ["init", "--stdin"],
     ["daemon", "--mailbox", "h:80", "--provision-file", "p"],
   ]
 }
