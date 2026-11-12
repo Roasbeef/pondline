@@ -14,6 +14,9 @@
 
 set -euo pipefail
 
+# Prevent macOS BSD tar from packing AppleDouble `._*` members in test archives.
+export COPYFILE_DISABLE=1
+
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
 PLATFORM="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
 REL="$ROOT/build/release/$PLATFORM/pondline"
@@ -28,9 +31,7 @@ STEM="pondline-$VERSION-$PLATFORM"
 TARBALL="$ROOT/dist/$STEM.tar.gz"
 SHA_FILE="$ROOT/dist/$STEM.tar.gz.sha256"
 
-if [ ! -f "$TARBALL" ] || [ ! -f "$SHA_FILE" ]; then
-  "$ROOT/scripts/dist.sh" >/dev/null
-fi
+"$ROOT/scripts/dist.sh" >/dev/null
 
 WORK=$(umask 077 && mktemp -d "${TMPDIR:-/tmp}/pondline-test-update.XXXXXX")
 HOLDER_PID=""
@@ -68,7 +69,7 @@ echo "ok   1. fresh install verified ($FIRST_TREE)"
 # 2. Tamper rejection leaves current untouched
 BAD_TARBALL="$WORK/$STEM.tar.gz"
 cp "$TARBALL" "$BAD_TARBALL"
-printf '\x00' | dd of="$BAD_TARBALL" bs=1 seek=16 conv=notrunc 2>/dev/null
+printf 'x' >> "$BAD_TARBALL"
 if "$PREFIX_DIR/bin/pondline-update" \
   --tarball "$BAD_TARBALL" \
   --sha256-file "$SHA_FILE" >"$WORK/tamper.out" 2>&1; then
@@ -111,7 +112,7 @@ tar -czf "$NEXT_TARBALL" -C "$WORK/stage" "$NEXT_STEM"
 )
 
 # Hold FIRST_TREE on a live process command line so install.sh sees it in use.
-sh -c 'sleep 30' _ "$FIRST_TREE/bin/pondline" &
+sh -c 'sleep 30; :' _ "$FIRST_TREE/bin/pondline" &
 HOLDER_PID=$!
 sleep 0.2
 

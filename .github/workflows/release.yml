@@ -145,12 +145,18 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Install OTP 29 and Gleam 1.19.2
-        uses: erlef/setup-beam@v1
-        with:
-          otp-version: '29.1'
-          gleam-version: '1.19.2'
-          rebar3-version: '3.27.0'
+      - name: Install OTP 29 (Homebrew OpenSSL >= 3.5) and pinned Gleam 1.19.2
+        run: |
+          set -euo pipefail
+          brew update
+          brew install erlang rebar3 openssl@3
+          curl -fsSL -o /tmp/gleam.tar.gz https://github.com/gleam-lang/gleam/releases/download/v1.19.2/gleam-v1.19.2-aarch64-apple-darwin.tar.gz
+          echo "fa7c6113e162ab1d979f72e7dde3e907b87e4b30c518af178768e577d180324d  /tmp/gleam.tar.gz" | shasum -a 256 -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf /tmp/gleam.tar.gz -C "$RUNNER_TEMP/bin" gleam
+          chmod +x "$RUNNER_TEMP/bin/gleam"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          erl -noshell -noinput -eval '[{_, _, V}] = crypto:info_lib(), true = lists:member(mlkem1024, proplists:get_value(kems, crypto:supports())), io:format("OTP ~s + ~s~n", [erlang:system_info(otp_release), V]), halt(0).'
 
       - name: Install Rust 1.98.1
         uses: dtolnay/rust-toolchain@master

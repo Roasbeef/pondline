@@ -239,19 +239,7 @@ acquire_lock() {
     LOCK_DIR="$candidate"
     return
   fi
-  if [ -f "$candidate/pid" ]; then
-    local owner
-    owner=$(cat "$candidate/pid" 2>/dev/null || true)
-    if [ -n "$owner" ] && ! kill -0 "$owner" 2>/dev/null; then
-      rm -rf "$candidate"
-      if mkdir "$candidate" 2>/dev/null; then
-        printf '%s\n' "$$" > "$candidate/pid"
-        LOCK_DIR="$candidate"
-        return
-      fi
-    fi
-  fi
-  echo "pondline-update: another update is holding $candidate" >&2
+  echo "pondline-update: lock held at $candidate (remove it if an earlier update crashed)" >&2
   exit 1
 }
 
