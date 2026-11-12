@@ -160,6 +160,20 @@ pub fn grant_token_parsing_and_issuance_test() {
   let assert Ok(token_text) = bit_array.to_string(secret.expose(token_secret))
   let assert Ok(decoded) = grant.decode(token_text)
   assert grant.endpoint(decoded) == ep
+
+  // End-to-end `TorStateEndpoint`: record `<tor_dir>/onion` and mint a `plg1` token from it.
+  let tor_dir = make_scratch_dir()
+  let onion_host =
+    "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion:80"
+  let assert Ok(onion_ep) = endpoint.parse(onion_host)
+  let assert Ok(Nil) = mailbox.record_onion_endpoint(tor_dir, onion_host)
+  let assert Ok(Some(tor_token_secret)) =
+    mailbox.issue_grant(db, 10, GrantTokenOnly(TorStateEndpoint(tor_dir)))
+  let assert Ok(tor_token_text) =
+    bit_array.to_string(secret.expose(tor_token_secret))
+  let assert Ok(tor_decoded) = grant.decode(tor_token_text)
+  assert grant.endpoint(tor_decoded) == onion_ep
+  remove_dir(tor_dir)
 }
 
 /// Hosts a mailbox on an onion service and checks the address it returns.

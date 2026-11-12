@@ -137,22 +137,24 @@ file_mode(Path) ->
         {error, Reason} -> reason(Reason)
     end.
 
-%% Writes raw bytes directly to file descriptor 1 via an OTP fd port. Unlike
-%% `io`, this never UTF-8 re-encodes binary payloads, and unlike opening
-%% `/dev/stdout` by path, it works inside macOS seatbelt and chroot sandboxes.
+%% Writes raw bytes synchronously to `standard_io` under `latin1` encoding (1:1
+%% octets, restoring the previous encoding afterwards). Unlike opening `/dev/stdout`
+%% by path, this works inside macOS seatbelt sandboxes, and unlike an async fd port,
+%% `file:write(standard_io, ...)` waits for the OS write and reports `ebadf`/`epipe`.
 write_stdout(<<>>) ->
     {ok, nil};
 write_stdout(Bytes) ->
-    try
-        Port = erlang:open_port({fd, 0, 1}, [out, binary, stream]),
-        try
-            true = erlang:port_command(Port, Bytes),
-            {ok, nil}
-        after
-            try erlang:port_close(Port) catch _:_ -> ok end
-        end
-    catch
-        _:Reason -> reason(Reason)
+    Old = proplists:get_value(encoding, io:getopts(standard_io), unicode),
+    case io:setopts(standard_io, [binary, {encoding, latin1}]) of
+        ok ->
+            Result = file:write(standard_io, Bytes),
+            _ = io:setopts(standard_io, [{encoding, Old}]),
+            case Result of
+                ok -> {ok, nil};
+                {error, Reason} -> reason(Reason)
+            end;
+        {error, Reason} ->
+            reason(Reason)
     end.
 
 %% Reads standard input to its end, giving up with `too_large` once more

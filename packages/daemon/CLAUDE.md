@@ -415,7 +415,7 @@ the operator, and the `pondline` command that speaks to it.
   of `health` (added in `local_api_backend`, so a test backend has none).
 - `daemon/internal/ffi_local_socket` and `ffi_local_system` over
   `src/daemon_local_ffi.erl`: Unix sockets, the monotonic clock, private
-  files and directories, raw stdout and stdin, the environment.
+  files and directories, raw fd-1 stdout and stdin, executable lookup, and the environment.
 
 Invariants:
 

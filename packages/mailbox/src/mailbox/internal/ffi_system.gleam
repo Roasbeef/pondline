@@ -24,6 +24,10 @@ pub fn create_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
 @external(erlang, "mailbox_ffi", "write_private_file")
 pub fn write_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
 
+/// Writes raw bytes directly to standard output (fd 1), returning any OS error.
+@external(erlang, "mailbox_ffi", "write_stdout")
+pub fn write_stdout(bytes: BitArray) -> Result(Nil, String)
+
 /// The value of an environment variable.
 @external(erlang, "mailbox_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)

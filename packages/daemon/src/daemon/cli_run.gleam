@@ -202,19 +202,21 @@ fn resolve_daemon_options(
 }
 
 /// Materializes `<state_dir>/provision.cap` and writes `<state_dir>/config.json` (0600).
+/// Validates both capability bytes and carrier policy admission in memory first so a
+/// refused re-initialization never overwrites an existing `provision.cap`.
 fn materialize_and_save_config(
   state_dir: String,
   setup: cli.MailboxSetup,
   chosen_carrier: Carrier,
   tor_bin: Option(String),
 ) -> Result(cli.DaemonOptions, Outcome) {
-  // Materialize or copy the capability into `<state_dir>/provision.cap`.
-  use #(mailbox_text, provision_file) <- result.try(case setup {
+  // Decode and validate capability bytes in memory before touching disk.
+  use #(mailbox_text, cap_bytes) <- result.try(case setup {
     ExplicitMailbox(mailbox:, provision_file:) ->
-      copy_provision_into_state_dir(state_dir, mailbox, provision_file)
+      read_explicit_provision(mailbox, provision_file)
     GrantMailbox(source:) -> {
       use raw <- result.try(read_input(source))
-      apply_grant_token(state_dir, raw)
+      decode_grant_token(raw)
     }
     SavedMailbox -> Error(failure(cli.exit_usage, "missing setup input"))
   })
@@ -223,6 +225,9 @@ fn materialize_and_save_config(
     mailbox_text,
     chosen_carrier,
   ))
+  use Nil <- result.try(prepare_private_state_dir(state_dir))
+  let provision_file = state_dir <> "/provision.cap"
+  use Nil <- result.try(write_private_state_file(provision_file, cap_bytes))
   use Nil <- result.map(write_config_file(
     state_dir,
     canonical_mailbox,
@@ -238,12 +243,11 @@ fn materialize_and_save_config(
   )
 }
 
-/// Validates a provisioning capability file and stores a self-contained 0600 copy in `state_dir`.
-fn copy_provision_into_state_dir(
-  state_dir: String,
+/// Reads and validates a 32-byte provisioning capability file in memory.
+fn read_explicit_provision(
   mailbox: String,
   source_file: String,
-) -> Result(#(String, String), Outcome) {
+) -> Result(#(String, BitArray), Outcome) {
   use bytes <- result.try(
     simplifile.read_bits(source_file)
     |> result.map_error(fn(_) {
@@ -253,7 +257,7 @@ fn copy_provision_into_state_dir(
       )
     }),
   )
-  use _cap <- result.try(
+  use _cap <- result.map(
     capability.from_bytes(bytes)
     |> result.map_error(fn(_) {
       failure(
@@ -262,10 +266,7 @@ fn copy_provision_into_state_dir(
       )
     }),
   )
-  use Nil <- result.try(prepare_private_state_dir(state_dir))
-  let target_file = state_dir <> "/provision.cap"
-  use Nil <- result.map(write_private_state_file(target_file, bytes))
-  #(mailbox, target_file)
+  #(mailbox, bytes)
 }
 
 /// Verifies that `mailbox_text` parses and is permitted by `chosen_carrier`.
@@ -448,38 +449,28 @@ pub fn apply_grant_token(
   state_dir: String,
   raw: BitArray,
 ) -> Result(#(String, String), Outcome) {
+  use #(mailbox, cap_bytes) <- result.try(decode_grant_token(raw))
+  use Nil <- result.try(prepare_private_state_dir(state_dir))
+  let provision_file = state_dir <> "/provision.cap"
+  use Nil <- result.map(write_private_state_file(provision_file, cap_bytes))
+  #(mailbox, provision_file)
+}
+
+/// Decodes a `plg1...` grant token into `(mailbox_host_port, capability_bytes)` without writing to disk.
+fn decode_grant_token(raw: BitArray) -> Result(#(String, BitArray), Outcome) {
   use text <- result.try(
     bit_array.to_string(raw)
     |> result.map_error(fn(_) {
       failure(cli.exit_refused, "the grant token is not text")
     }),
   )
-  use token <- result.try(
+  use token <- result.map(
     grant.decode(string.trim(text)) |> result.map_error(grant_decode_outcome),
   )
-  use Nil <- result.try(
-    ffi_local_system.make_private_dir(state_dir)
-    |> result.map_error(fn(reason) {
-      failure(
-        cli.exit_local,
-        "could not prepare " <> state_dir <> ": " <> reason,
-      )
-    }),
+  #(
+    endpoint.to_string(grant.endpoint(token)),
+    capability.expose(grant.provision(token)),
   )
-  let provision_file = state_dir <> "/provision.cap"
-  use Nil <- result.map(
-    ffi_local_system.write_private_file(
-      provision_file,
-      capability.expose(grant.provision(token)),
-    )
-    |> result.map_error(fn(reason) {
-      failure(
-        cli.exit_local,
-        "could not write " <> provision_file <> ": " <> reason,
-      )
-    }),
-  )
-  #(endpoint.to_string(grant.endpoint(token)), provision_file)
 }
 
 /// Maps a `GrantError` to a clean refusal outcome without echoing input text.

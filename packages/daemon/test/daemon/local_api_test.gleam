@@ -650,6 +650,25 @@ pub fn init_and_saved_config_round_trip_test() {
       cli.Loopback,
       Some("/bin/tor"),
     )
+  // A refused re-init must leave the existing `provision.cap` and `config.json` intact.
+  let assert Ok(other_token) = grant.from_parts(ep, <<99:256>>)
+  let other_file = dir <> "_other_grant.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(other_file, secret.expose(grant.encode(other_token)))
+  let bad_reinit =
+    cli_run.run(
+      cli.InitDaemon(cli.InitCommand(
+        dir,
+        cli.GrantMailbox(cli.InputFile(other_file)),
+        cli.Tor,
+        None,
+        cli.HumanOutput,
+      )),
+    )
+  assert bad_reinit.status == cli.exit_refused
+  assert simplifile.read_bits(dir <> "/provision.cap") == Ok(cap_bytes)
+
+  let _ = simplifile.delete(other_file)
   let _ = simplifile.delete(grant_file)
   let _ = simplifile.delete(dir)
 }

@@ -41,7 +41,6 @@ import core/endpoint.{type Endpoint}
 import core/grant
 import core/secret.{type Secret}
 import core/time.{Instant}
-import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
@@ -591,13 +590,7 @@ fn serve(
 
     Some(hosting) -> {
       use host <- result.try(host_onion(hosting, server.port))
-      let onion_file = hosting.state_dir <> "/onion"
-      use Nil <- result.map(
-        ffi_system.write_private_file(onion_file, <<host:utf8, "\n">>)
-        |> result.map_error(fn(reason) {
-          "could not record onion address in " <> onion_file <> ": " <> reason
-        }),
-      )
+      use Nil <- result.map(record_onion_endpoint(hosting.state_dir, host))
       io.println("onion " <> host)
     }
   })
@@ -699,27 +692,49 @@ fn run_grant(
   queues: Int,
   output: GrantOutput,
 ) -> Result(Nil, String) {
-  use token <- result.map(issue_grant(db, queues, output))
+  use token <- result.try(issue_grant(db, queues, output))
 
   // When both `--out` and `--token` are requested, the token owns stdout so it
-  // can be piped directly, while the file path goes to stderr.
+  // can be piped directly, while the file path goes to stderr. A failed stdout
+  // write returns an error rather than exiting 0 after losing the capability.
   case output, token {
-    GrantFile(path:), _ -> io.println(path)
+    GrantFile(path:), _ ->
+      ffi_system.write_stdout(<<path:utf8, "\n">>)
+      |> result.map_error(fn(r) { "could not write standard output: " <> r })
     GrantTokenOnly(..), Some(encoded) -> print_secret_line(encoded)
     GrantTokenAndFile(path:, ..), Some(encoded) -> {
       io.println_error(path)
       print_secret_line(encoded)
     }
-    _, None -> Nil
+    _, None -> Ok(Nil)
   }
 }
 
-/// Prints an ASCII secret token on its own line to stdout.
-fn print_secret_line(value: Secret) -> Nil {
-  case bit_array.to_string(secret.expose(value)) {
-    Ok(line) -> io.println(line)
-    Error(Nil) -> Nil
-  }
+/// Writes `<host>\n` to `<state_dir>/onion` with mode 0600 so `grant` and `status` can read it.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.record_onion_endpoint("/tmp/mb-tor", "abc...d.onion:80")
+/// // -> Ok(Nil)
+/// ```
+pub fn record_onion_endpoint(
+  state_dir: String,
+  host: String,
+) -> Result(Nil, String) {
+  let onion_file = state_dir <> "/onion"
+  ffi_system.write_private_file(onion_file, <<host:utf8, "\n">>)
+  |> result.map_error(fn(reason) {
+    "could not record onion address in " <> onion_file <> ": " <> reason
+  })
+}
+
+/// Writes an ASCII secret token line directly to fd 1, checking the write result.
+fn print_secret_line(value: Secret) -> Result(Nil, String) {
+  ffi_system.write_stdout(<<{ secret.expose(value) }:bits, "\n":utf8>>)
+  |> result.map_error(fn(reason) {
+    "could not write standard output: " <> reason
+  })
 }
 
 /// Checks upfront that any `--out` destination does not already exist.

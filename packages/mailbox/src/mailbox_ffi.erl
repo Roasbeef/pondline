@@ -1,5 +1,5 @@
 -module(mailbox_ffi).
--export([unix_seconds/0, monotonic_ms/0, create_private_file/2, write_private_file/2, getenv/1, find_executable/1]).
+-export([unix_seconds/0, monotonic_ms/0, create_private_file/2, write_private_file/2, write_stdout/1, getenv/1, find_executable/1]).
 
 %% Whole seconds since the Unix epoch. `erlang:system_time/1` takes the unit
 %% as an atom, which Gleam cannot build without creating one.
@@ -42,6 +42,24 @@ write_private(Fd, Path, Bytes) ->
     case file:change_mode(Path, 8#600) of
         ok ->
             case file:write(Fd, Bytes) of
+                ok -> {ok, nil};
+                {error, Reason} -> reason(Reason)
+            end;
+        {error, Reason} ->
+            reason(Reason)
+    end.
+
+%% Writes raw bytes synchronously to `standard_io` under `latin1` encoding so OS
+%% write failures (`ebadf`/`epipe`) return synchronously and seatbelt needs no `/dev/stdout` open.
+write_stdout(<<>>) ->
+    {ok, nil};
+write_stdout(Bytes) ->
+    Old = proplists:get_value(encoding, io:getopts(standard_io), unicode),
+    case io:setopts(standard_io, [binary, {encoding, latin1}]) of
+        ok ->
+            Result = file:write(standard_io, Bytes),
+            _ = io:setopts(standard_io, [{encoding, Old}]),
+            case Result of
                 ok -> {ok, nil};
                 {error, Reason} -> reason(Reason)
             end;
