@@ -7,7 +7,7 @@ retransmission. Every state machine is a function from the current value and
 its inputs to a result, with time and randomness passed as arguments. This
 document describes the modules, each state machine with its transitions, and
 how the shell (`packages/daemon`) drives them. It reflects the code at
-commit `632db2f`.
+commit `49a51b3`.
 
 For the purity rule see `docs/spec.md` §10.1 and `docs/gleam-style.md`
 Part IV §5. For the byte-level cryptography see
@@ -41,6 +41,7 @@ flowchart TB
         frame["frame.gleam<br/>Initial, Ratchet"]
         snap["snapshot.gleam<br/>encode_relationship,<br/>encode_offer"]
         mbx["mailbox/codec.gleam<br/>Request, Response"]
+        grt["grant.gleam<br/>GrantToken (plg1)"]
     end
 
     subgraph CRYPTO["crypto/"]
@@ -71,13 +72,14 @@ flowchart TB
     msg --> tlv
     mbx --> tlv
     snap --> tlv
+    grt --> limits
     retx --> limits
     ret --> limits
     pqxdh --> suite
     ratchet --> suite
 ```
 
-The package has 32 source files (`packages/core/src/core`). The table lists
+The package has 33 source files (`packages/core/src/core`). The table lists
 each group, what it owns, and what it leaves to other code.
 
 | Module | Owns | Does not own |
@@ -88,11 +90,11 @@ each group, what it owns, and what it leaves to other code.
 | `retransmit` | The retransmission schedule (`due_at`) and the decision on a due row (`retransmit`). | Reading rows, copying their bytes, or the timer that fires. |
 | `retention` | The list of retention deadlines one append offers a mailbox. | Sending the append or backing off after the last offer. |
 | `message`, `frame`, `envelope` | The plaintext message and `Hello`, the tag byte that separates a handshake from a ratchet message, and bucket padding. | Encryption, which is `crypto/ratchet` and `crypto/pqxdh`. |
-| `invitation`, `route`, `ticket`, `codex32` | The invitation file, the `Route` and `Inbox` credentials, the invitation ticket text and its checksum. | Fetching the sealed invitation from a mailbox. |
+| `invitation`, `route`, `ticket`, `grant`, `codex32` | The invitation file, the `Route` and `Inbox` credentials, the `pl1` invitation ticket, the `plg1` mailbox grant token ([ADR-015](../../docs/adr/015-grant-tokens-and-daemon-config.md)) and their codex32 checksums. | Fetching a sealed invitation from a mailbox or writing `provision.cap`. |
 | `snapshot` | The durable encoding of a `Relationship` and an `Offer`. | The SQLite schema and transactions. |
 | `mailbox/protocol`, `mailbox/codec`, `http1` | The typed mailbox commands, their TLV bytes, and HTTP/1.1 framing. | Sockets, handling a request, or the mailbox store. |
 | `crypto/*` | Typed keys, hybrid identity, HKDF, PQXDH and the Double Ratchet. | The primitive implementations, which `packages/primitives` supplies through `Suite`. |
-| `id`, `capability`, `secret`, `endpoint`, `time`, `field`, `limits`, `tlv` | The domain types and the single place each bound or encoding is defined. | Any I/O. |
+| `id`, `capability`, `secret`, `endpoint`, `time`, `field`, `limits`, `tlv` | The domain types (`endpoint.parse` and `endpoint.to_string` included) and the single place each bound (`limits.max_grant_token_bytes` included) or encoding is defined. | Any I/O. |
 
 ## The transition contract
 
@@ -132,7 +134,7 @@ flowchart LR
 2. **Plan.** `plan.build` derives the effects from the records:
    `Transmit` when any record is an `Outbound`, and `WakeAdapter` when a record
    is a `Delivered` with status `Ready` or a `Released`
-   (`packages/core/src/core/plan.gleam:296`). `CreateQueue` is added by the
+   (`packages/core/src/core/plan.gleam:298`). `CreateQueue` is added by the
    transitions that need a queue (`relationship.join`, `offer.create`).
 3. **Commit.** The shell writes the state and every record in one
    transaction. A crash before the commit leaves the old state, because no

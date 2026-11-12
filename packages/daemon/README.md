@@ -1,12 +1,12 @@
 # Daemon Architecture
 
-The `daemon` package is the part of Pondline that runs on an agent's machine. It keeps the agent's durable relationship state in step with the mailboxes that carry its ciphertext: it commits every protocol transition to SQLite first, and only then sends, acknowledges or announces anything. This document describes the processes that do that work, who owns which state, and how a command or an envelope moves from its entry point to a durable result. It reflects the code at `632db2f`.
+The `daemon` package is the part of Pondline that runs on an agent's machine. It keeps the agent's durable relationship state in step with the mailboxes that carry its ciphertext: it commits every protocol transition to SQLite first, and only then sends, acknowledges or announces anything. This document describes the processes that do that work, who owns which state, and how a command or an envelope moves from its entry point to a durable result. It reflects the code at `49a51b3`.
 
 The protocol itself is pure and lives in `packages/core` (`transition(model, event)`, [spec §10.1](../../docs/spec.md)). This package supplies the effects the core may not have: sockets, SQLite, clocks and processes. Process primitives (`weft/actor`, `weft/state_machine`, `weft/poll`, `weft` runs) are described in [weft.md](../../docs/weft.md). The mailbox service on the other end of every call is in [architecture/mailbox.md](../../docs/architecture/mailbox.md). Package-level invariants and the test that checks each one are in [CLAUDE.md](CLAUDE.md). Two of the processes here, the scheduler and the fetcher, have exhaustively checked models; see [formal/tla.md](../../docs/formal/tla.md).
 
 ## Components
 
-A running daemon is a `static_supervisor` tree of eight children (`node.launch`, `node.gleam:275`) plus a local API server that the `daemon` command starts beside it. One process, the engine, holds the SQLite connection. Everything else either reads committed rows back through the engine or talks to a mailbox, and none of the network workers receives ciphertext from a transition.
+A running daemon is a `static_supervisor` tree of eight children (`node.launch`, `node.gleam:278`) plus a local API server that the `daemon` command starts beside it. One process, the engine, holds the SQLite connection. Everything else either reads committed rows back through the engine or talks to a mailbox, and none of the network workers receives ciphertext from a transition.
 
 ```mermaid
 flowchart TB
@@ -61,7 +61,7 @@ flowchart TB
     carrier -- "set_tor" --> status
 ```
 
-The engine never calls a worker. It is given one `notify` function and calls it after a commit, and `route_notice` (`node.gleam:457`) is the only place that says which commit result nudges which worker. A nudge is advisory: the scheduler, provisioner and fetch manager each also scan on a timer, so a nudge lost to a restart costs latency only. The local API server is not a child of the tree. It is started by `cli_run.run_daemon` after `node.start` returns, as plain processes that talk to the runtime through `daemon/api` (see [Local API and CLI](#local-api-and-cli)).
+The engine never calls a worker. It is given one `notify` function and calls it after a commit, and `route_notice` (`node.gleam:460`) is the only place that says which commit result nudges which worker. A nudge is advisory: the scheduler, provisioner and fetch manager each also scan on a timer, so a nudge lost to a restart costs latency only. The local API server is not a child of the tree. It is started by `cli_run.run_daemon` after `node.start` returns, as plain processes that talk to the runtime through `daemon/api` (see [Local API and CLI](#local-api-and-cli)).
 
 | Package or type | Owns | Does not own |
 | --- | --- | --- |
@@ -91,8 +91,9 @@ sequenceDiagram
     participant Eng as engine
     participant Api as local_api.start
 
-    Run->>Run: credential.ensure (operator.cred, agent.cred)
-    Run->>Node: local_api_backend.start_node, node.start
+    Run->>Run: resolve_daemon_options (config.json or materialize grant/explicit)
+    Run->>Run: check_daemon_sidecar, check_state_dir_unlocked_msg, credential.ensure
+    Run->>Node: local_api_backend.start_node (resolve_default_tor_bin), node.start
     Node->>Node: check_config: endpoint.admit, check_sidecar, read provisioning file
     Node->>Node: prepare_directory: dir 0700, daemon.db and lock.db 0600
     Node->>Node: probe: lock.is_free, store.open, store.close
@@ -312,7 +313,7 @@ sequenceDiagram
 
 1. **Offer.** `engine.invite` commits an `Offer` in phase `Provisioning` with a fresh inbox (`OfferStarted`). Its `CreateQueue` effect reaches the provisioner. After the mailbox creates the queue, `engine.provisioned` finds the offer by queue and `open_offer` revises it to `Open`; any other phase is left alone, which makes the call idempotent.
 2. **Wait.** `api.invite` is the one call that waits. `await_file` polls `engine.invitation_file` with `weft/poll` every `invite_poll_ms` (50) for at most `invite_wait_ms` (30,000). `FileNotYet` retries, `FileGone` fails with `NotFound`, and a spent wait is `Unavailable`. A timed-out offer still opens later, unexported.
-3. **Accept.** `engine.accept` decodes the file and checks `store.contact_by_invitation`. An invitation redeemed once returns the relationship it started and starts no second joiner until that one is closed ([ADR-011](../../docs/adr/011-idempotent-accept-and-send.md)). Otherwise `join` commits a relationship in phase `Joining` with a fresh inbox and the daemon's `accept_budget` (`config.default_accept_budget`, 1,000).
+3. **Accept.** `engine.accept` decodes the file and checks `store.contact_by_invitation`. An invitation redeemed once returns the relationship it started and starts no second joiner until that one is closed ([ADR-011](../../docs/adr/011-idempotent-accept-and-send.md)). Otherwise `join` commits a relationship in phase `Joining` with a fresh inbox and the caller's `--budget` override (or the daemon's `config.default_accept_budget`, 1,000, up to `limits.max_budget_messages`, 1,000,000).
 4. **Join queue.** The joiner's provisioner creates its queue. `engine.provisioned` finds a `Joining` relationship by queue and `open_session` calls `relationship.joined`, which encrypts the `Initial` frame and commits the new phase with the frame in the outbox. If the invitation expired while the queue was being created, the relationship is closed locally, since nothing can move it forward.
 5. **Redeem.** The scheduler sends the frame to the offer's queue. The inviter's fetcher passes it to `engine.process`, `redeem` calls `offer.redeem`, and the `Redeemed` commit replaces the offer and inserts the relationship in one transaction. The operator approves the relationship (`engine.approve`) unless the offer was created with `AutoApprove`.
 
@@ -441,7 +442,7 @@ Line framing is `recv_line` in the Erlang shim (`daemon_local_ffi.erl`), because
 
 A `receive` with a wait registers with the wake hub before its first read. The hub (`hub_message`) holds the list of waiters and the daemon's single `api.subscribe` subscription, and wakes every waiter on `MessagesReady`. A waiter re-reads and decides for itself whether the event was for its contact. `poll_for_wake` is `poll.until_on` with a clock whose rest is a wait on the waiter's subject, so a delivery announced between the read and the wait leaves a wake in the waiter's mailbox and is not lost. A wait that expires with nothing ready is an empty answer, not a failure.
 
-`local_api_backend.from_daemon` is the only module that maps `daemon/api` onto the `Backend` record. `start_node` turns the CLI's options into a runtime `Config`: `--carrier tor` selects `TorOnly` with the resolved `pondline-tor` sidecar binary, and `--carrier loopback` selects `TorOrLoopback` with no sidecar. The CLI is three modules and an entry point. `cli` is pure: it parses arguments into a `Command`, builds the request, and defines the exit codes (0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused, invalid or too large, 6 unavailable). `cli_run` does the effects, `cli_render` prints, and `pondline.main` installs the `telemetry` handler before anything else runs. A client command defaults `--state-dir` to `$PONDLINE_STATE_DIR` or `$HOME/.pondline`, reads its credential from `--credential-file`, `PONDLINE_CREDENTIAL_FILE` or `<state-dir>/operator.cred`, and reads a payload, ticket or grant token only from `--file` or `--stdin`, so no secret reaches argv. `invite create` and a ticket accept wait `invitation_timeout_ms` (130,000 ms, `cli.gleam:1237`), at least the daemon's own bounds. `invite create --out` refuses an existing file before the daemon is asked and writes the invitation with mode `0600`.
+`local_api_backend.from_daemon` is the only module that maps `daemon/api` onto the `Backend` record. `start_node` turns the CLI's resolved `DaemonOptions` into a runtime `Config`: `--carrier tor` calls `resolve_default_tor_bin` (`local_api_backend.gleam:219`), searching `--tor-bin`, `$PONDLINE_TOR_BIN`, `PATH` and sibling release directories and failing fast before any worker starts when no sidecar binary exists, while `--carrier loopback` selects `TorOrLoopback` with no sidecar. `pondline init` validates setup input, carrier admission and lock freedom upfront and writes `<state-dir>/provision.cap`, `<state-dir>/config.json` and the local API credentials (`0600`) without starting the runtime ([ADR-015](../../docs/adr/015-grant-tokens-and-daemon-config.md)). The CLI is three modules and an entry point. `cli` is pure: it parses arguments into a `Command`, builds the request, refuses `--socket` combined with `--state-dir`, and defines the exit codes (0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused, invalid or too large, 6 unavailable). `cli_run` does the effects, including resolving a non-hex `--contact` petname or hex prefix through a `contacts` lookup before dispatching the main request, `cli_render` prints, and `pondline.main` installs the `telemetry` handler before anything else runs. A client command defaults `--state-dir` to `$PONDLINE_STATE_DIR` or `$HOME/.pondline`, reads its credential from `--credential-file`, `PONDLINE_CREDENTIAL_FILE` or `<state-dir>/operator.cred`, and reads a payload, ticket or grant token only from `--file` or `--stdin`, so no secret reaches argv. `invite create` and a ticket accept wait `invitation_timeout_ms` (130,000 ms, `cli.gleam:1261`), at least the daemon's own bounds. `invite create --out` checks `file_info` before the daemon is asked so an existing file, directory or symlink is never overwritten, and writes the invitation with mode `0600`.
 
 ## Storage
 

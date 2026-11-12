@@ -297,8 +297,7 @@ Invariants:
   and an envelope committed but unacknowledged is acknowledged by the next
   fetcher round, with no second delivery to the agent.
 - One daemon per state directory: `lock.db` holds an exclusive SQLite
-  transaction, released by the OS when the process dies. The directory is
-  `0700`, the database and lock `0600`.
+  transaction, released by the OS when the process dies, and `pondline init` and `pondline daemon` verify lock freedom and sidecar availability before writing state files. The directory is `0700`, the database and lock `0600`.
 - No log line or crash report carries a secret (ADR-012). Our lines take
   only `telemetry/field`'s typed kinds; `pondline.main` installs the
   `telemetry` handler before anything runs, for every command, so OTP's

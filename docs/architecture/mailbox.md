@@ -8,7 +8,7 @@ stop an acknowledged envelope from coming back, and the sealed
 invitation blobs that tickets point at ([ADR-009](../adr/009-invitation-tickets.md)). This document describes
 the processes that do that work, who owns which state, and how a request
 moves from an HTTP connection to a committed SQLite row. It reflects the
-code at `632db2f`. Its actors and state machines are
+code at `49a51b3`. Its actors and state machines are
 [weft](../weft.md) processes. The package is described in
 [packages/mailbox/README.md](../../packages/mailbox/README.md).
 
@@ -75,14 +75,8 @@ SQLite, and the notifier never touches SQLite.
 
 ## Startup
 
-`mailbox serve --db <path> --port <n> [--tor-bin <path> --tor-state <dir>]`
-installs the log handler first, then starts the supervised node, then the
-HTTP listener, then the optional onion service. No request can arrive
-before the database is open and migrated, and the `onion` line follows the
-`listening` line. `sweep_period_ms` is 60_000 (`mailbox.gleam`). `serve`
-passes `timer.WallClock`, `None` and `None` for `timer`, `interceptor` and
-`store_faults`, which only a simulation changes. The Tor options must be
-given both or neither, and the sidecar is linked to the serving process.
+`pondline-mailbox serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]]`
+installs the log handler first, resolves the Tor sidecar binary when `--tor-state` is given (using `--tor-bin`, `$PONDLINE_TOR_BIN`, `PATH` or the sibling release layout), starts the supervised node, starts the HTTP listener on `127.0.0.1` (`--port` defaults to `0`, an ephemeral port), and then hosts the optional onion service. No request can arrive before the database is open and migrated, and the `onion` line follows the `listening` line while also saving `<tor-state>/onion` (`0600`) for `grant --token` and `status` ([ADR-015](../adr/015-grant-tokens-and-daemon-config.md)). `sweep_period_ms` is 60_000 (`mailbox.gleam:71`). `serve` passes `timer.WallClock`, `None` and `None` for `timer`, `interceptor` and `store_faults`, which only a simulation changes. `--tor-bin` requires `--tor-state`, and the sidecar is linked to the serving process. Beyond `serve`, `pondline-mailbox grant` mints a provisioning grant row and exports a raw capability file or a `plg1...` token, and `pondline-mailbox status` reads a single-transaction summary (`store.status`, `mailbox/store.gleam:899`) without starting the actor tree.
 
 ```mermaid
 sequenceDiagram
@@ -95,7 +89,7 @@ sequenceDiagram
     participant M as mist
     participant T as tor (sidecar)
 
-    Main->>Main: handler.install_from_env, then parse argv
+    Main->>Main: handler.install_from_env, parse argv, resolve_hosting
     Main->>Sup: node.start(Config(path, sweep_period_ms, clock,<br/>names, timer, interceptor, store_faults))
     Sup->>N: start, register mailbox_notifier
     Sup->>C: start, register mailbox_coordinator
@@ -108,10 +102,10 @@ sequenceDiagram
     Main->>M: http.start: mist.start on 127.0.0.1:port
     M-->>Main: after_start sends bound port (5000 ms)
     Main->>Main: print "listening 127.0.0.1:<port>"
-    opt --tor-bin and --tor-state given
+    opt --tor-state given (resolved pondline-tor)
         Main->>T: host_onion: tor.start, tor.bootstrap (180_000 ms)
         Main->>T: tor.host_onion "mailbox" (120_000 ms)
-        Main->>Main: print "onion <host>.onion:80"
+        Main->>Main: record_onion_endpoint (<tor-state>/onion, 0600), print "onion <host>.onion:80"
     end
     Main->>Main: sleep_forever
 ```
@@ -281,7 +275,7 @@ churn against one grant.
 The store is one SQLite file. The migrations are `sql/001_initial.sql` and
 `sql/002_blobs.sql`, embedded into `mailbox/schema` by
 `dev/embed_schema.gleam`, and every other statement is a named query in
-`src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`, `blobs`) that
+`src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`, `blobs`, `status`) that
 parrot generates into `mailbox/sql` ([ADR-007](../adr/007-parrot-sql-codegen.md)).
 Neither generated module is edited by hand. `store.open` sets
 `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`,
@@ -399,9 +393,6 @@ Sweeps run inside the coordinator, serialized with requests.
 - If the node supervisor exhausts its restart budget, `main` keeps sleeping
   and mist keeps answering, every request `Refused(Unavailable)`; this was
   not tested.
-- `mailbox grant` checks that the output path is not a file, then writes
-  the grant row, then creates the capability file exclusively. If the file
-  create fails (for example a race on the path), the grant stays in the
-  database with no surviving capability.
+- `pondline-mailbox grant --out` checks upfront with `file_info` that the output path does not exist, commits the grant row, and creates the capability or token file exclusively (`0600`). If the exclusive create still fails (for example a race on the path or an unwritable directory), or if `--token` fails writing to standard output, the grant row stays in the database with no surviving capability.
 - No rate limit, no per-operation quota beyond bytes, and no bound on
   concurrent connections.
