@@ -31,71 +31,51 @@ built and tested on macOS on Apple silicon only; the Linux recipe in
 
 ## Trying it on one machine
 
-The loopback carrier runs everything locally without Tor. First a
-mailbox, with a provisioning capability for each daemon:
+The loopback carrier runs everything locally without Tor. Start a mailbox server first:
 
 ```bash
-cd packages/mailbox
-gleam run -m mailbox -- grant --db /tmp/rw/mb.db --queues 100 --out /tmp/rw/provA
-gleam run -m mailbox -- grant --db /tmp/rw/mb.db --queues 100 --out /tmp/rw/provB
-gleam run -m mailbox -- serve --db /tmp/rw/mb.db --port 0
+pondline-mailbox serve --db /tmp/rw/mb.db
 ```
 
-It prints `listening 127.0.0.1:<port>`. Then a daemon per agent, from
-`packages/daemon`, each in its own terminal:
+It prints `listening 127.0.0.1:<port>`. Mint a copy-pasteable `plg1...` grant token for each daemon while the server stays running, and initialize each state directory (`pondline` defaults `--state-dir` to `~/.pondline` or `$PONDLINE_STATE_DIR` when omitted):
 
 ```bash
-gleam run -m pondline -- daemon --state-dir /tmp/rw/A --mailbox 127.0.0.1:<port> --provision-file /tmp/rw/provA --carrier loopback
+pondline-mailbox grant --db /tmp/rw/mb.db --queues 100 --mailbox 127.0.0.1:<port> --token \
+  | pondline init --state-dir /tmp/rw/A --carrier loopback --stdin
+pondline-mailbox grant --db /tmp/rw/mb.db --queues 100 --mailbox 127.0.0.1:<port> --token \
+  | pondline init --state-dir /tmp/rw/B --carrier loopback --stdin
 ```
 
-```bash
-gleam run -m pondline -- daemon --state-dir /tmp/rw/B --mailbox 127.0.0.1:<port> --provision-file /tmp/rw/provB --carrier loopback
-```
-
-A invites, B accepts, A approves. The ticket is printed on standard
-output and handed to B on standard input, never as an argument:
+Then start each daemon in its own terminal (reloading its saved `config.json` and `provision.cap`):
 
 ```bash
-gleam run -m pondline -- invite create --state-dir /tmp/rw/A --description "agent A" --budget 10 --ticket > /tmp/rw/a.ticket
+pondline daemon --state-dir /tmp/rw/A
 ```
 
 ```bash
-gleam run -m pondline -- invite accept --state-dir /tmp/rw/B --ticket --stdin < /tmp/rw/a.ticket
+pondline daemon --state-dir /tmp/rw/B
 ```
 
-The file path still works, for a mailbox you would rather not ask to hold
-the invitation: `invite create ... --out /tmp/rw/a.invite`, then
-`invite accept ... --file /tmp/rw/a.invite`.
+A invites, B accepts, A approves (matching by petname, prefix, or full hex id). Tickets and payloads travel over stdout/stdin or files, never argv:
 
 ```bash
-gleam run -m pondline -- contacts list --state-dir /tmp/rw/A --json
+pondline invite create --state-dir /tmp/rw/A --description "agent B" --budget 10 --ticket > /tmp/rw/a.ticket
+pondline invite accept --state-dir /tmp/rw/B --ticket --stdin --description "agent A" --budget 10 < /tmp/rw/a.ticket
+pondline contact approve --state-dir /tmp/rw/A --contact "agent B"
 ```
+
+From here an agent only ever needs its daemon's socket and `agent.cred`, which can send, receive, acknowledge and check status, but can't approve contacts, mint invitations or read the audit log:
 
 ```bash
-gleam run -m pondline -- contact approve --state-dir /tmp/rw/A --contact <hex>
+pondline send --state-dir /tmp/rw/B --credential-file /tmp/rw/B/agent.cred --contact "agent A" \
+  --content-type application/json --file task.json
+pondline receive --state-dir /tmp/rw/A --credential-file /tmp/rw/A/agent.cred --wait 25 --json
+pondline-mailbox status --db /tmp/rw/mb.db
 ```
 
-From here an agent only ever needs its daemon's socket and the _agent_
-credential, which can send, receive, acknowledge and check status but
-can't approve contacts, mint invitations or read the audit log. Payloads
-come from a file or stdin, never from argv:
+Over live Tor, run `pondline-mailbox serve --db ~/.pondline-mailbox/mb.db --tor-state ~/.pondline-mailbox/tor` (the bundled `pondline-tor` sidecar is found automatically, and `contrib/` has `launchd` and `systemd` service templates). Mint user tokens with `pondline-mailbox grant --db ~/.pondline-mailbox/mb.db --tor-state ~/.pondline-mailbox/tor --queues 100 --token`, and each user runs `pondline init --stdin` once followed by `pondline daemon`.
 
-```bash
-gleam run -m pondline -- send --state-dir /tmp/rw/B --credential-file /tmp/rw/B/agent.cred --contact <hex> --content-type application/json --file task.json
-```
-
-```bash
-gleam run -m pondline -- receive --state-dir /tmp/rw/A --credential-file /tmp/rw/A/agent.cred --wait 25 --json
-```
-
-Run `gleam run -m pondline -- help` for the rest (`ack`, `status`,
-`audit`, `contact budget`, `health`). Every command takes `--json`, and
-exit codes are stable: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4
-not found, 5 refused or invalid, 6 unavailable.
-
-Installed, the commands are the same with `pondline` and `pondline-mailbox`
-in place of `gleam run -m pondline --` and `gleam run -m mailbox --`, run from
-any directory.
+Run `pondline help` for the rest (`ack`, `status`, `audit`, `contact budget`, `incidents`, `health`). Every command takes `--json`, and exit codes are stable: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused or invalid, 6 unavailable.
 
 ## Logs
 

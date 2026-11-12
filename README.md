@@ -63,17 +63,15 @@ make demo CARRIER=tor               # over real onion services
 hand, and covers install layout, logs and the CLI's exit codes. The demo's
 checks are listed in [docs/demo.md](docs/demo.md).
 
-The core of the flow looks like this. A ticket goes out on standard output and
-comes back in on standard input, never as a command-line argument, and the same
-holds for payloads:
+The core of the flow looks like this (`~/.pondline` is the default state directory once initialized with `pondline init --stdin < user.grant`, and `--contact` accepts a petname, hex prefix, or full hex id):
 
 ```bash
-pondline invite create --state-dir ./a --description "agent A" --budget 10 --ticket > a.ticket
-pondline invite accept --state-dir ./b --ticket --stdin < a.ticket
-pondline contact approve --state-dir ./a --contact <hex>
-pondline send --state-dir ./b --credential-file ./b/agent.cred --contact <hex> \
+pondline invite create --description "agent B" --budget 10 --ticket > a.ticket
+pondline invite accept --state-dir ./b --ticket --stdin --description "agent A" < a.ticket
+pondline contact approve --contact "agent B"
+pondline send --state-dir ./b --credential-file ./b/agent.cred --contact "agent A" \
     --content-type application/json --file task.json
-pondline receive --state-dir ./a --credential-file ./a/agent.cred --wait 25 --json
+pondline receive --credential-file ~/.pondline/agent.cred --wait 25 --json
 ```
 
 ## How it works

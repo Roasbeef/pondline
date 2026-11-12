@@ -406,9 +406,7 @@ the operator, and the `pondline` command that speaks to it.
   runtime API changes here.
 - `daemon/local_api_client`: one request over the socket; used by the CLI
   and the tests.
-- `daemon/cli` (pure parse and request building, exit codes), `cli_render`
-  (human output), `cli_run` (effects), and the top-level `pondline` module
-  (`gleam run -m pondline -- <command>`).
+- `daemon/cli` (pure parse, `Environment` default `~/.pondline` / `PONDLINE_STATE_DIR`, `ContactRef` petname/prefix resolution, request building, exit codes), `cli_render` (human output), `cli_run` (`init` and persisted `<state-dir>/config.json` + `provision.cap`, `plg1` grant token materialization, runtime effects; ADR-015), and the top-level `pondline` module (`gleam run -m pondline -- <command>`). Release launchers export `PONDLINE_TOR_BIN` and `start_node` resolves `pondline-tor` automatically or fails fast under `--carrier tor`. `invite accept` takes an optional `--budget N` (`api.accept_with_budget`).
 - `daemon/build`: the running build's identity (`Identity(version,
   commit)`), read from `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`,
   which the release launcher exports (`scripts/release.sh`, ADR-003

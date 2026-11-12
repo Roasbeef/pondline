@@ -26,7 +26,7 @@ primitive functions the shell builds from `packages/primitives`.
 - `core/secret`: `Secret`, bytes held inside a closure so `inspect`, logs
   and crash reports print `#Fun<..>`; `expose` is the only way out.
 - `core/endpoint`: `Endpoint` is a v3 `Onion` or a `Loopback` port, with no
-  constructor for a public host; `admit` checks a `CarrierPolicy`. An
+  constructor for a public host; `parse` and `to_string` convert `HOST:PORT` text, and `admit` checks a `CarrierPolicy`. An
   `OnionAddress` also holds its decoded label (`onion_bytes`, 35 bytes),
   and `onion_from_bytes` is the inverse.
 - `core/envelope`: `Padded`, a ciphertext at exactly a bucket size, built
@@ -53,6 +53,7 @@ primitive functions the shell builds from `packages/primitives`.
   loopback), `keys` (locator, retrieve capability, AEAD key and nonce,
   commitment key, each under its own HKDF label), `seal` and `open` (the
   AEAD, then the HMAC commitment to the plaintext).
+- `core/grant` (ADR-015): `GrantToken` (an `Endpoint` and a 32-byte `Capability(Provision)`, opaque), `encode`/`decode` of the `plg1` codex32 text (131 characters onion, 75 loopback), domain-separated from `pl1` tickets.
 - `core/http1`: pure, total HTTP/1.1 framing for the mailbox binding; an
   incremental response parser bounded as bytes arrive.
 - `core/crypto/keys`, `identity`, `hkdf`: typed X25519, Ed25519, ML-DSA-65
