@@ -167,14 +167,25 @@ fn reached(predicate: fn(world.World) -> Bool) -> Bool {
   })
 }
 
-pub fn schedules_frequently_redeem_and_deliver_test() {
+pub fn schedules_frequently_redeem_and_deliver_a_test() {
   let worlds =
     sample()
-    |> list.take(60)
+    |> list.take(25)
     |> list.map(fn(case_) { play(world.Correct, world.Chaotic, case_) })
 
-  assert count(worlds, fn(w) { w.redeemed == 1 }) > 10
-  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 5
+  assert count(worlds, fn(w) { w.redeemed == 1 }) > 4
+  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 2
+}
+
+pub fn schedules_frequently_redeem_and_deliver_b_test() {
+  let worlds =
+    sample()
+    |> list.drop(25)
+    |> list.take(25)
+    |> list.map(fn(case_) { play(world.Correct, world.Chaotic, case_) })
+
+  assert count(worlds, fn(w) { w.redeemed == 1 }) > 4
+  assert count(worlds, fn(w) { total_delivered(w, plan.Ready) > 0 }) > 2
 }
 
 pub fn schedules_reach_held_and_expiry_states_test() {

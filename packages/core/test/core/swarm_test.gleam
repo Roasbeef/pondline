@@ -38,14 +38,21 @@ fn env_int(name: String, default: Int) -> Int {
 }
 
 /// Small enough for a test's five seconds; a shell run sets its own.
-const default_runs = 40
+const default_runs = 20
 
 const default_generator_seed = 20_261_101
 
-pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_test() {
+pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_a_test() {
   swarm.campaign(
     env_int("PONDLINE_SWARM", default_runs),
     env_int("PONDLINE_SWARM_SEED", default_generator_seed),
+  )
+}
+
+pub fn a_swarm_of_seeds_holds_the_invariants_and_audits_b_test() {
+  swarm.campaign(
+    env_int("PONDLINE_SWARM", default_runs),
+    env_int("PONDLINE_SWARM_SEED", default_generator_seed + 1),
   )
 }
 
