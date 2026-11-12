@@ -39,10 +39,10 @@
 #
 # The script is idempotent: it deletes and rebuilds the release directory
 # every run. It builds from the local toolchain, so the release is only as
-# portable as the platform it was built on. macOS arm64 is built and tested.
-# The Linux branch (uname Linux) follows the ADR-003 recipe and has NEVER
-# BEEN RUN: it needs `patchelf`, and its first run must repeat the scrubbed
-# proof (`make release-smoke`) before anything built by it is trusted.
+# portable as the platform it was built on (for Linux, build inside
+# docker/release-builder.Dockerfile for the Ubuntu 24.04 glibc 2.39 baseline
+# and OpenSSL >= 3.5). Both macOS arm64 and Linux x86_64 pass the scrubbed
+# `make release-smoke` proof (ADR-003).
 
 set -euo pipefail
 
@@ -84,7 +84,6 @@ REL="$OUT/pondline"
 case "$OS" in
   darwin) ;;
   linux)
-    echo "release.sh: the Linux recipe is untested (ADR-003); verify with make release-smoke" >&2
     command -v patchelf >/dev/null || {
       echo "release.sh: the Linux recipe needs patchelf" >&2
       exit 1
@@ -181,6 +180,7 @@ bundle_lib() {
       codesign --force --sign - "$user" 2>/dev/null
       ;;
     linux)
+      patchelf --set-rpath '$ORIGIN' "$dir/$base" 2>/dev/null || true
       patchelf --set-rpath "\$ORIGIN${origin_rel:+/$origin_rel}" "$user"
       ;;
   esac
@@ -302,12 +302,17 @@ rmdir "$REL/bin/lib" 2>/dev/null || true
 
 # The sqlite NIF records its build-tree path as its install name. The VM
 # loads it by file path so this is harmless, but the leak check below
-# would rightly flag it, so make it relative.
+# would rightly flag it, so make it relative. On Linux, strip debug
+# sections from the copied ELF binaries and shared objects so the unpacked
+# bundle matches the ~50 MB footprint of macOS.
 if [ "$OS" = darwin ]; then
   for nif in "$REL"/lib/esqlite/priv/*.so; do
     install_name_tool -id "@loader_path/$(basename "$nif")" "$nif" 2>/dev/null
     codesign --force --sign - "$nif" 2>/dev/null
   done
+elif [ "$OS" = linux ] && command -v strip >/dev/null 2>&1; then
+  find "$REL" -type f \( -name '*.so*' -o -perm -u+x \) \
+    -exec sh -c '[ "$(dd if="$1" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d " \n")" = "7f454c46" ] && chmod u+w "$1" && strip --strip-unneeded "$1" 2>/dev/null || true' _ {} \;
 fi
 
 # ---------------------------------------------------------------- identity
@@ -317,9 +322,12 @@ fi
 printf 'version=%s\ncommit=%s\nplatform=%s\n' "$VERSION" "$COMMIT" "$PLATFORM" \
   > "$REL/BUILD"
 
-# The installer travels with the release, so an unpacked tarball installs
-# itself (`<tree>/install.sh`, PREFIX in the environment).
+# The installer and release updater travel with the release, so an unpacked
+# tarball installs itself (`<tree>/install.sh`, PREFIX in the environment)
+# and exposes `pondline-update` beside `pondline` and `pondline-mailbox`.
 cp "$ROOT/scripts/install.sh" "$REL/install.sh"
+cp "$ROOT/scripts/fetch-release.sh" "$REL/bin/pondline-update"
+chmod +x "$REL/install.sh" "$REL/bin/pondline-update"
 
 # --------------------------------------------------------------- launchers
 
@@ -443,7 +451,7 @@ done
 # it must live inside the release.
 case "$OS" in
   darwin) MAPS='"/usr/sbin/lsof -p " ++ os:getpid() ++ " | grep libcrypto"' ;;
-  linux) MAPS='"grep libcrypto /proc/" ++ os:getpid() ++ "/maps | sort -u -k6"' ;;
+  linux) MAPS='"grep libcrypto /proc/" ++ os:getpid() ++ "/maps | rev | cut -d\" \" -f1 | rev | sort -u"' ;;
 esac
 vmcheck=$(env -i PATH=/usr/bin:/bin OPENSSL_CONF=/dev/null \
   OPENSSL_MODULES="$REL/lib/ossl-modules" ROOTDIR="$REL" \
@@ -474,7 +482,7 @@ case "$OS" in
     ;;
   linux)
     leaks=$(find "$REL" -type f \( -name '*.so*' -o -perm -u+x \) \
-      -exec sh -c 'ldd "$1" 2>/dev/null' _ {} \; \
+      -exec sh -c '[ "$(dd if="$1" bs=1 count=4 2>/dev/null | od -An -tx1 | tr -d " \n")" = "7f454c46" ] && ldd "$1" 2>/dev/null' _ {} \; \
       | awk '/not found/ {print} /=>/ {print $3}' \
       | grep -v "^$REL/" \
       | while read -r lib; do is_system_lib "$lib" || echo "$lib"; done \
