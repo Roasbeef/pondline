@@ -236,7 +236,7 @@ pub fn daemon_test() {
     == cli.DaemonCommand(
       "/s",
       cli.ExplicitMailbox("abc.onion:80", "/p"),
-      cli.Tor,
+      None,
       None,
     )
 
@@ -245,7 +245,7 @@ pub fn daemon_test() {
       "daemon", "--state-dir", "/s", "--mailbox", "127.0.0.1:8080",
       "--provision-file", "/p", "--carrier", "loopback", "--tor-bin", "/bin/tor",
     ])
-  assert options.carrier == cli.Loopback
+  assert options.carrier == Some(cli.Loopback)
   assert options.tor_bin == Some("/bin/tor")
 
   let assert Ok(RunDaemon(grant_opts)) =
@@ -276,7 +276,8 @@ pub fn daemon_test() {
   assert result_is_error(parse(list.append(base, ["--mailbox", "h:0"])))
   assert result_is_error(parse(list.append(base, ["--mailbox", "h:99999"])))
   assert result_is_error(parse(list.append(base, ["--mailbox", ":80"])))
-  assert result_is_error(parse(["daemon", "--state-dir", "/s"]))
+  let assert Ok(RunDaemon(saved_opts)) = parse(["daemon", "--state-dir", "/s"])
+  assert saved_opts == cli.DaemonCommand("/s", cli.SavedMailbox, None, None)
   assert result_is_error(
     parse(list.append(base, ["--mailbox", "h:80", "--carrier", "pigeon"])),
   )
@@ -308,6 +309,38 @@ pub fn the_target_is_resolved_from_options_and_environment_test() {
   let assert Ok(Client(target:, ..)) =
     parse(["health", "--socket", "/x.sock", "--credential-file", "/c"])
   assert target == Target("/x.sock", "/c")
+}
+
+pub fn init_and_default_state_dir_test() {
+  let env =
+    cli.Environment(
+      credential_file: None,
+      default_state_dir: Some("/home/u/.pondline"),
+    )
+  let assert Ok(Client(target:, ..)) = cli.parse_with_env(["health"], env)
+  assert target
+    == Target("/home/u/.pondline/api.sock", "/home/u/.pondline/operator.cred")
+
+  // Explicit `--socket` without `--state-dir` never borrows `~/.pondline/operator.cred`.
+  assert result_is_error(cli.parse_with_env(
+    ["health", "--socket", "/other.sock"],
+    env,
+  ))
+
+  let assert Ok(cli.InitDaemon(init_cmd)) =
+    cli.parse_with_env(["init", "--stdin"], env)
+  assert init_cmd
+    == cli.InitCommand(
+      "/home/u/.pondline",
+      cli.GrantMailbox(InputStdin),
+      cli.Tor,
+      None,
+      HumanOutput,
+    )
+
+  let assert Ok(RunDaemon(bare_daemon)) = cli.parse_with_env(["daemon"], env)
+  assert bare_daemon
+    == cli.DaemonCommand("/home/u/.pondline", cli.SavedMailbox, None, None)
 }
 
 pub fn json_output_is_a_flag_test() {

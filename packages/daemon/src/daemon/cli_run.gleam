@@ -29,15 +29,16 @@
 //// forever.
 
 import core/capability
-import core/endpoint
+import core/endpoint.{TorOnly, TorOrLoopback}
 import core/grant
 import core/limits
 import core/secret
 import daemon/build
 import daemon/cli.{
-  type Action, type Command, type Input, type Output, type Target, Client,
-  CreateInvite, DaemonOptions, ExplicitMailbox, GrantMailbox, Help, InputFile,
-  InputStdin, JsonOutput, NoInput, RunDaemon, Version,
+  type Action, type Carrier, type Command, type Input, type Output, type Target,
+  Client, CreateInvite, DaemonOptions, ExplicitMailbox, GrantMailbox, Help,
+  HumanOutput, InitDaemon, InputFile, InputStdin, JsonOutput, Loopback, NoInput,
+  RunDaemon, SavedMailbox, Tor, Version,
 }
 import daemon/cli_render
 import daemon/credential
@@ -48,10 +49,11 @@ import daemon/local_api_client.{CannotConnect, ConnectionFailed, MalformedReply}
 import daemon/local_api_protocol as protocol
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
+import gleam/dynamic/decode
 import gleam/erlang/process
 import gleam/io
 import gleam/json
-import gleam/option.{None, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 import simplifile
@@ -82,6 +84,7 @@ pub fn run(command: Command) -> Outcome {
     Version ->
       Outcome(cli.exit_ok, <<build.describe(build.current()):utf8, "\n">>, "")
 
+    InitDaemon(init_cmd) -> run_init(init_cmd)
     RunDaemon(options) -> run_daemon(options)
     Client(target:, output:, action:) -> run_client(target, output, action)
   }
@@ -120,37 +123,314 @@ fn start_resolved_daemon(options: cli.DaemonOptions) -> Outcome {
   }
 }
 
-/// Resolves `DaemonCommand` into `DaemonOptions`, materializing any `plg1...`
-/// grant token into `<state_dir>/provision.cap` (mode 0600).
+/// Runs `pondline init`: materializes `provision.cap`, `config.json`, and credentials.
+fn run_init(command: cli.InitCommand) -> Outcome {
+  let initialized = {
+    use options <- result.try(materialize_and_save_config(
+      command.state_dir,
+      command.setup,
+      command.carrier,
+      command.tor_bin,
+    ))
+    use _credentials <- result.map(
+      credential.ensure(command.state_dir)
+      |> result.map_error(failure(cli.exit_local, _)),
+    )
+    options
+  }
+
+  // Render human confirmation or a structured JSON envelope.
+  case initialized, command.output {
+    Error(outcome), _ -> outcome
+    Ok(options), HumanOutput -> {
+      let line =
+        "initialized "
+        <> options.state_dir
+        <> " for "
+        <> options.mailbox
+        <> " ("
+        <> carrier_name(options.carrier)
+        <> ")\n"
+      Outcome(cli.exit_ok, <<line:utf8>>, "")
+    }
+    Ok(options), JsonOutput -> {
+      let body =
+        json.object([
+          #("ok", json.bool(True)),
+          #(
+            "result",
+            json.object([
+              #("state_dir", json.string(options.state_dir)),
+              #("mailbox", json.string(options.mailbox)),
+              #("carrier", json.string(carrier_name(options.carrier))),
+            ]),
+          ),
+        ])
+        |> json.to_string
+      Outcome(cli.exit_ok, <<body:utf8, "\n">>, "")
+    }
+  }
+}
+
+/// Resolves `DaemonCommand` into `DaemonOptions`, saving `<state_dir>/config.json`
+/// when explicit or grant options were supplied and loading it on `SavedMailbox`.
 fn resolve_daemon_options(
   command: cli.DaemonCommand,
 ) -> Result(cli.DaemonOptions, Outcome) {
-  // Materialize a `plg1` token into `<state_dir>/provision.cap` when given.
+  // SavedMailbox loads persisted config and applies optional CLI overrides;
+  // ExplicitMailbox and GrantMailbox validate and persist fresh config first.
   case command.setup {
-    ExplicitMailbox(mailbox:, provision_file:) ->
-      Ok(DaemonOptions(
-        state_dir: command.state_dir,
-        mailbox:,
-        provision_file:,
-        carrier: command.carrier,
-        tor_bin: command.tor_bin,
-      ))
+    SavedMailbox -> {
+      use saved <- result.map(load_daemon_config(command.state_dir))
+      let chosen_carrier = option.unwrap(command.carrier, saved.carrier)
+      let chosen_tor = option.or(command.tor_bin, saved.tor_bin)
+      DaemonOptions(..saved, carrier: chosen_carrier, tor_bin: chosen_tor)
+    }
 
-    GrantMailbox(source:) -> {
-      use raw <- result.try(read_input(source))
-      use #(mailbox, provision_file) <- result.map(apply_grant_token(
+    ExplicitMailbox(..) | GrantMailbox(..) -> {
+      let chosen_carrier = option.unwrap(command.carrier, Tor)
+      materialize_and_save_config(
         command.state_dir,
-        raw,
-      ))
-      DaemonOptions(
-        state_dir: command.state_dir,
-        mailbox:,
-        provision_file:,
-        carrier: command.carrier,
-        tor_bin: command.tor_bin,
+        command.setup,
+        chosen_carrier,
+        command.tor_bin,
       )
     }
   }
+}
+
+/// Materializes `<state_dir>/provision.cap` and writes `<state_dir>/config.json` (0600).
+fn materialize_and_save_config(
+  state_dir: String,
+  setup: cli.MailboxSetup,
+  chosen_carrier: Carrier,
+  tor_bin: Option(String),
+) -> Result(cli.DaemonOptions, Outcome) {
+  // Materialize or copy the capability into `<state_dir>/provision.cap`.
+  use #(mailbox_text, provision_file) <- result.try(case setup {
+    ExplicitMailbox(mailbox:, provision_file:) ->
+      copy_provision_into_state_dir(state_dir, mailbox, provision_file)
+    GrantMailbox(source:) -> {
+      use raw <- result.try(read_input(source))
+      apply_grant_token(state_dir, raw)
+    }
+    SavedMailbox -> Error(failure(cli.exit_usage, "missing setup input"))
+  })
+
+  use canonical_mailbox <- result.try(admit_mailbox_for_carrier(
+    mailbox_text,
+    chosen_carrier,
+  ))
+  use Nil <- result.map(write_config_file(
+    state_dir,
+    canonical_mailbox,
+    chosen_carrier,
+    tor_bin,
+  ))
+  DaemonOptions(
+    state_dir:,
+    mailbox: canonical_mailbox,
+    provision_file:,
+    carrier: chosen_carrier,
+    tor_bin:,
+  )
+}
+
+/// Validates a provisioning capability file and stores a self-contained 0600 copy in `state_dir`.
+fn copy_provision_into_state_dir(
+  state_dir: String,
+  mailbox: String,
+  source_file: String,
+) -> Result(#(String, String), Outcome) {
+  use bytes <- result.try(
+    simplifile.read_bits(source_file)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_unavailable,
+        "the provisioning file is missing or malformed",
+      )
+    }),
+  )
+  use _cap <- result.try(
+    capability.from_bytes(bytes)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_unavailable,
+        "the provisioning file is missing or malformed",
+      )
+    }),
+  )
+  use Nil <- result.try(prepare_private_state_dir(state_dir))
+  let target_file = state_dir <> "/provision.cap"
+  use Nil <- result.map(write_private_state_file(target_file, bytes))
+  #(mailbox, target_file)
+}
+
+/// Verifies that `mailbox_text` parses and is permitted by `chosen_carrier`.
+fn admit_mailbox_for_carrier(
+  mailbox_text: String,
+  chosen_carrier: Carrier,
+) -> Result(String, Outcome) {
+  use parsed <- result.try(
+    endpoint.parse(mailbox_text)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_refused,
+        "--mailbox must be ONION:PORT or 127.0.0.1:PORT",
+      )
+    }),
+  )
+
+  // Map the CLI carrier flag onto the runtime carrier policy.
+  let policy = case chosen_carrier {
+    Tor -> TorOnly
+    Loopback -> TorOrLoopback
+  }
+
+  use admitted <- result.map(
+    endpoint.admit(parsed, policy)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_refused, "loopback mailbox requires --carrier loopback")
+    }),
+  )
+  endpoint.to_string(admitted)
+}
+
+/// Writes `<state_dir>/config.json` atomically with mode 0600.
+fn write_config_file(
+  state_dir: String,
+  mailbox: String,
+  chosen_carrier: Carrier,
+  tor_bin: Option(String),
+) -> Result(Nil, Outcome) {
+  // Store an explicit `--tor-bin` only when supplied, leaving auto-discovery dynamic.
+  let tor_json = case tor_bin {
+    Some(path) -> json.string(path)
+    None -> json.null()
+  }
+
+  let payload =
+    json.object([
+      #("v", json.int(1)),
+      #("mailbox", json.string(mailbox)),
+      #("carrier", json.string(carrier_name(chosen_carrier))),
+      #("tor_bin", tor_json),
+    ])
+    |> json.to_string
+  write_private_state_file(state_dir <> "/config.json", <<payload:utf8, "\n">>)
+}
+
+/// Loads `<state_dir>/config.json` and verifies `<state_dir>/provision.cap` exists.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_run.load_daemon_config("/nonexistent")
+/// // -> Error(Outcome(6, <<>>, ...))
+/// ```
+pub fn load_daemon_config(
+  state_dir: String,
+) -> Result(cli.DaemonOptions, Outcome) {
+  let config_path = state_dir <> "/config.json"
+  let cap_path = state_dir <> "/provision.cap"
+  use text <- result.try(
+    simplifile.read(config_path)
+    |> result.map_error(fn(_) {
+      failure(
+        cli.exit_unavailable,
+        "no saved config in "
+          <> state_dir
+          <> "; run pondline init first or pass --mailbox/--provision-file or --grant-stdin",
+      )
+    }),
+  )
+
+  // Decode versioned fields with a total JSON decoder before checking admission.
+  let decoder = {
+    use version <- decode.field("v", decode.int)
+    use mailbox <- decode.field("mailbox", decode.string)
+    use carrier_str <- decode.field("carrier", decode.string)
+    use tor_bin <- decode.optional_field(
+      "tor_bin",
+      None,
+      decode.optional(decode.string),
+    )
+    decode.success(#(version, mailbox, carrier_str, tor_bin))
+  }
+  use #(version, mailbox, carrier_str, tor_bin) <- result.try(
+    json.parse(text, decoder)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_unavailable, "malformed config in " <> config_path)
+    }),
+  )
+  use chosen_carrier <- result.try(parse_saved_carrier(
+    version,
+    carrier_str,
+    config_path,
+  ))
+  use canonical_mailbox <- result.try(admit_mailbox_for_carrier(
+    mailbox,
+    chosen_carrier,
+  ))
+  use _cap <- result.map(
+    simplifile.read_bits(cap_path)
+    |> result.map_error(fn(_) { Nil })
+    |> result.try(capability.from_bytes)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_unavailable, "missing or malformed " <> cap_path)
+    }),
+  )
+  DaemonOptions(
+    state_dir:,
+    mailbox: canonical_mailbox,
+    provision_file: cap_path,
+    carrier: chosen_carrier,
+    tor_bin:,
+  )
+}
+
+/// Validates the schema version and carrier field from `config.json`.
+fn parse_saved_carrier(
+  version: Int,
+  carrier_str: String,
+  config_path: String,
+) -> Result(Carrier, Outcome) {
+  case version, carrier_str {
+    1, "tor" -> Ok(Tor)
+    1, "loopback" -> Ok(Loopback)
+    _, _ ->
+      Error(failure(
+        cli.exit_unavailable,
+        "unsupported version or carrier in " <> config_path,
+      ))
+  }
+}
+
+/// Canonical string name of a `Carrier`.
+fn carrier_name(chosen_carrier: Carrier) -> String {
+  case chosen_carrier {
+    Tor -> "tor"
+    Loopback -> "loopback"
+  }
+}
+
+/// Creates `state_dir` with mode 0700.
+fn prepare_private_state_dir(state_dir: String) -> Result(Nil, Outcome) {
+  ffi_local_system.make_private_dir(state_dir)
+  |> result.map_error(fn(reason) {
+    failure(cli.exit_local, "could not prepare " <> state_dir <> ": " <> reason)
+  })
+}
+
+/// Atomically writes `bytes` to `path` with mode 0600.
+fn write_private_state_file(
+  path: String,
+  bytes: BitArray,
+) -> Result(Nil, Outcome) {
+  ffi_local_system.write_private_file(path, bytes)
+  |> result.map_error(fn(reason) {
+    failure(cli.exit_local, "could not write " <> path <> ": " <> reason)
+  })
 }
 
 /// Decodes a `plg1...` grant token and persists its 32-byte provisioning

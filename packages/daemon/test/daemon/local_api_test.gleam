@@ -3,6 +3,7 @@ import core/grant
 import core/id
 import core/limits
 import core/secret
+import daemon/cli
 import daemon/cli_run
 import daemon/credential
 import daemon/internal/ffi_local_system
@@ -16,6 +17,7 @@ import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/erlang/process
+import gleam/int
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -577,7 +579,8 @@ pub fn daemon_tor_sidecar_resolution_and_fail_fast_test() {
 }
 
 pub fn apply_grant_token_writes_private_capability_and_scrubs_errors_test() {
-  let dir = "build/grant_token_test_" <> string.inspect(process.self())
+  let dir =
+    "build/grant_token_test_" <> int.to_string(int.random(1_000_000_000))
   let _ = simplifile.delete(dir)
   let assert Ok(ep) = endpoint.parse("127.0.0.1:4199")
   let cap_bytes = <<42:256>>
@@ -593,5 +596,58 @@ pub fn apply_grant_token_writes_private_capability_and_scrubs_errors_test() {
   let bad = <<"plg1secretbadtoken":utf8>>
   let assert Error(outcome) = cli_run.apply_grant_token(dir, bad)
   assert !string.contains(outcome.stderr, "plg1secretbadtoken")
+  let _ = simplifile.delete(dir)
+}
+
+pub fn init_and_saved_config_round_trip_test() {
+  let _ = simplifile.create_directory_all("build")
+  let dir = "build/init_cfg_test_" <> int.to_string(int.random(1_000_000_000))
+  let _ = simplifile.delete(dir)
+  let assert Ok(ep) = endpoint.parse("127.0.0.1:4299")
+  let cap_bytes = <<77:256>>
+  let assert Ok(token) = grant.from_parts(ep, cap_bytes)
+  let grant_file = dir <> "_grant.txt"
+  let assert Ok(Nil) =
+    simplifile.write_bits(grant_file, secret.expose(grant.encode(token)))
+
+  // Loopback endpoint without `--carrier loopback` is refused by policy.
+  let refused =
+    cli_run.run(
+      cli.InitDaemon(cli.InitCommand(
+        dir,
+        cli.GrantMailbox(cli.InputFile(grant_file)),
+        cli.Tor,
+        None,
+        cli.HumanOutput,
+      )),
+    )
+  assert refused.status == cli.exit_refused
+
+  // With `--carrier loopback`, `init` saves 0600 `config.json`, `provision.cap`, and credentials.
+  let ok =
+    cli_run.run(
+      cli.InitDaemon(cli.InitCommand(
+        dir,
+        cli.GrantMailbox(cli.InputFile(grant_file)),
+        cli.Loopback,
+        Some("/bin/tor"),
+        cli.JsonOutput,
+      )),
+    )
+  assert ok.status == cli.exit_ok
+  assert ffi_local_system.file_mode(dir <> "/config.json") == Ok(0o600)
+  assert ffi_local_system.file_mode(dir <> "/provision.cap") == Ok(0o600)
+  assert ffi_local_system.file_mode(dir <> "/operator.cred") == Ok(0o600)
+
+  let assert Ok(loaded) = cli_run.load_daemon_config(dir)
+  assert loaded
+    == cli.DaemonOptions(
+      dir,
+      "127.0.0.1:4299",
+      dir <> "/provision.cap",
+      cli.Loopback,
+      Some("/bin/tor"),
+    )
+  let _ = simplifile.delete(grant_file)
   let _ = simplifile.delete(dir)
 }

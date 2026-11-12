@@ -7,7 +7,7 @@
 ////
 //// ## Flow
 ////
-//// 1. `parse` dispatches on the leading command words to `parse_daemon`, `client`, `parse_send`, or `parse_receive`.
+//// 1. `parse` and `parse_with_env` dispatch on the leading command words to `parse_init`, `parse_daemon`, `client`, `parse_send`, or `parse_receive`.
 //// 2. `read_options` scans `--name value` pairs and flags, rejecting unknown options or stray arguments through `unknown`.
 //// 3. `target` resolves the Unix socket and credential path from options and the environment.
 //// 4. `request` and `timeout_ms` turn a parsed `Action` and its input bytes into the local API call.
@@ -88,7 +88,9 @@ pub const usage =
   "usage: pondline <command> [options]
 
 commands:
-  daemon --state-dir D (--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin)
+  init (--stdin | --file F | --mailbox HOST:PORT --provision-file F)
+       [--state-dir D] [--carrier tor|loopback] [--tor-bin PATH] [--json]
+  daemon [--state-dir D] [--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin]
          [--carrier tor|loopback] [--tor-bin PATH]
   invite create --description TEXT --budget N [--auto-approve]
                 [--out FILE] [--ticket]
@@ -106,7 +108,7 @@ commands:
   health
   --version
 
-client options: --state-dir D | --socket P, --credential-file F, --json
+client options: --state-dir D (default ~/.pondline or $PONDLINE_STATE_DIR) | --socket P, --credential-file F, --json
 exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
             4 not found, 5 refused or invalid, 6 unavailable"
 
@@ -116,21 +118,43 @@ pub type Carrier {
   Loopback
 }
 
-/// Where `pondline daemon` obtains its mailbox endpoint and provisioning capability.
+/// Environment defaults read once by the entry point and passed into `parse_with_env`.
+pub type Environment {
+  Environment(
+    credential_file: Option(String),
+    default_state_dir: Option(String),
+  )
+}
+
+/// Where `pondline init` or `pondline daemon` obtains its mailbox and provisioning capability.
 pub type MailboxSetup {
   /// Explicit `--mailbox HOST:PORT --provision-file F`.
   ExplicitMailbox(mailbox: String, provision_file: String)
 
-  /// A `plg1...` grant token read from `--grant-file F` or `--grant-stdin`.
+  /// A `plg1...` grant token read from a file or standard input.
   GrantMailbox(source: Input)
+
+  /// Load `<state_dir>/config.json` and `<state_dir>/provision.cap` written earlier.
+  SavedMailbox
 }
 
-/// The parsed `pondline daemon` command before grant-token materialization.
+/// The parsed `pondline init` command.
+pub type InitCommand {
+  InitCommand(
+    state_dir: String,
+    setup: MailboxSetup,
+    carrier: Carrier,
+    tor_bin: Option(String),
+    output: Output,
+  )
+}
+
+/// The parsed `pondline daemon` command before config/grant resolution.
 pub type DaemonCommand {
   DaemonCommand(
     state_dir: String,
     setup: MailboxSetup,
-    carrier: Carrier,
+    carrier: Option(Carrier),
     tor_bin: Option(String),
   )
 }
@@ -233,6 +257,7 @@ pub type Action {
 
 /// A parsed command line.
 pub type Command {
+  InitDaemon(InitCommand)
   RunDaemon(DaemonCommand)
   Client(target: Target, output: Output, action: Action)
   Help
@@ -263,6 +288,25 @@ pub fn parse(
   arguments: List(String),
   env_credential_file: Option(String),
 ) -> Result(Command, String) {
+  parse_with_env(
+    arguments,
+    Environment(credential_file: env_credential_file, default_state_dir: None),
+  )
+}
+
+/// Turns arguments and resolved environment defaults (`PONDLINE_CREDENTIAL_FILE`,
+/// `PONDLINE_STATE_DIR` / `$HOME/.pondline`) into a `Command`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.parse_with_env(["health"], cli.Environment(None, Some("/home/a/.pondline")))
+/// // -> Ok(Client(Target("/home/a/.pondline/api.sock", "/home/a/.pondline/operator.cred"), ...))
+/// ```
+pub fn parse_with_env(
+  arguments: List(String),
+  env: Environment,
+) -> Result(Command, String) {
   // The leading words name the command; its options are checked against
   // that command's own list, so an option valid for one is unknown to the
   // rest.
@@ -271,12 +315,14 @@ pub fn parse(
 
     ["--version"] | ["version"] -> Ok(Version)
 
-    ["daemon", ..rest] -> parse_daemon(rest)
+    ["init", ..rest] -> parse_init(rest, env)
+
+    ["daemon", ..rest] -> parse_daemon(rest, env)
 
     ["invite", "create", ..rest] ->
       client(
         rest,
-        env_credential_file,
+        env,
         ["--description", "--budget", "--out"],
         ["--auto-approve", "--ticket"],
         fn(options) {
@@ -292,7 +338,7 @@ pub fn parse(
     ["invite", "accept", ..rest] ->
       client(
         rest,
-        env_credential_file,
+        env,
         ["--file", "--description"],
         ["--stdin", "--ticket"],
         fn(options) {
@@ -310,74 +356,61 @@ pub fn parse(
       )
 
     ["contacts", "list", ..rest] ->
-      client(rest, env_credential_file, [], [], fn(_) { Ok(ListContacts) })
+      client(rest, env, [], [], fn(_) { Ok(ListContacts) })
 
     ["contact", "approve", ..rest] ->
-      client(rest, env_credential_file, ["--contact"], [], fn(options) {
+      client(rest, env, ["--contact"], [], fn(options) {
         result.map(contact(options), ApproveContact)
       })
 
     ["contact", "decline", ..rest] ->
-      client(rest, env_credential_file, ["--contact"], [], fn(options) {
+      client(rest, env, ["--contact"], [], fn(options) {
         result.map(contact(options), DeclineContact)
       })
 
     ["contact", "close", ..rest] ->
-      client(rest, env_credential_file, ["--contact"], [], fn(options) {
+      client(rest, env, ["--contact"], [], fn(options) {
         result.map(contact(options), CloseContact)
       })
 
     ["contact", "budget", ..rest] ->
-      client(rest, env_credential_file, ["--contact", "--add"], [], fn(options) {
+      client(rest, env, ["--contact", "--add"], [], fn(options) {
         use contact <- result.try(contact(options))
         use add <- result.try(number(options, "--add", 1, 1_000_000))
 
         Ok(RaiseBudget(contact:, add:))
       })
 
-    ["send", ..rest] -> parse_send(rest, env_credential_file)
+    ["send", ..rest] -> parse_send(rest, env)
 
-    ["receive", ..rest] -> parse_receive(rest, env_credential_file)
+    ["receive", ..rest] -> parse_receive(rest, env)
 
     ["ack", ..rest] ->
-      client(rest, env_credential_file, ["--message"], [], fn(options) {
+      client(rest, env, ["--message"], [], fn(options) {
         result.map(message(options), Acknowledge)
       })
 
     ["status", ..rest] ->
-      client(rest, env_credential_file, ["--message"], [], fn(options) {
+      client(rest, env, ["--message"], [], fn(options) {
         result.map(message(options), MessageStatus)
       })
 
     ["audit", ..rest] ->
-      client(
-        rest,
-        env_credential_file,
-        ["--contact", "--limit"],
-        [],
-        fn(options) {
-          use contact <- result.try(optional_contact(options))
-          use limit <- result.try(optional_number(
-            options,
-            "--limit",
-            50,
-            1,
-            256,
-          ))
+      client(rest, env, ["--contact", "--limit"], [], fn(options) {
+        use contact <- result.try(optional_contact(options))
+        use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
 
-          Ok(ShowAudit(contact:, limit:))
-        },
-      )
+        Ok(ShowAudit(contact:, limit:))
+      })
 
     ["incidents", ..rest] ->
-      client(rest, env_credential_file, ["--limit"], [], fn(options) {
+      client(rest, env, ["--limit"], [], fn(options) {
         use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
 
         Ok(ShowIncidents(limit:))
       })
 
-    ["health", ..rest] ->
-      client(rest, env_credential_file, [], [], fn(_) { Ok(ShowHealth) })
+    ["health", ..rest] -> client(rest, env, [], [], fn(_) { Ok(ShowHealth) })
 
     _ -> Error("unknown command")
   }
@@ -418,10 +451,7 @@ fn one_source(options: Options) -> Result(Input, String) {
 
 /// Parses `send`. The payload comes from exactly one of `--file` and
 /// `--stdin`, never from the command line.
-fn parse_send(
-  rest: List(String),
-  env: Option(String),
-) -> Result(Command, String) {
+fn parse_send(rest: List(String), env: Environment) -> Result(Command, String) {
   client(
     rest,
     env,
@@ -470,7 +500,7 @@ fn parse_send(
 /// count at one and cannot combine with `--json` or `--max`.
 fn parse_receive(
   rest: List(String),
-  env: Option(String),
+  env: Environment,
 ) -> Result(Command, String) {
   client(rest, env, ["--contact", "--max", "--wait"], ["--raw"], fn(options) {
     use contact <- result.try(optional_contact(options))
@@ -497,8 +527,45 @@ fn parse_receive(
   })
 }
 
-/// Parses `daemon`.
-fn parse_daemon(rest: List(String)) -> Result(Command, String) {
+/// Parses `init`, which configures a state directory (`~/.pondline` by default)
+/// from a `plg1...` grant token or explicit `--mailbox` + `--provision-file`.
+fn parse_init(rest: List(String), env: Environment) -> Result(Command, String) {
+  use options <- result.try(
+    read_options(
+      rest,
+      [
+        "--state-dir", "--mailbox", "--provision-file", "--grant-file", "--file",
+        "--carrier", "--tor-bin",
+      ],
+      ["--grant-stdin", "--stdin", "--json"],
+    ),
+  )
+  use state_dir <- result.try(resolve_state_dir(options, env.default_state_dir))
+  use setup <- result.try(init_setup(options))
+  use chosen_carrier <- result.try(carrier(options))
+
+  // Select JSON or human confirmation output for `init`.
+  let output = case has_flag(options, "--json") {
+    True -> JsonOutput
+    False -> HumanOutput
+  }
+
+  Ok(
+    InitDaemon(InitCommand(
+      state_dir:,
+      setup:,
+      carrier: chosen_carrier,
+      tor_bin: option.from_result(dict.get(options.values, "--tor-bin")),
+      output:,
+    )),
+  )
+}
+
+/// Parses `daemon`, allowing bare `pondline daemon` to load `<state_dir>/config.json`.
+fn parse_daemon(
+  rest: List(String),
+  env: Environment,
+) -> Result(Command, String) {
   use options <- result.try(
     read_options(
       rest,
@@ -509,52 +576,103 @@ fn parse_daemon(rest: List(String)) -> Result(Command, String) {
       ["--grant-stdin"],
     ),
   )
-  use state_dir <- result.try(required(options, "--state-dir"))
+  use state_dir <- result.try(resolve_state_dir(options, env.default_state_dir))
   use setup <- result.try(daemon_setup(options))
-  use carrier <- result.try(carrier(options))
+  use explicit_carrier <- result.try(optional_carrier(options))
 
   Ok(
     RunDaemon(DaemonCommand(
       state_dir:,
       setup:,
-      carrier:,
+      carrier: explicit_carrier,
       tor_bin: option.from_result(dict.get(options.values, "--tor-bin")),
     )),
   )
 }
 
-/// Resolves how `daemon` gets its mailbox and provisioning capability: either
-/// `--mailbox` + `--provision-file`, or a `plg1...` token via `--grant-file` / `--grant-stdin`.
+/// Resolves `--state-dir`, falling back to `default_state_dir` (`~/.pondline`).
+fn resolve_state_dir(
+  options: Options,
+  default_dir: Option(String),
+) -> Result(String, String) {
+  case dict.get(options.values, "--state-dir"), default_dir {
+    Ok(dir), _ -> Ok(dir)
+    Error(Nil), Some(dir) -> Ok(dir)
+    Error(Nil), None -> Error("missing option --state-dir")
+  }
+}
+
+/// Resolves `init`'s setup source (`ExplicitMailbox` or `GrantMailbox`).
+fn init_setup(options: Options) -> Result(MailboxSetup, String) {
+  let has_explicit =
+    dict.has_key(options.values, "--mailbox")
+    || dict.has_key(options.values, "--provision-file")
+  let has_grant = has_init_grant_option(options)
+
+  // `init` must be handed either `--mailbox`/`--provision-file` or a grant token input.
+  case has_explicit, has_grant {
+    True, False -> explicit_mailbox_setup(options)
+    False, True -> init_grant_source(options) |> result.map(GrantMailbox)
+    True, True ->
+      Error(
+        "give either --mailbox/--provision-file or a grant token input, not both",
+      )
+    False, False ->
+      Error(
+        "give --stdin, --file FILE, or --mailbox HOST:PORT --provision-file FILE",
+      )
+  }
+}
+
+/// Whether any grant-input flag or option was given to `init`.
+fn has_init_grant_option(options: Options) -> Bool {
+  dict.has_key(options.values, "--grant-file")
+  || dict.has_key(options.values, "--file")
+  || has_flag(options, "--grant-stdin")
+  || has_flag(options, "--stdin")
+}
+
+/// Ensures `init` received exactly one grant input source (`--file`, `--grant-file`, `--stdin`, or `--grant-stdin`).
+fn init_grant_source(options: Options) -> Result(Input, String) {
+  let files =
+    list.filter_map(["--grant-file", "--file"], dict.get(options.values, _))
+  let stdins = list.filter(["--grant-stdin", "--stdin"], has_flag(options, _))
+
+  // Only a single file or single stdin flag is unambiguous.
+  case files, stdins {
+    [path], [] -> Ok(InputFile(path))
+    [], [_] -> Ok(InputStdin)
+    _, _ -> Error("give exactly one grant input (--stdin or --file FILE)")
+  }
+}
+
+/// Resolves how `daemon` gets its mailbox: explicit flags, a grant token, or `<state_dir>/config.json`.
 fn daemon_setup(options: Options) -> Result(MailboxSetup, String) {
   let has_explicit =
     dict.has_key(options.values, "--mailbox")
     || dict.has_key(options.values, "--provision-file")
-  let grant_file = dict.get(options.values, "--grant-file")
-  let grant_stdin = has_flag(options, "--grant-stdin")
-  let has_grant = result.is_ok(grant_file) || grant_stdin
+  let has_grant =
+    dict.has_key(options.values, "--grant-file")
+    || has_flag(options, "--grant-stdin")
 
-  // Explicit files and grant tokens are mutually exclusive setup modes.
+  // With neither flag group present, `daemon` loads `<state_dir>/config.json`.
   case has_explicit, has_grant {
-    True, False -> {
-      use mailbox <- result.try(required(options, "--mailbox"))
-      use mailbox <- result.try(check_endpoint(mailbox))
-      use provision_file <- result.map(required(options, "--provision-file"))
-      ExplicitMailbox(mailbox:, provision_file:)
-    }
-
-    False, True -> {
-      use source <- result.map(grant_source(options))
-      GrantMailbox(source:)
-    }
-
+    True, False -> explicit_mailbox_setup(options)
+    False, True -> grant_source(options) |> result.map(GrantMailbox)
+    False, False -> Ok(SavedMailbox)
     True, True ->
       Error(
         "give either --mailbox/--provision-file or --grant-file/--grant-stdin, not both",
       )
-
-    False, False ->
-      Error("missing option --mailbox (or pass --grant-file / --grant-stdin)")
   }
+}
+
+/// Validates `--mailbox` and `--provision-file` together.
+fn explicit_mailbox_setup(options: Options) -> Result(MailboxSetup, String) {
+  use mailbox <- result.try(required(options, "--mailbox"))
+  use mailbox <- result.try(check_endpoint(mailbox))
+  use provision_file <- result.map(required(options, "--provision-file"))
+  ExplicitMailbox(mailbox:, provision_file:)
 }
 
 /// Ensures exactly one grant input source (`--grant-file` or `--grant-stdin`).
@@ -566,6 +684,16 @@ fn grant_source(options: Options) -> Result(Input, String) {
     Ok(path), False -> Ok(InputFile(path))
     Error(Nil), True -> Ok(InputStdin)
     _, _ -> Error("give exactly one of --grant-file and --grant-stdin")
+  }
+}
+
+/// Parses `--carrier` when optional, leaving `None` when omitted so saved config can supply it.
+fn optional_carrier(options: Options) -> Result(Option(Carrier), String) {
+  case dict.get(options.values, "--carrier") {
+    Error(Nil) -> Ok(None)
+    Ok("tor") -> Ok(Some(Tor))
+    Ok("loopback") -> Ok(Some(Loopback))
+    Ok(_) -> Error("--carrier must be tor or loopback")
   }
 }
 
@@ -600,7 +728,7 @@ fn check_endpoint(text: String) -> Result(String, String) {
 /// daemon and builds the action.
 fn client(
   rest: List(String),
-  env_credential_file: Option(String),
+  env: Environment,
   values: List(String),
   flags: List(String),
   build: fn(Options) -> Result(Action, String),
@@ -610,7 +738,7 @@ fn client(
   use options <- result.try(
     read_options(rest, list.append(common_values, values), ["--json", ..flags]),
   )
-  use target <- result.try(target(options, env_credential_file))
+  use target <- result.try(target(options, env))
   use action <- result.try(build(options))
 
   // The output mode is a flag, so it is a branch on presence.
@@ -622,29 +750,36 @@ fn client(
   Ok(Client(target:, output:, action:))
 }
 
-/// Where the daemon's socket and the credential file are. The state
-/// directory supplies both defaults, and the environment variable replaces
-/// the credential default.
-fn target(
-  options: Options,
-  env_credential_file: Option(String),
-) -> Result(Target, String) {
-  let state_dir = dict.get(options.values, "--state-dir")
+/// Where the daemon's socket and the credential file are. Explicit `--state-dir`
+/// or `--socket` wins; when neither is given, `env.default_state_dir` supplies
+/// the default `~/.pondline` directory without ever sending its credential to an
+/// unrelated explicit `--socket`.
+fn target(options: Options, env: Environment) -> Result(Target, String) {
+  let explicit_socket = dict.get(options.values, "--socket")
 
-  // The explicit socket wins; otherwise the state directory implies one.
-  use socket <- result.try(
-    case dict.get(options.values, "--socket"), state_dir {
-      Ok(path), _ -> Ok(path)
-      Error(Nil), Ok(dir) -> Ok(dir <> "/api.sock")
-      Error(Nil), Error(Nil) -> Error("give --state-dir or --socket")
-    },
-  )
+  // Fall back to `env.default_state_dir` (`~/.pondline`) only when neither `--state-dir` nor `--socket` was given.
+  let state_dir = case
+    dict.get(options.values, "--state-dir"),
+    explicit_socket,
+    env.default_state_dir
+  {
+    Ok(dir), _, _ -> Ok(dir)
+    Error(Nil), Error(Nil), Some(dir) -> Ok(dir)
+    Error(Nil), _, _ -> Error(Nil)
+  }
 
-  // The explicit file wins, then the environment, then the state directory's operator credential.
+  // The explicit socket wins; otherwise the resolved state directory implies one.
+  use socket <- result.try(case explicit_socket, state_dir {
+    Ok(path), _ -> Ok(path)
+    Error(Nil), Ok(dir) -> Ok(dir <> "/api.sock")
+    Error(Nil), Error(Nil) -> Error("give --state-dir or --socket")
+  })
+
+  // The explicit file wins, then `PONDLINE_CREDENTIAL_FILE`, then `<state-dir>/operator.cred`.
   use credential_file <- result.try(
     case
       dict.get(options.values, "--credential-file"),
-      env_credential_file,
+      env.credential_file,
       state_dir
     {
       Ok(path), _, _ -> Ok(path)

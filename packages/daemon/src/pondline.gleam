@@ -2,9 +2,9 @@
 ////
 //// Run it with `gleam run -m pondline -- <command> ...`. `daemon/cli`
 //// documents the commands and the exit codes. This module only wires the
-//// pieces: it reads the arguments and the one environment variable
-//// `PONDLINE_CREDENTIAL_FILE`, parses them, runs the command and turns the
-//// result into output and an exit status.
+//// pieces: it reads the arguments and environment defaults (`PONDLINE_STATE_DIR`,
+//// `HOME`, `PONDLINE_CREDENTIAL_FILE`), parses them, runs the command and turns
+//// the result into output and an exit status.
 
 import argv
 import daemon/cli
@@ -17,15 +17,11 @@ import telemetry/handler
 
 /// The entry point for `gleam run -m pondline`.
 pub fn main() -> Nil {
-  let environment =
-    ffi_local_system.getenv("PONDLINE_CREDENTIAL_FILE")
-    |> result.try(fn(path) {
-      case path {
-        "" -> Error(Nil)
-        _ -> Ok(path)
-      }
-    })
-    |> option.from_result
+  let env =
+    cli.Environment(
+      credential_file: non_empty_env("PONDLINE_CREDENTIAL_FILE"),
+      default_state_dir: default_state_dir(),
+    )
 
   // The handler goes in before anything can crash: a daemon's crash report,
   // and a command's, holds payloads and keys that only the scrubbed
@@ -35,7 +31,7 @@ pub fn main() -> Nil {
   let installed = handler.install_from_env()
 
   // A parsed command runs, and a usage error is reported with the usage text.
-  case installed, cli.parse(argv.load().arguments, environment) {
+  case installed, cli.parse_with_env(argv.load().arguments, env) {
     Error(Nil), _ ->
       emit(cli_run.Outcome(
         cli.exit_local,
@@ -52,6 +48,26 @@ pub fn main() -> Nil {
         "pondline: " <> message <> "\n" <> cli.usage,
       ))
   }
+}
+
+/// Reads a non-empty environment variable, treating missing and `""` as `None`.
+fn non_empty_env(name: String) -> option.Option(String) {
+  ffi_local_system.getenv(name)
+  |> result.try(fn(value) {
+    case value {
+      "" -> Error(Nil)
+      _ -> Ok(value)
+    }
+  })
+  |> option.from_result
+}
+
+/// Resolves the default state directory: `PONDLINE_STATE_DIR` or `$HOME/.pondline`.
+fn default_state_dir() -> option.Option(String) {
+  non_empty_env("PONDLINE_STATE_DIR")
+  |> option.lazy_or(fn() {
+    option.map(non_empty_env("HOME"), fn(home) { home <> "/.pondline" })
+  })
 }
 
 /// Writes an outcome's output and exits with its status.
