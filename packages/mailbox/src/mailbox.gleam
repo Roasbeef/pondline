@@ -18,6 +18,8 @@
 ////   copy-pasteable `plg1...` grant token carrying the mailbox endpoint and
 ////   capability on stdout (taking the endpoint from `--mailbox` or from the
 ////   `<dir>/onion` file written by `serve`).
+//// - `status --db <path> [--tor-state <dir>] [--json]` prints aggregate grant,
+////   queue, envelope, blob and tombstone counts without exposing any capability.
 ////
 //// - `--version` prints the build's version and commit (`mailbox/build`).
 ////
@@ -29,8 +31,8 @@
 ////
 //// 1. `main` calls `parse` to turn the arguments into a `Command`, so a
 ////    malformed command line is rejected before anything is opened.
-//// 2. `run` executes the command through `serve` or `grant`, and returns a
-////    one-line failure message.
+//// 2. `run` executes the command through `serve`, `run_grant` or `run_status`,
+////    and returns a one-line failure message.
 //// 3. `main` turns a failure into the exit status.
 
 import argv
@@ -121,6 +123,12 @@ pub type GrantOutput {
   GrantTokenAndFile(path: String, endpoint: GrantEndpoint)
 }
 
+/// How `status` prints its report.
+pub type StatusOutput {
+  StatusHuman
+  StatusJson
+}
+
 /// Parsed command-line options for one subcommand.
 type Options {
   Options(values: Dict(String, String), flags: List(String))
@@ -130,6 +138,7 @@ type Options {
 pub type Command {
   Serve(db: String, port: Int, tor: Option(TorOptions))
   Grant(db: String, queues: Int, output: GrantOutput)
+  Status(db: String, tor_state: Option(String), output: StatusOutput)
 
   /// Print the build's version and commit and exit.
   Version
@@ -194,12 +203,30 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
     }
 
     ["grant", ..rest] -> parse_grant(rest)
+    ["status", ..rest] -> parse_status(rest)
 
     _ ->
       Error(
-        "usage: serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]] | grant --db <path> --queues <n> [--out <file>] [--token (--mailbox <host:port> | --tor-state <dir>)] | --version",
+        "usage: serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]] | grant --db <path> --queues <n> [--out <file>] [--token (--mailbox <host:port> | --tor-state <dir>)] | status --db <path> [--tor-state <dir>] [--json] | --version",
       )
   }
+}
+
+/// Parses `status --db <path> [--tor-state <dir>] [--json]`.
+fn parse_status(rest: List(String)) -> Result(Command, String) {
+  use options <- result.try(
+    read_options(rest, ["--db", "--tor-state"], ["--json"]),
+  )
+  use db <- result.map(required(options.values, "--db"))
+  let tor_state = option.from_result(dict.get(options.values, "--tor-state"))
+
+  // `--json` switches from human lines to machine-readable JSON.
+  let output = case list.contains(options.flags, "--json") {
+    True -> StatusJson
+    False -> StatusHuman
+  }
+
+  Status(db:, tor_state:, output:)
 }
 
 /// The Tor options on `serve`: `--tor-state` enables onion hosting (resolving
@@ -421,6 +448,7 @@ fn run(command: Command) -> Result(Nil, String) {
   case command {
     Serve(db:, port:, tor:) -> serve(db, port, tor)
     Grant(db:, queues:, output:) -> run_grant(db, queues, output)
+    Status(db:, tor_state:, output:) -> run_status(db, tor_state, output)
 
     // The identity is the launcher's, so it needs no database.
     Version -> {
@@ -766,4 +794,177 @@ fn load_grant_endpoint(source: GrantEndpoint) -> Result(Endpoint, String) {
       })
     }
   }
+}
+
+/// Reads aggregate mailbox metrics and formats them as human text or JSON.
+/// Refuses a missing database file so `status` never creates an empty SQLite file.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.inspect_status("/nonexistent.db", None, StatusHuman)
+/// // -> Error("database not found at /nonexistent.db")
+/// ```
+pub fn inspect_status(
+  db: String,
+  tor_state: Option(String),
+  output: StatusOutput,
+) -> Result(String, String) {
+  // Refuse an absent database file instead of creating an empty SQLite store.
+  use Nil <- result.try(case simplifile.is_file(db) {
+    Ok(True) -> Ok(Nil)
+    _ -> Error("database not found at " <> db)
+  })
+
+  use opened <- result.try(
+    store.open(db) |> result.replace_error("the database could not be opened"),
+  )
+  let queried = store.status(opened, Instant(ffi_system.unix_seconds()))
+  let _ = store.close(opened)
+  use report <- result.map(
+    queried |> result.replace_error("could not read mailbox status"),
+  )
+  let onion = read_optional_onion(tor_state)
+  format_status(report, onion, output)
+}
+
+/// Runs `status` and prints the formatted summary on stdout.
+fn run_status(
+  db: String,
+  tor_state: Option(String),
+  output: StatusOutput,
+) -> Result(Nil, String) {
+  use rendered <- result.map(inspect_status(db, tor_state, output))
+  io.println(rendered)
+}
+
+/// Reads `<dir>/onion` if `--tor-state` was supplied and the file exists.
+fn read_optional_onion(tor_state: Option(String)) -> Option(String) {
+  case tor_state {
+    None -> None
+    Some(dir) ->
+      case simplifile.read(dir <> "/onion") {
+        Ok(text) -> Some(string.trim(text))
+        Error(_) -> None
+      }
+  }
+}
+
+/// Formats `store.StatusReport` alongside build identity and optional onion address.
+fn format_status(
+  report: store.StatusReport,
+  onion: Option(String),
+  output: StatusOutput,
+) -> String {
+  let identity = build.current()
+
+  // Format either human key-value lines or compact JSON.
+  case output {
+    StatusHuman ->
+      format_human_status(identity.version, identity.commit, onion, report)
+    StatusJson ->
+      format_json_status(identity.version, identity.commit, onion, report)
+  }
+}
+
+/// Human-readable multi-line operator report.
+fn format_human_status(
+  version: String,
+  commit: String,
+  onion: Option(String),
+  report: store.StatusReport,
+) -> String {
+  // Include the onion line only when `<tor-state>/onion` was present.
+  let onion_line = case onion {
+    Some(host) -> ["onion: " <> host]
+    None -> []
+  }
+
+  let lines =
+    list.flatten([
+      ["version: " <> version <> " (" <> commit <> ")"],
+      onion_line,
+      [
+        "grants: "
+          <> int.to_string(report.grants)
+          <> " ("
+          <> int.to_string(report.queues_used_total)
+          <> "/"
+          <> int.to_string(report.allowance_total)
+          <> " queues provisioned)",
+        "queues: "
+          <> int.to_string(report.queues)
+          <> " ("
+          <> int.to_string(report.bytes_used)
+          <> "/"
+          <> int.to_string(report.capacity_total)
+          <> " bytes used)",
+        "envelopes: "
+          <> int.to_string(report.live_envelopes)
+          <> " ("
+          <> int.to_string(report.envelope_bytes)
+          <> " bytes)",
+        "blobs: "
+          <> int.to_string(report.live_blobs)
+          <> " ("
+          <> int.to_string(report.blob_bytes)
+          <> " bytes)",
+        "tombstones: " <> int.to_string(report.live_tombstones),
+      ],
+    ])
+  string.join(lines, "\n")
+}
+
+/// Machine-readable JSON status report.
+fn format_json_status(
+  version: String,
+  commit: String,
+  onion: Option(String),
+  report: store.StatusReport,
+) -> String {
+  // Emit `"onion":null` when no onion state file is available.
+  let onion_json = case onion {
+    Some(host) -> json_quote(host)
+    None -> "null"
+  }
+
+  "{\"version\":"
+  <> json_quote(version)
+  <> ",\"commit\":"
+  <> json_quote(commit)
+  <> ",\"onion\":"
+  <> onion_json
+  <> ",\"grants\":"
+  <> int.to_string(report.grants)
+  <> ",\"allowance_total\":"
+  <> int.to_string(report.allowance_total)
+  <> ",\"queues_used_total\":"
+  <> int.to_string(report.queues_used_total)
+  <> ",\"queues\":"
+  <> int.to_string(report.queues)
+  <> ",\"bytes_used\":"
+  <> int.to_string(report.bytes_used)
+  <> ",\"capacity_total\":"
+  <> int.to_string(report.capacity_total)
+  <> ",\"live_envelopes\":"
+  <> int.to_string(report.live_envelopes)
+  <> ",\"envelope_bytes\":"
+  <> int.to_string(report.envelope_bytes)
+  <> ",\"live_blobs\":"
+  <> int.to_string(report.live_blobs)
+  <> ",\"blob_bytes\":"
+  <> int.to_string(report.blob_bytes)
+  <> ",\"live_tombstones\":"
+  <> int.to_string(report.live_tombstones)
+  <> "}"
+}
+
+/// Escapes backslashes and quotes for a single-line JSON string field.
+fn json_quote(text: String) -> String {
+  let escaped =
+    text
+    |> string.replace("\\", "\\\\")
+    |> string.replace("\"", "\\\"")
+    |> string.replace("\n", "\\n")
+  "\"" <> escaped <> "\""
 }

@@ -17,3 +17,9 @@ DELETE FROM queues WHERE queue_id = ?;
 -- name: AdjustBytes :exec
 UPDATE queues SET bytes_used = bytes_used + sqlc.arg(delta)
 WHERE queue_id = sqlc.arg(queue_id);
+
+-- name: QueueSummary :one
+SELECT COUNT(*) AS queues,
+       CAST(COALESCE(SUM(bytes_used), 0) AS INTEGER) AS bytes_used,
+       CAST(COALESCE(SUM(capacity), 0) AS INTEGER) AS capacity_total
+FROM queues;

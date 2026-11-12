@@ -43,3 +43,14 @@ SELECT COUNT(*) AS stale FROM tombstones WHERE deadline < sqlc.arg(now);
 
 -- name: DeleteStaleTombstones :exec
 DELETE FROM tombstones WHERE deadline < sqlc.arg(now);
+
+-- name: EnvelopeSummary :one
+SELECT COUNT(*) AS envelopes,
+       CAST(COALESCE(SUM(size), 0) AS INTEGER) AS envelope_bytes
+FROM envelopes
+WHERE deadline >= sqlc.arg(now);
+
+-- name: LiveTombstones :one
+SELECT COUNT(*) AS tombstones
+FROM tombstones
+WHERE deadline >= sqlc.arg(now);

@@ -17,7 +17,8 @@ import gleam/result
 import gleam/string
 import mailbox.{
   ExplicitGrantEndpoint, Grant, GrantFile, GrantTokenAndFile, GrantTokenOnly,
-  Serve, TorHosting, TorOptions, TorStateEndpoint,
+  Serve, Status, StatusHuman, StatusJson, TorHosting, TorOptions,
+  TorStateEndpoint,
 }
 import mailbox/build
 import mailbox/http
@@ -204,4 +205,32 @@ pub fn version_is_a_command_of_its_own_test() {
   assert mailbox.parse(["version"]) == Ok(mailbox.Version)
   assert build.describe(build.from_lookup(fn(_) { Error(Nil) }))
     == "mailbox dev (commit unknown)"
+}
+
+pub fn status_command_parses_and_reports_aggregates_test() {
+  assert mailbox.parse(["status", "--db", "m.db"])
+    == Ok(Status("m.db", None, StatusHuman))
+  assert mailbox.parse([
+      "status",
+      "--db",
+      "m.db",
+      "--tor-state",
+      "/tmp/t",
+      "--json",
+    ])
+    == Ok(Status("m.db", Some("/tmp/t"), StatusJson))
+  assert mailbox.inspect_status("/nonexistent_mb_status.db", None, StatusHuman)
+    == Error("database not found at /nonexistent_mb_status.db")
+
+  let db = support.fresh_path()
+  let assert Ok(ep) = endpoint.parse("127.0.0.1:8080")
+  let assert Ok(_) =
+    mailbox.issue_grant(db, 25, GrantTokenOnly(ExplicitGrantEndpoint(ep)))
+  let assert Ok(human) = mailbox.inspect_status(db, None, StatusHuman)
+  assert string.contains(human, "grants: 1 (0/25 queues provisioned)")
+  let assert Ok(json_out) = mailbox.inspect_status(db, None, StatusJson)
+  assert string.contains(
+    json_out,
+    "\"grants\":1,\"allowance_total\":25,\"queues_used_total\":0",
+  )
 }

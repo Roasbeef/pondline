@@ -94,6 +94,25 @@ pub fn delete_expired_blobs(now now: Int) {
   #(sql, [dev.ParamInt(now)])
 }
 
+pub type BlobSummary {
+  BlobSummary(blobs: Int, blob_bytes: Int)
+}
+
+pub fn blob_summary(now now: Int) {
+  let sql =
+    "SELECT COUNT(*) AS blobs,
+       CAST(COALESCE(SUM(size), 0) AS INTEGER) AS blob_bytes
+FROM blobs
+WHERE deadline >= ?1"
+  #(sql, [dev.ParamInt(now)], blob_summary_decoder())
+}
+
+pub fn blob_summary_decoder() -> decode.Decoder(BlobSummary) {
+  use blobs <- decode.field(0, decode.int)
+  use blob_bytes <- decode.field(1, decode.int)
+  decode.success(BlobSummary(blobs:, blob_bytes:))
+}
+
 pub type EnvelopeRecord {
   EnvelopeRecord(digest: BitArray, deadline: Int, size: Int)
 }
@@ -258,6 +277,42 @@ pub fn delete_stale_tombstones(now now: Int) {
   #(sql, [dev.ParamInt(now)])
 }
 
+pub type EnvelopeSummary {
+  EnvelopeSummary(envelopes: Int, envelope_bytes: Int)
+}
+
+pub fn envelope_summary(now now: Int) {
+  let sql =
+    "SELECT COUNT(*) AS envelopes,
+       CAST(COALESCE(SUM(size), 0) AS INTEGER) AS envelope_bytes
+FROM envelopes
+WHERE deadline >= ?1"
+  #(sql, [dev.ParamInt(now)], envelope_summary_decoder())
+}
+
+pub fn envelope_summary_decoder() -> decode.Decoder(EnvelopeSummary) {
+  use envelopes <- decode.field(0, decode.int)
+  use envelope_bytes <- decode.field(1, decode.int)
+  decode.success(EnvelopeSummary(envelopes:, envelope_bytes:))
+}
+
+pub type LiveTombstones {
+  LiveTombstones(tombstones: Int)
+}
+
+pub fn live_tombstones(now now: Int) {
+  let sql =
+    "SELECT COUNT(*) AS tombstones
+FROM tombstones
+WHERE deadline >= ?1"
+  #(sql, [dev.ParamInt(now)], live_tombstones_decoder())
+}
+
+pub fn live_tombstones_decoder() -> decode.Decoder(LiveTombstones) {
+  use tombstones <- decode.field(0, decode.int)
+  decode.success(LiveTombstones(tombstones:))
+}
+
 pub fn insert_grant(
   capability_hash capability_hash: BitArray,
   allowance allowance: Int,
@@ -291,6 +346,26 @@ pub fn use_grant(capability_hash capability_hash: BitArray) {
     "UPDATE grants SET queues_used = queues_used + 1
 WHERE capability_hash = ?"
   #(sql, [dev.ParamBitArray(capability_hash)])
+}
+
+pub type GrantSummary {
+  GrantSummary(grants: Int, allowance_total: Int, queues_used_total: Int)
+}
+
+pub fn grant_summary() {
+  let sql =
+    "SELECT COUNT(*) AS grants,
+       CAST(COALESCE(SUM(allowance), 0) AS INTEGER) AS allowance_total,
+       CAST(COALESCE(SUM(queues_used), 0) AS INTEGER) AS queues_used_total
+FROM grants"
+  #(sql, [], grant_summary_decoder())
+}
+
+pub fn grant_summary_decoder() -> decode.Decoder(GrantSummary) {
+  use grants <- decode.field(0, decode.int)
+  use allowance_total <- decode.field(1, decode.int)
+  use queues_used_total <- decode.field(2, decode.int)
+  decode.success(GrantSummary(grants:, allowance_total:, queues_used_total:))
 }
 
 pub type QueueById {
@@ -364,4 +439,24 @@ pub fn adjust_bytes(delta delta: Int, queue_id queue_id: BitArray) {
     "UPDATE queues SET bytes_used = bytes_used + ?1
 WHERE queue_id = ?2"
   #(sql, [dev.ParamInt(delta), dev.ParamBitArray(queue_id)])
+}
+
+pub type QueueSummary {
+  QueueSummary(queues: Int, bytes_used: Int, capacity_total: Int)
+}
+
+pub fn queue_summary() {
+  let sql =
+    "SELECT COUNT(*) AS queues,
+       CAST(COALESCE(SUM(bytes_used), 0) AS INTEGER) AS bytes_used,
+       CAST(COALESCE(SUM(capacity), 0) AS INTEGER) AS capacity_total
+FROM queues"
+  #(sql, [], queue_summary_decoder())
+}
+
+pub fn queue_summary_decoder() -> decode.Decoder(QueueSummary) {
+  use queues <- decode.field(0, decode.int)
+  use bytes_used <- decode.field(1, decode.int)
+  use capacity_total <- decode.field(2, decode.int)
+  decode.success(QueueSummary(queues:, bytes_used:, capacity_total:))
 }
