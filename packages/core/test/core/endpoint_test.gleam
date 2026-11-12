@@ -95,3 +95,15 @@ pub fn an_address_round_trips_through_its_bytes_test() {
   assert endpoint.onion_from_bytes(<<0:272, 4>>)
     == Error(endpoint.NotAnOnionAddress)
 }
+
+pub fn parse_and_to_string_round_trip_test() {
+  let onion_ep = endpoint.Onion(address: onion(), port: port(80))
+  let loopback_ep = endpoint.Loopback(port: port(4100))
+
+  assert endpoint.parse(endpoint.to_string(onion_ep)) == Ok(onion_ep)
+  assert endpoint.parse(endpoint.to_string(loopback_ep)) == Ok(loopback_ep)
+  assert endpoint.parse("localhost:4100") == Ok(loopback_ep)
+  assert endpoint.parse("no-port") == Error(endpoint.InvalidPort)
+  assert endpoint.parse("127.0.0.1:0") == Error(endpoint.InvalidPort)
+  assert endpoint.parse("example.com:80") == Error(endpoint.NotAnOnionAddress)
+}

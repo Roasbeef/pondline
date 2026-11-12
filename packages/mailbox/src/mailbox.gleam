@@ -12,10 +12,12 @@
 ////   that forwards to that port, and prints `onion <host>.onion:80`, which is
 ////   the address a daemon dials. The Tor state directory holds the service's
 ////   key, and its path must be short enough for a Unix socket.
-//// - `grant --db <path> --queues <n> --out <file>` creates a provisioning
-////   grant allowing `n` queues and writes its 32-byte capability to `file`
-////   with mode 0600. It refuses to overwrite a file and prints only the
-////   path, never the capability.
+//// - `grant --db <path> --queues <n> [--out <file>] [--token [--mailbox <host:port> | --tor-state <dir>]]`
+////   creates a provisioning grant allowing `n` queues. With `--out` it writes
+////   the 32-byte capability to a new 0600 file; with `--token` it prints a
+////   copy-pasteable `plg1...` grant token carrying the mailbox endpoint and
+////   capability on stdout (taking the endpoint from `--mailbox` or from the
+////   `<dir>/onion` file written by `serve`).
 ////
 //// - `--version` prints the build's version and commit (`mailbox/build`).
 ////
@@ -33,7 +35,11 @@
 
 import argv
 import core/capability
+import core/endpoint.{type Endpoint}
+import core/grant
+import core/secret.{type Secret}
 import core/time.{Instant}
+import gleam/bit_array
 import gleam/dict.{type Dict}
 import gleam/erlang/process
 import gleam/int
@@ -41,6 +47,7 @@ import gleam/io
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import mailbox/build
 import mailbox/http
 import mailbox/internal/ffi_system
@@ -93,10 +100,36 @@ pub type TorOptions {
   )
 }
 
+/// Where `grant --token` obtains the mailbox endpoint it embeds.
+pub type GrantEndpoint {
+  /// Explicit `--mailbox HOST:PORT`.
+  ExplicitGrantEndpoint(endpoint: Endpoint)
+
+  /// Read `<state_dir>/onion` written by `serve`.
+  TorStateEndpoint(state_dir: String)
+}
+
+/// What `grant` emits: a 0600 capability file, a `plg1...` token on stdout, or both.
+pub type GrantOutput {
+  /// Write the raw 32-byte capability to `path`.
+  GrantFile(path: String)
+
+  /// Print the `plg1...` token on standard output.
+  GrantTokenOnly(endpoint: GrantEndpoint)
+
+  /// Write the capability to `path` (reported on stderr) and print the token on stdout.
+  GrantTokenAndFile(path: String, endpoint: GrantEndpoint)
+}
+
+/// Parsed command-line options for one subcommand.
+type Options {
+  Options(values: Dict(String, String), flags: List(String))
+}
+
 /// A parsed command line.
 pub type Command {
   Serve(db: String, port: Int, tor: Option(TorOptions))
-  Grant(db: String, queues: Int, out: String)
+  Grant(db: String, queues: Int, output: GrantOutput)
 
   /// Print the build's version and commit and exit.
   Version
@@ -145,27 +178,26 @@ pub fn parse(arguments: List(String)) -> Result(Command, String) {
 
     ["serve", ..rest] -> {
       use options <- result.try(
-        pairs(rest, ["--db", "--port", "--tor-bin", "--tor-state"]),
+        read_options(rest, ["--db", "--port", "--tor-bin", "--tor-state"], []),
       )
-      use db <- result.try(required(options, "--db"))
-      use port <- result.try(optional_number(options, "--port", 0, 0, 65_535))
-      use tor <- result.try(tor_options(options))
+      use db <- result.try(required(options.values, "--db"))
+      use port <- result.try(optional_number(
+        options.values,
+        "--port",
+        0,
+        0,
+        65_535,
+      ))
+      use tor <- result.try(tor_options(options.values))
 
       Ok(Serve(db:, port:, tor:))
     }
 
-    ["grant", ..rest] -> {
-      use options <- result.try(pairs(rest, ["--db", "--queues", "--out"]))
-      use db <- result.try(required(options, "--db"))
-      use queues <- result.try(number(options, "--queues", 1, 1_000_000))
-      use out <- result.try(required(options, "--out"))
-
-      Ok(Grant(db:, queues:, out:))
-    }
+    ["grant", ..rest] -> parse_grant(rest)
 
     _ ->
       Error(
-        "usage: serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]] | grant --db <path> --queues <n> --out <file> | --version",
+        "usage: serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]] | grant --db <path> --queues <n> [--out <file>] [--token (--mailbox <host:port> | --tor-state <dir>)] | --version",
       )
   }
 }
@@ -186,33 +218,154 @@ fn tor_options(
   }
 }
 
-/// Reads `--name value` pairs, rejecting an unknown or repeated name and a
-/// name without a value.
-fn pairs(
+/// Parses `grant` options and validates output mode before touching storage.
+fn parse_grant(rest: List(String)) -> Result(Command, String) {
+  use options <- result.try(
+    read_options(
+      rest,
+      ["--db", "--queues", "--out", "--mailbox", "--tor-state"],
+      ["--token"],
+    ),
+  )
+  use db <- result.try(required(options.values, "--db"))
+  use queues <- result.try(number(options.values, "--queues", 1, 1_000_000))
+  use output <- result.try(grant_output(options))
+
+  Ok(Grant(db:, queues:, output:))
+}
+
+/// Decides whether `grant` writes `--out`, prints `--token`, or both.
+fn grant_output(options: Options) -> Result(GrantOutput, String) {
+  let out = dict.get(options.values, "--out")
+  let wants_token = list.contains(options.flags, "--token")
+
+  // Without `--token`, `--mailbox` and `--tor-state` have nothing to attach to.
+  case out, wants_token {
+    Ok(path), False -> {
+      use Nil <- result.map(reject_unused_endpoint_options(options.values))
+      GrantFile(path:)
+    }
+
+    Error(Nil), True -> {
+      use source <- result.map(grant_endpoint(options.values))
+      GrantTokenOnly(endpoint: source)
+    }
+
+    Ok(path), True -> {
+      use source <- result.map(grant_endpoint(options.values))
+      GrantTokenAndFile(path:, endpoint: source)
+    }
+
+    Error(Nil), False -> Error("give --out <file>, --token, or both")
+  }
+}
+
+/// Rejects `--mailbox` and `--tor-state` when `--token` was not requested.
+fn reject_unused_endpoint_options(
+  values: Dict(String, String),
+) -> Result(Nil, String) {
+  case dict.has_key(values, "--mailbox"), dict.has_key(values, "--tor-state") {
+    False, False -> Ok(Nil)
+    True, _ -> Error("--mailbox requires --token")
+    False, True -> Error("--tor-state on grant requires --token")
+  }
+}
+
+/// Resolves the endpoint source for `grant --token`: exactly one of `--mailbox` or `--tor-state`.
+fn grant_endpoint(
+  values: Dict(String, String),
+) -> Result(GrantEndpoint, String) {
+  case dict.get(values, "--mailbox"), dict.get(values, "--tor-state") {
+    Ok(text), Error(Nil) ->
+      endpoint.parse(text)
+      |> result.map(ExplicitGrantEndpoint)
+      |> result.replace_error("--mailbox must be ONION:PORT or 127.0.0.1:PORT")
+
+    Error(Nil), Ok(state_dir) -> Ok(TorStateEndpoint(state_dir:))
+    Ok(_), Ok(_) -> Error("give either --mailbox or --tor-state, not both")
+    Error(Nil), Error(Nil) ->
+      Error("--token requires --mailbox <host:port> or --tor-state <dir>")
+  }
+}
+
+/// Reads `--name value` pairs and bare flags, rejecting unknown or repeated
+/// options and refusing stray words without echoing them.
+fn read_options(
   arguments: List(String),
-  allowed: List(String),
-) -> Result(Dict(String, String), String) {
-  // Each step takes one name and its value; a lone trailing word has no
-  // value to pair with.
+  values: List(String),
+  flags: List(String),
+) -> Result(Options, String) {
+  read_loop(arguments, values, flags, Options(dict.new(), []))
+}
+
+/// Walks `arguments` one option or flag at a time.
+fn read_loop(
+  arguments: List(String),
+  values: List(String),
+  flags: List(String),
+  found: Options,
+) -> Result(Options, String) {
   case arguments {
-    [] -> Ok(dict.new())
-
-    [name, value, ..rest] ->
-      case list.contains(allowed, name) {
-        False -> Error("unknown option " <> name)
-
-        True -> {
-          use options <- result.try(pairs(rest, allowed))
-
-          // The rest was read first, so a name already in it is a repeat.
-          case dict.has_key(options, name) {
-            True -> Error("repeated option " <> name)
-            False -> Ok(dict.insert(options, name, value))
-          }
-        }
+    [] -> Ok(found)
+    [name, ..rest] ->
+      case list.contains(flags, name), list.contains(values, name) {
+        True, _ -> take_flag(name, rest, values, flags, found)
+        False, True -> take_value(name, rest, values, flags, found)
+        False, False -> Error(unknown_option(name))
       }
+  }
+}
 
-    [name] -> Error("missing value for " <> name)
+/// Records one bare flag, rejecting duplicates.
+fn take_flag(
+  name: String,
+  rest: List(String),
+  values: List(String),
+  flags: List(String),
+  found: Options,
+) -> Result(Options, String) {
+  case list.contains(found.flags, name) {
+    True -> Error("repeated option " <> name)
+    False ->
+      read_loop(
+        rest,
+        values,
+        flags,
+        Options(..found, flags: [name, ..found.flags]),
+      )
+  }
+}
+
+/// Records one `--name value` option, rejecting duplicates and missing values.
+fn take_value(
+  name: String,
+  rest: List(String),
+  values: List(String),
+  flags: List(String),
+  found: Options,
+) -> Result(Options, String) {
+  case rest {
+    [] -> Error("missing value for " <> name)
+    [value, ..more] ->
+      case dict.has_key(found.values, name) {
+        True -> Error("repeated option " <> name)
+        False ->
+          read_loop(
+            more,
+            values,
+            flags,
+            Options(..found, values: dict.insert(found.values, name, value)),
+          )
+      }
+  }
+}
+
+/// Formats an unknown option error without echoing non-option values.
+fn unknown_option(name: String) -> String {
+  case string.starts_with(name, "-"), string.split_once(name, "=") {
+    True, Ok(#(option, _)) -> "unknown option " <> option <> "=..."
+    True, Error(Nil) -> "unknown option " <> name
+    False, _ -> "unexpected argument"
   }
 }
 
@@ -267,7 +420,7 @@ fn number(
 fn run(command: Command) -> Result(Nil, String) {
   case command {
     Serve(db:, port:, tor:) -> serve(db, port, tor)
-    Grant(db:, queues:, out:) -> grant(db, queues, out)
+    Grant(db:, queues:, output:) -> run_grant(db, queues, output)
 
     // The identity is the launcher's, so it needs no database.
     Version -> {
@@ -409,7 +562,14 @@ fn serve(
     None -> Ok(Nil)
 
     Some(hosting) -> {
-      use host <- result.map(host_onion(hosting, server.port))
+      use host <- result.try(host_onion(hosting, server.port))
+      let onion_file = hosting.state_dir <> "/onion"
+      use Nil <- result.map(
+        ffi_system.write_private_file(onion_file, <<host:utf8, "\n">>)
+        |> result.map_error(fn(reason) {
+          "could not record onion address in " <> onion_file <> ": " <> reason
+        }),
+      )
       io.println("onion " <> host)
     }
   })
@@ -465,12 +625,27 @@ pub fn host_onion(
 /// // -> Ok(Nil)
 /// ```
 pub fn grant(db: String, queues: Int, out: String) -> Result(Nil, String) {
-  // Refusing here avoids recording a grant whose capability is never
-  // written. The exclusive create below is the check that cannot race.
-  use Nil <- result.try(case simplifile.is_file(out) {
-    Ok(False) -> Ok(Nil)
-    _ -> Error("refusing to overwrite " <> out)
-  })
+  run_grant(db, queues, GrantFile(path: out))
+}
+
+/// Mints a provisioning grant and writes or encodes it according to `output`,
+/// returning any encoded `plg1...` token as a `Secret`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.issue_grant("mailbox.db", 10, GrantFile("provision.cap"))
+/// // -> Ok(None)
+/// ```
+pub fn issue_grant(
+  db: String,
+  queues: Int,
+  output: GrantOutput,
+) -> Result(Option(Secret), String) {
+  // Validate output destinations and any stored onion address before opening
+  // the database so a bad path or missing onion file never orphans a grant row.
+  use Nil <- result.try(check_grant_file(output))
+  use resolved_endpoint <- result.try(resolve_grant_endpoint(output))
 
   use opened <- result.try(
     store.open(db) |> result.replace_error("the database could not be opened"),
@@ -482,14 +657,113 @@ pub fn grant(db: String, queues: Int, out: String) -> Result(Nil, String) {
     "the grant could not be created",
   ))
 
-  // The exclusive create reports an existing file as `eexist`.
-  case ffi_system.create_private_file(out, capability.expose(provision)) {
-    Ok(Nil) -> {
-      io.println(out)
-      Ok(Nil)
-    }
+  use Nil <- result.try(write_grant_file(output, capability.expose(provision)))
+  Ok(
+    option.map(resolved_endpoint, fn(ep) {
+      grant.encode(grant.new(ep, provision))
+    }),
+  )
+}
 
-    Error("eexist") -> Error("refusing to overwrite " <> out)
-    Error(reason) -> Error("could not write " <> out <> ": " <> reason)
+/// Runs `grant` and prints the path or `plg1...` token to stdout.
+fn run_grant(
+  db: String,
+  queues: Int,
+  output: GrantOutput,
+) -> Result(Nil, String) {
+  use token <- result.map(issue_grant(db, queues, output))
+
+  // When both `--out` and `--token` are requested, the token owns stdout so it
+  // can be piped directly, while the file path goes to stderr.
+  case output, token {
+    GrantFile(path:), _ -> io.println(path)
+    GrantTokenOnly(..), Some(encoded) -> print_secret_line(encoded)
+    GrantTokenAndFile(path:, ..), Some(encoded) -> {
+      io.println_error(path)
+      print_secret_line(encoded)
+    }
+    _, None -> Nil
+  }
+}
+
+/// Prints an ASCII secret token on its own line to stdout.
+fn print_secret_line(value: Secret) -> Nil {
+  case bit_array.to_string(secret.expose(value)) {
+    Ok(line) -> io.println(line)
+    Error(Nil) -> Nil
+  }
+}
+
+/// Checks upfront that any `--out` destination does not already exist.
+fn check_grant_file(output: GrantOutput) -> Result(Nil, String) {
+  case grant_file_path(output) {
+    None -> Ok(Nil)
+    Some(out) ->
+      case simplifile.is_file(out) {
+        Ok(False) -> Ok(Nil)
+        _ -> Error("refusing to overwrite " <> out)
+      }
+  }
+}
+
+/// Writes the raw 32-byte capability when `output` names `--out`.
+fn write_grant_file(
+  output: GrantOutput,
+  bytes: BitArray,
+) -> Result(Nil, String) {
+  case grant_file_path(output) {
+    None -> Ok(Nil)
+    Some(out) ->
+      case ffi_system.create_private_file(out, bytes) {
+        Ok(Nil) -> Ok(Nil)
+        Error("eexist") -> Error("refusing to overwrite " <> out)
+        Error(reason) -> Error("could not write " <> out <> ": " <> reason)
+      }
+  }
+}
+
+/// Extracts `--out` from a `GrantOutput`, if present.
+fn grant_file_path(output: GrantOutput) -> Option(String) {
+  case output {
+    GrantFile(path:) | GrantTokenAndFile(path:, ..) -> Some(path)
+    GrantTokenOnly(..) -> None
+  }
+}
+
+/// Resolves the `Endpoint` needed when `--token` was requested.
+fn resolve_grant_endpoint(
+  output: GrantOutput,
+) -> Result(Option(Endpoint), String) {
+  // Only `--token` modes carry an endpoint; file-only grants leave it `None`.
+  case output {
+    GrantFile(..) -> Ok(None)
+    GrantTokenOnly(endpoint: source)
+    | GrantTokenAndFile(endpoint: source, ..) -> {
+      use ep <- result.map(load_grant_endpoint(source))
+      Some(ep)
+    }
+  }
+}
+
+/// Loads an endpoint from `--mailbox` or `<tor_state>/onion`.
+fn load_grant_endpoint(source: GrantEndpoint) -> Result(Endpoint, String) {
+  // `--mailbox` was parsed upfront; `--tor-state` reads the saved onion file.
+  case source {
+    ExplicitGrantEndpoint(endpoint:) -> Ok(endpoint)
+    TorStateEndpoint(state_dir:) -> {
+      let onion_file = state_dir <> "/onion"
+      use text <- result.try(
+        simplifile.read(onion_file)
+        |> result.map_error(fn(_) {
+          "could not read "
+          <> onion_file
+          <> "; start serve first or pass --mailbox"
+        }),
+      )
+      endpoint.parse(string.trim(text))
+      |> result.map_error(fn(_) {
+        "stored onion endpoint in " <> onion_file <> " is malformed"
+      })
+    }
   }
 }

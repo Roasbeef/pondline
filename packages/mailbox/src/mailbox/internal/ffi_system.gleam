@@ -20,6 +20,10 @@ pub fn monotonic_ms() -> Int
 @external(erlang, "mailbox_ffi", "create_private_file")
 pub fn create_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
 
+/// Atomically writes `bytes` to `path` with mode 0600, replacing any existing file.
+@external(erlang, "mailbox_ffi", "write_private_file")
+pub fn write_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
+
 /// The value of an environment variable.
 @external(erlang, "mailbox_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)

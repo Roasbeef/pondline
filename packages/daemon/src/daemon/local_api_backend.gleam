@@ -13,7 +13,7 @@
 //// when the operator asked for the loopback carrier, which is the one place
 //// that choice is made.
 
-import core/endpoint.{type Endpoint, Loopback, Onion, TorOnly, TorOrLoopback}
+import core/endpoint.{type Endpoint, TorOnly, TorOrLoopback}
 import core/secret
 import daemon/api
 import daemon/build
@@ -30,7 +30,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/string
 import simplifile
 
 /// A backend that refuses every call as `Unavailable`. It answers `health`
@@ -264,30 +263,10 @@ fn check_binary(
   }
 }
 
-/// Parses the `--mailbox` option: `127.0.0.1:PORT` or `localhost:PORT` is
-/// a loopback endpoint, and anything else must be a v3 onion address with a
-/// port. Whether a loopback endpoint is admitted is the runtime's policy
-/// check, not this parser's.
+/// Parses the `--mailbox` option via `core/endpoint.parse`.
 fn parse_mailbox(text: String) -> Result(Endpoint, String) {
-  let invalid = "--mailbox must be ONION:PORT or 127.0.0.1:PORT"
-
-  use #(host, port_text) <- result.try(
-    string.split_once(text, ":") |> result.replace_error(invalid),
-  )
-  use number <- result.try(
-    int.parse(port_text) |> result.replace_error(invalid),
-  )
-  use port <- result.try(endpoint.port(number) |> result.replace_error(invalid))
-
-  // The host names the carrier: loopback for the two local spellings, an
-  // onion address for everything else.
-  case host {
-    "127.0.0.1" | "localhost" -> Ok(Loopback(port:))
-    _ ->
-      endpoint.parse_onion(host)
-      |> result.map(fn(address) { Onion(address:, port:) })
-      |> result.replace_error(invalid)
-  }
+  endpoint.parse(text)
+  |> result.replace_error("--mailbox must be ONION:PORT or 127.0.0.1:PORT")
 }
 
 /// A runtime start failure as one line for the operator.

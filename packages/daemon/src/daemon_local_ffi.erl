@@ -1,7 +1,7 @@
 -module(daemon_local_ffi).
 -export([
     listen/1, accept/1, connect/2, recv_line/4, send/2, close/1,
-    monotonic_ms/0, create_private_file/2,
+    monotonic_ms/0, create_private_file/2, write_private_file/2,
     make_private_dir/1, file_mode/1, write_stdout/1, read_stdin/1,
     getenv/1, find_executable/1, halt/1
 ]).
@@ -87,6 +87,23 @@ create_private_file(Path, Bytes) ->
             Result;
         {error, Reason} ->
             reason(Reason)
+    end.
+
+%% Atomically writes `Bytes` to `Path` with mode 0600 by staging into an
+%% exclusive 0600 sibling file and renaming into place.
+write_private_file(Path, Bytes) ->
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    Tmp = <<Path/binary, ".tmp.", Suffix/binary>>,
+    case create_private_file(Tmp, Bytes) of
+        {ok, nil} ->
+            case file:rename(binary_to_list(Tmp), binary_to_list(Path)) of
+                ok -> {ok, nil};
+                {error, Reason} ->
+                    _ = file:delete(binary_to_list(Tmp)),
+                    reason(Reason)
+            end;
+        Error ->
+            Error
     end.
 
 write_private(Fd, Path, Bytes) ->

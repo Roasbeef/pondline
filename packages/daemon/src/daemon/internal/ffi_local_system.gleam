@@ -17,6 +17,10 @@ pub fn monotonic_ms() -> Int
 @external(erlang, "daemon_local_ffi", "create_private_file")
 pub fn create_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
 
+/// Atomically writes `bytes` to `path` with mode 0600, replacing any existing file.
+@external(erlang, "daemon_local_ffi", "write_private_file")
+pub fn write_private_file(path: String, bytes: BitArray) -> Result(Nil, String)
+
 /// Creates a directory and its parents if missing, then sets the directory
 /// itself to mode 0700.
 @external(erlang, "daemon_local_ffi", "make_private_dir")

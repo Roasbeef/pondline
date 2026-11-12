@@ -28,13 +28,16 @@
 //// by way of the backend module, serves the local API and then waits
 //// forever.
 
+import core/capability
+import core/endpoint
+import core/grant
 import core/limits
 import core/secret
 import daemon/build
 import daemon/cli.{
   type Action, type Command, type Input, type Output, type Target, Client,
-  CreateInvite, Help, InputFile, InputStdin, JsonOutput, NoInput, RunDaemon,
-  Version,
+  CreateInvite, DaemonOptions, ExplicitMailbox, GrantMailbox, Help, InputFile,
+  InputStdin, JsonOutput, NoInput, RunDaemon, Version,
 }
 import daemon/cli_render
 import daemon/credential
@@ -50,6 +53,7 @@ import gleam/io
 import gleam/json
 import gleam/option.{None, Some}
 import gleam/result
+import gleam/string
 import simplifile
 
 /// The largest input file `pondline` reads, in bytes. A payload is at most
@@ -84,7 +88,15 @@ pub fn run(command: Command) -> Outcome {
 }
 
 /// Starts the runtime and the local API, announces the socket and waits.
-fn run_daemon(options: cli.DaemonOptions) -> Outcome {
+fn run_daemon(command: cli.DaemonCommand) -> Outcome {
+  case resolve_daemon_options(command) {
+    Error(outcome) -> outcome
+    Ok(options) -> start_resolved_daemon(options)
+  }
+}
+
+/// Boots a daemon whose mailbox endpoint and provisioning file are resolved.
+fn start_resolved_daemon(options: cli.DaemonOptions) -> Outcome {
   let started = {
     use credentials <- result.try(credential.ensure(options.state_dir))
     use backend <- result.try(local_api_backend.start_node(options))
@@ -106,6 +118,99 @@ fn run_daemon(options: cli.DaemonOptions) -> Outcome {
 
     Error(message) -> failure(cli.exit_unavailable, message)
   }
+}
+
+/// Resolves `DaemonCommand` into `DaemonOptions`, materializing any `plg1...`
+/// grant token into `<state_dir>/provision.cap` (mode 0600).
+fn resolve_daemon_options(
+  command: cli.DaemonCommand,
+) -> Result(cli.DaemonOptions, Outcome) {
+  // Materialize a `plg1` token into `<state_dir>/provision.cap` when given.
+  case command.setup {
+    ExplicitMailbox(mailbox:, provision_file:) ->
+      Ok(DaemonOptions(
+        state_dir: command.state_dir,
+        mailbox:,
+        provision_file:,
+        carrier: command.carrier,
+        tor_bin: command.tor_bin,
+      ))
+
+    GrantMailbox(source:) -> {
+      use raw <- result.try(read_input(source))
+      use #(mailbox, provision_file) <- result.map(apply_grant_token(
+        command.state_dir,
+        raw,
+      ))
+      DaemonOptions(
+        state_dir: command.state_dir,
+        mailbox:,
+        provision_file:,
+        carrier: command.carrier,
+        tor_bin: command.tor_bin,
+      )
+    }
+  }
+}
+
+/// Decodes a `plg1...` grant token and persists its 32-byte provisioning
+/// capability in `<state_dir>/provision.cap` with mode 0600.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_run.apply_grant_token("/tmp/pl", <<"not-a-grant":utf8>>)
+/// // -> Error(Outcome(5, <<>>, ...))
+/// ```
+pub fn apply_grant_token(
+  state_dir: String,
+  raw: BitArray,
+) -> Result(#(String, String), Outcome) {
+  use text <- result.try(
+    bit_array.to_string(raw)
+    |> result.map_error(fn(_) {
+      failure(cli.exit_refused, "the grant token is not text")
+    }),
+  )
+  use token <- result.try(
+    grant.decode(string.trim(text)) |> result.map_error(grant_decode_outcome),
+  )
+  use Nil <- result.try(
+    ffi_local_system.make_private_dir(state_dir)
+    |> result.map_error(fn(reason) {
+      failure(
+        cli.exit_local,
+        "could not prepare " <> state_dir <> ": " <> reason,
+      )
+    }),
+  )
+  let provision_file = state_dir <> "/provision.cap"
+  use Nil <- result.map(
+    ffi_local_system.write_private_file(
+      provision_file,
+      capability.expose(grant.provision(token)),
+    )
+    |> result.map_error(fn(reason) {
+      failure(
+        cli.exit_local,
+        "could not write " <> provision_file <> ": " <> reason,
+      )
+    }),
+  )
+  #(endpoint.to_string(grant.endpoint(token)), provision_file)
+}
+
+/// Maps a `GrantError` to a clean refusal outcome without echoing input text.
+fn grant_decode_outcome(error: grant.GrantError) -> Outcome {
+  // Translate each decode failure into operator guidance without echoing input.
+  let reason = case error {
+    grant.NotAGrant -> "the input is not a plg1 grant token"
+    grant.BadChecksum -> "the grant token checksum failed; check for typos"
+    grant.UnknownFormat -> "the grant token uses an unsupported format"
+    grant.BadPayload -> "the grant token payload is malformed"
+  }
+
+  failure(cli.exit_refused, reason)
 }
 
 /// Runs one client command.

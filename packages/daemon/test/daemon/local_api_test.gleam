@@ -1,5 +1,9 @@
+import core/endpoint
+import core/grant
 import core/id
 import core/limits
+import core/secret
+import daemon/cli_run
 import daemon/credential
 import daemon/internal/ffi_local_system
 import daemon/local_api
@@ -570,4 +574,24 @@ pub fn daemon_tor_sidecar_resolution_and_fail_fast_test() {
     == Error(
       "could not find pondline-tor; pass --tor-bin or set PONDLINE_TOR_BIN",
     )
+}
+
+pub fn apply_grant_token_writes_private_capability_and_scrubs_errors_test() {
+  let dir = "build/grant_token_test_" <> string.inspect(process.self())
+  let _ = simplifile.delete(dir)
+  let assert Ok(ep) = endpoint.parse("127.0.0.1:4199")
+  let cap_bytes = <<42:256>>
+  let assert Ok(token) = grant.from_parts(ep, cap_bytes)
+  let raw = <<{ secret.expose(grant.encode(token)) }:bits, "\n":utf8>>
+
+  let assert Ok(#(mailbox, cap_file)) = cli_run.apply_grant_token(dir, raw)
+  assert mailbox == "127.0.0.1:4199"
+  assert cap_file == dir <> "/provision.cap"
+  assert simplifile.read_bits(cap_file) == Ok(cap_bytes)
+  assert ffi_local_system.file_mode(cap_file) == Ok(0o600)
+
+  let bad = <<"plg1secretbadtoken":utf8>>
+  let assert Error(outcome) = cli_run.apply_grant_token(dir, bad)
+  assert !string.contains(outcome.stderr, "plg1secretbadtoken")
+  let _ = simplifile.delete(dir)
 }

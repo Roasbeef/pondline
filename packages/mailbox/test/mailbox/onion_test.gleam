@@ -5,13 +5,20 @@
 //// `mailbox_slow_test.erl` calls it because EUnit's default timeout is
 //// shorter than a bootstrap.
 
+import core/endpoint
+import core/grant
+import core/secret
 import core/time.{Instant}
+import gleam/bit_array
 import gleam/erlang/process
 import gleam/io
 import gleam/option.{None, Some}
 import gleam/result
 import gleam/string
-import mailbox.{Serve, TorHosting, TorOptions}
+import mailbox.{
+  ExplicitGrantEndpoint, Grant, GrantFile, GrantTokenAndFile, GrantTokenOnly,
+  Serve, TorHosting, TorOptions, TorStateEndpoint,
+}
 import mailbox/build
 import mailbox/http
 import mailbox/node
@@ -94,12 +101,64 @@ pub fn resolve_tor_bin_precedence_and_errors_test() {
     )
 }
 
-pub fn grant_takes_no_tor_options_test() {
+pub fn grant_takes_no_tor_bin_option_test() {
   let arguments = [
     "grant", "--db", "m.db", "--queues", "1", "--out", "f", "--tor-bin", "x",
   ]
 
   assert mailbox.parse(arguments) == Error("unknown option --tor-bin")
+}
+
+pub fn grant_token_parsing_and_issuance_test() {
+  let assert Ok(ep) = endpoint.parse("127.0.0.1:8080")
+  assert mailbox.parse([
+      "grant",
+      "--db",
+      "m.db",
+      "--queues",
+      "5",
+      "--out",
+      "a.cap",
+    ])
+    == Ok(Grant("m.db", 5, GrantFile("a.cap")))
+  assert mailbox.parse([
+      "grant", "--db", "m.db", "--queues", "5", "--token", "--mailbox",
+      "127.0.0.1:8080",
+    ])
+    == Ok(Grant("m.db", 5, GrantTokenOnly(ExplicitGrantEndpoint(ep))))
+  assert mailbox.parse([
+      "grant", "--db", "m.db", "--queues", "5", "--out", "a.cap", "--token",
+      "--tor-state", "/tmp/tor",
+    ])
+    == Ok(Grant(
+      "m.db",
+      5,
+      GrantTokenAndFile("a.cap", TorStateEndpoint("/tmp/tor")),
+    ))
+  assert mailbox.parse(["grant", "--db", "m.db", "--queues", "5"])
+    == Error("give --out <file>, --token, or both")
+  assert mailbox.parse(["grant", "--db", "m.db", "--queues", "5", "--token"])
+    == Error("--token requires --mailbox <host:port> or --tor-state <dir>")
+  assert mailbox.parse([
+      "grant",
+      "--db",
+      "m.db",
+      "--queues",
+      "5",
+      "--out",
+      "f",
+      "--mailbox",
+      "127.0.0.1:80",
+    ])
+    == Error("--mailbox requires --token")
+
+  // End-to-end issuance: mint a `plg1...` token and decode it back to the capability.
+  let db = support.fresh_path()
+  let assert Ok(Some(token_secret)) =
+    mailbox.issue_grant(db, 10, GrantTokenOnly(ExplicitGrantEndpoint(ep)))
+  let assert Ok(token_text) = bit_array.to_string(secret.expose(token_secret))
+  let assert Ok(decoded) = grant.decode(token_text)
+  assert grant.endpoint(decoded) == ep
 }
 
 /// Hosts a mailbox on an onion service and checks the address it returns.

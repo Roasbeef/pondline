@@ -3,10 +3,10 @@ import core/offer.{AutoApprove, OperatorApproves}
 import daemon/api
 import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, CreateInvite,
-  DaemonOptions, DeclineContact, Encoded, FromInvitation, FromTicket,
-  HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput, ListContacts,
-  MessageStatus, RaiseBudget, Raw, ReceiveMessages, RunDaemon, SendMessage,
-  ShowAudit, ShowHealth, ShowIncidents, Target, TicketAndFile, TicketOnly,
+  DeclineContact, Encoded, FromInvitation, FromTicket, HumanOutput, InputFile,
+  InputStdin, InvitationFile, JsonOutput, ListContacts, MessageStatus,
+  RaiseBudget, Raw, ReceiveMessages, RunDaemon, SendMessage, ShowAudit,
+  ShowHealth, ShowIncidents, Target, TicketAndFile, TicketOnly,
 }
 import daemon/local_api_protocol as protocol
 import gleam/json
@@ -232,7 +232,13 @@ pub fn daemon_test() {
       "daemon", "--state-dir", "/s", "--mailbox", "abc.onion:80",
       "--provision-file", "/p",
     ])
-  assert options == DaemonOptions("/s", "abc.onion:80", "/p", cli.Tor, None)
+  assert options
+    == cli.DaemonCommand(
+      "/s",
+      cli.ExplicitMailbox("abc.onion:80", "/p"),
+      cli.Tor,
+      None,
+    )
 
   let assert Ok(RunDaemon(options)) =
     parse([
@@ -241,6 +247,29 @@ pub fn daemon_test() {
     ])
   assert options.carrier == cli.Loopback
   assert options.tor_bin == Some("/bin/tor")
+
+  let assert Ok(RunDaemon(grant_opts)) =
+    parse(["daemon", "--state-dir", "/s", "--grant-stdin"])
+  assert grant_opts.setup == cli.GrantMailbox(InputStdin)
+
+  let assert Ok(RunDaemon(grant_file_opts)) =
+    parse(["daemon", "--state-dir", "/s", "--grant-file", "/g"])
+  assert grant_file_opts.setup == cli.GrantMailbox(InputFile("/g"))
+  assert result_is_error(
+    parse(["daemon", "--state-dir", "/s", "--grant-file", "/g", "--grant-stdin"]),
+  )
+  assert result_is_error(
+    parse([
+      "daemon",
+      "--state-dir",
+      "/s",
+      "--mailbox",
+      "h:80",
+      "--provision-file",
+      "/p",
+      "--grant-stdin",
+    ]),
+  )
 
   let base = ["daemon", "--state-dir", "/s", "--provision-file", "/p"]
   assert result_is_error(parse(list.append(base, ["--mailbox", "nohost"])))
@@ -381,6 +410,29 @@ pub fn no_command_accepts_a_ticket_in_argv_test() {
 
         assert !string.contains(message, ticket)
         assert !string.contains(message, "pl1")
+      },
+    )
+  })
+}
+
+pub fn no_command_accepts_a_grant_token_in_argv_test() {
+  let grant_token = "plg1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
+  let commands = [["daemon", "--grant-stdin"], ..every_command()]
+
+  list.each(commands, fn(command) {
+    list.each(
+      [
+        [grant_token],
+        ["--grant", grant_token],
+        ["--grant-token", grant_token],
+        ["--grant-stdin=" <> grant_token],
+      ],
+      fn(extra) {
+        let line = list.flatten([command, extra, common])
+        let assert Error(message) = parse(line)
+
+        assert !string.contains(message, grant_token)
+        assert !string.contains(message, "plg1")
       },
     )
   })

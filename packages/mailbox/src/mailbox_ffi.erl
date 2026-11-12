@@ -1,5 +1,5 @@
 -module(mailbox_ffi).
--export([unix_seconds/0, monotonic_ms/0, create_private_file/2, getenv/1, find_executable/1]).
+-export([unix_seconds/0, monotonic_ms/0, create_private_file/2, write_private_file/2, getenv/1, find_executable/1]).
 
 %% Whole seconds since the Unix epoch. `erlang:system_time/1` takes the unit
 %% as an atom, which Gleam cannot build without creating one.
@@ -19,6 +19,23 @@ create_private_file(Path, Bytes) ->
             Result;
         {error, Reason} ->
             reason(Reason)
+    end.
+
+%% Atomically writes `Bytes` to `Path` with mode 0600 by staging into an
+%% exclusive 0600 sibling file and renaming into place.
+write_private_file(Path, Bytes) ->
+    Suffix = integer_to_binary(erlang:unique_integer([positive])),
+    Tmp = <<Path/binary, ".tmp.", Suffix/binary>>,
+    case create_private_file(Tmp, Bytes) of
+        {ok, nil} ->
+            case file:rename(binary_to_list(Tmp), binary_to_list(Path)) of
+                ok -> {ok, nil};
+                {error, Reason} ->
+                    _ = file:delete(binary_to_list(Tmp)),
+                    reason(Reason)
+            end;
+        Error ->
+            Error
     end.
 
 write_private(Fd, Path, Bytes) ->

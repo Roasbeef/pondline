@@ -5,6 +5,13 @@
 //// variable. `daemon/cli_run` does the effects and `daemon/cli_render`
 //// prints the answers.
 ////
+//// ## Flow
+////
+//// 1. `parse` dispatches on the leading command words to `parse_daemon`, `client`, `parse_send`, or `parse_receive`.
+//// 2. `read_options` scans `--name value` pairs and flags, rejecting unknown options or stray arguments through `unknown`.
+//// 3. `target` resolves the Unix socket and credential path from options and the environment.
+//// 4. `request` and `timeout_ms` turn a parsed `Action` and its input bytes into the local API call.
+////
 //// ## Commands
 ////
 //// - `daemon --state-dir D --mailbox HOST:PORT --provision-file F
@@ -81,7 +88,7 @@ pub const usage =
   "usage: pondline <command> [options]
 
 commands:
-  daemon --state-dir D --mailbox HOST:PORT --provision-file F
+  daemon --state-dir D (--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin)
          [--carrier tor|loopback] [--tor-bin PATH]
   invite create --description TEXT --budget N [--auto-approve]
                 [--out FILE] [--ticket]
@@ -109,7 +116,26 @@ pub type Carrier {
   Loopback
 }
 
-/// The options of `pondline daemon`.
+/// Where `pondline daemon` obtains its mailbox endpoint and provisioning capability.
+pub type MailboxSetup {
+  /// Explicit `--mailbox HOST:PORT --provision-file F`.
+  ExplicitMailbox(mailbox: String, provision_file: String)
+
+  /// A `plg1...` grant token read from `--grant-file F` or `--grant-stdin`.
+  GrantMailbox(source: Input)
+}
+
+/// The parsed `pondline daemon` command before grant-token materialization.
+pub type DaemonCommand {
+  DaemonCommand(
+    state_dir: String,
+    setup: MailboxSetup,
+    carrier: Carrier,
+    tor_bin: Option(String),
+  )
+}
+
+/// The resolved startup options passed to `local_api_backend.start_node`.
 pub type DaemonOptions {
   DaemonOptions(
     state_dir: String,
@@ -207,7 +233,7 @@ pub type Action {
 
 /// A parsed command line.
 pub type Command {
-  RunDaemon(DaemonOptions)
+  RunDaemon(DaemonCommand)
   Client(target: Target, output: Output, action: Action)
   Help
 
@@ -476,25 +502,71 @@ fn parse_daemon(rest: List(String)) -> Result(Command, String) {
   use options <- result.try(
     read_options(
       rest,
-      ["--state-dir", "--mailbox", "--provision-file", "--carrier", "--tor-bin"],
-      [],
+      [
+        "--state-dir", "--mailbox", "--provision-file", "--grant-file",
+        "--carrier", "--tor-bin",
+      ],
+      ["--grant-stdin"],
     ),
   )
   use state_dir <- result.try(required(options, "--state-dir"))
-  use mailbox <- result.try(required(options, "--mailbox"))
-  use mailbox <- result.try(check_endpoint(mailbox))
-  use provision_file <- result.try(required(options, "--provision-file"))
+  use setup <- result.try(daemon_setup(options))
   use carrier <- result.try(carrier(options))
 
   Ok(
-    RunDaemon(DaemonOptions(
+    RunDaemon(DaemonCommand(
       state_dir:,
-      mailbox:,
-      provision_file:,
+      setup:,
       carrier:,
       tor_bin: option.from_result(dict.get(options.values, "--tor-bin")),
     )),
   )
+}
+
+/// Resolves how `daemon` gets its mailbox and provisioning capability: either
+/// `--mailbox` + `--provision-file`, or a `plg1...` token via `--grant-file` / `--grant-stdin`.
+fn daemon_setup(options: Options) -> Result(MailboxSetup, String) {
+  let has_explicit =
+    dict.has_key(options.values, "--mailbox")
+    || dict.has_key(options.values, "--provision-file")
+  let grant_file = dict.get(options.values, "--grant-file")
+  let grant_stdin = has_flag(options, "--grant-stdin")
+  let has_grant = result.is_ok(grant_file) || grant_stdin
+
+  // Explicit files and grant tokens are mutually exclusive setup modes.
+  case has_explicit, has_grant {
+    True, False -> {
+      use mailbox <- result.try(required(options, "--mailbox"))
+      use mailbox <- result.try(check_endpoint(mailbox))
+      use provision_file <- result.map(required(options, "--provision-file"))
+      ExplicitMailbox(mailbox:, provision_file:)
+    }
+
+    False, True -> {
+      use source <- result.map(grant_source(options))
+      GrantMailbox(source:)
+    }
+
+    True, True ->
+      Error(
+        "give either --mailbox/--provision-file or --grant-file/--grant-stdin, not both",
+      )
+
+    False, False ->
+      Error("missing option --mailbox (or pass --grant-file / --grant-stdin)")
+  }
+}
+
+/// Ensures exactly one grant input source (`--grant-file` or `--grant-stdin`).
+fn grant_source(options: Options) -> Result(Input, String) {
+  case
+    dict.get(options.values, "--grant-file"),
+    has_flag(options, "--grant-stdin")
+  {
+    Ok(path), False -> Ok(InputFile(path))
+    Error(Nil), True -> Ok(InputStdin)
+    _, _ -> Error("give exactly one of --grant-file and --grant-stdin")
+  }
 }
 
 /// The `--carrier` option, defaulting to Tor.
