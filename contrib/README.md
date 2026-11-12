@@ -43,12 +43,36 @@ Linux.
      --tor-state ~/.pondline-mailbox/tor
    ```
 
-## Linux (`systemd`)
+## Linux (`systemd` user service with `linger`)
 
-Note: the Linux branch of `scripts/release.sh` requires a build host with
-OTP 29 linked against OpenSSL >= 3.5 plus `patchelf`, and should pass
-`make release-smoke` on the target distribution before production use
-(see `docs/adr/003-packaging.md`).
+On a rootless host with user lingering enabled (`loginctl enable-linger $USER`),
+install under `~/.local` and run `pondline-mailbox` as a user service:
+
+1. Install the latest `linux-x86_64` release (or unpack a built `dist/` archive):
+
+   ```bash
+   curl -fsSL https://github.com/Roasbeef/pondline/releases/latest/download/install.sh | bash
+   mkdir -p -m 0700 ~/.local/state/pondline-mb ~/.local/state/pondline-mb/tor
+   mkdir -p ~/.config/systemd/user
+   cp contrib/systemd/pondline-mailbox-user.service ~/.config/systemd/user/pondline-mailbox.service
+   systemctl --user daemon-reload
+   systemctl --user enable --now pondline-mailbox.service
+   ```
+
+2. Mint a `plg1...` grant token or update in place (`pondline-update` switches
+   `~/.local/lib/pondline/current` atomically without deleting the live tree):
+
+   ```bash
+   ~/.local/bin/pondline-mailbox grant \
+     --db ~/.local/state/pondline-mb/mailbox.db \
+     --tor-state ~/.local/state/pondline-mb/tor \
+     --queues 100 \
+     --token
+
+   ~/.local/bin/pondline-update --restart-user-service
+   ```
+
+## Linux (`systemd` system service)
 
 1. Install the release under `/usr/local` and create the service user and
    private state directory:
