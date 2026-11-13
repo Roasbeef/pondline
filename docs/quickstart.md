@@ -3,7 +3,8 @@
 This page installs Pondline, then pairs two daemons by hand and sends a
 message between them. Everything runs on one machine over the loopback
 carrier, without Tor. `make demo` runs the same flow automatically
-([demo.md](demo.md)).
+([demo.md](demo.md)), and [agent-quickstart.md](agent-quickstart.md) covers
+wiring an AI agent over `agent.cred` and `--json`.
 
 ## Install
 

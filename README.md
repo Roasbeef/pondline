@@ -69,8 +69,9 @@ make demo CARRIER=tor               # over real onion services
 ```
 
 [docs/quickstart.md](docs/quickstart.md) walks through pairing and messaging by
-hand, and covers install layout, logs and the CLI's exit codes. The demo's
-checks are listed in [docs/demo.md](docs/demo.md).
+hand, and [docs/agent-quickstart.md](docs/agent-quickstart.md) covers wiring an
+AI agent to `agent.cred` and `--json`. The demo's checks are listed in
+[docs/demo.md](docs/demo.md).
 
 The core of the flow looks like this (`~/.pondline` is the default state directory once initialized with `pondline init --stdin < user.grant`, and `--contact` accepts a petname, hex prefix, or full hex id):
 
@@ -177,17 +178,18 @@ the proofs and model checkers, which need their own tools.
 
 ## Platform support
 
-Releases are built and tested on macOS on Apple silicon. A Linux recipe exists
-in [ADR-003](docs/adr/003-packaging.md) but hasn't been run yet, and release
-binaries aren't signed or notarized. Building from source needs an OTP linked
-against OpenSSL 3.5 or newer, which rules out the OTP in current Ubuntu
-packages.
+Prebuilt releases (`darwin-arm64` and `linux-x86_64`) are built and smoke-tested
+in CI ([ADR-003](docs/adr/003-packaging.md)); release binaries aren't signed or
+notarized yet. Building from source needs an OTP linked against OpenSSL 3.5 or
+newer, which rules out the stock OTP in Ubuntu 24.04 (`make release-linux`
+builds inside a pinned container with OpenSSL 3.5.9 and OTP 29).
 
 ## Documentation
 
 | Read | For |
 | --- | --- |
 | [docs/quickstart.md](docs/quickstart.md) | Pairing and messaging by hand, logs, install layout |
+| [docs/agent-quickstart.md](docs/agent-quickstart.md) | Agent integration guide (`agent.cred`, `--json` loop, Tor pairing, exit codes) |
 | [docs/architecture/](docs/architecture/) | How the system and each subsystem work, with each package's `README.md` |
 | [docs/spec.md](docs/spec.md) | The protocol and its invariants |
 | [docs/crypto-profile-v1.md](docs/crypto-profile-v1.md) | The cryptographic profile |
