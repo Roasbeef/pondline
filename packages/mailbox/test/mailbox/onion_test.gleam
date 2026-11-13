@@ -17,13 +17,14 @@ import gleam/result
 import gleam/string
 import mailbox.{
   ExplicitGrantEndpoint, Grant, GrantFile, GrantTokenAndFile, GrantTokenOnly,
-  Serve, Status, StatusHuman, StatusJson, TorHosting, TorOptions,
-  TorStateEndpoint,
+  KeepWatching, Serve, Status, StatusHuman, StatusJson, StopWatching, TorHosting,
+  TorOptions, TorStateEndpoint,
 }
 import mailbox/build
 import mailbox/http
 import mailbox/node
 import mailbox/support
+import tor
 import weft/timer
 
 @external(erlang, "support_ffi", "getenv")
@@ -219,6 +220,24 @@ pub fn version_is_a_command_of_its_own_test() {
   assert mailbox.parse(["version"]) == Ok(mailbox.Version)
   assert build.describe(build.from_lookup(fn(_) { Error(Nil) }))
     == "mailbox dev (commit unknown)"
+}
+
+pub fn sidecar_restart_triggers_rehost_and_gave_up_stops_watcher_test() {
+  let called = process.new_subject()
+  let rehost = fn() {
+    process.send(called, Nil)
+    Ok(Nil)
+  }
+
+  assert mailbox.handle_sidecar_event(tor.SidecarDied(1), rehost)
+    == KeepWatching
+  assert process.receive(called, 0) == Error(Nil)
+
+  assert mailbox.handle_sidecar_event(tor.SidecarRestarted, rehost)
+    == KeepWatching
+  assert process.receive(called, 100) == Ok(Nil)
+
+  assert mailbox.handle_sidecar_event(tor.SidecarGaveUp, rehost) == StopWatching
 }
 
 pub fn status_command_parses_and_reports_aggregates_test() {

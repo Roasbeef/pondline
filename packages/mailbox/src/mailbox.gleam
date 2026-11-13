@@ -128,6 +128,15 @@ pub type StatusOutput {
   StatusJson
 }
 
+/// Whether the onion sidecar watcher keeps listening after an event.
+pub type WatcherStep {
+  /// Keep draining sidecar events.
+  KeepWatching
+
+  /// The sidecar exhausted its restart budget; stop watching.
+  StopWatching
+}
+
 /// Parsed command-line options for one subcommand.
 type Options {
   Options(values: Dict(String, String), flags: List(String))
@@ -624,16 +633,110 @@ pub fn host_onion(
     tor.start(tor.config(hosting.binary, hosting.state_dir))
     |> result.replace_error("the Tor sidecar could not start"),
   )
+
+  // Shut the sidecar down if initial hosting fails; only spawn the linked
+  // watcher once the service is live, so a failed start leaks neither process.
+  case bootstrap_and_host(started, local_port) {
+    Ok(onion) -> {
+      spawn_onion_watcher(started, local_port)
+      Ok(address.onion_host(onion.address) <> ":" <> int.to_string(onion_port))
+    }
+
+    Error(reason) -> {
+      let _ = tor.shutdown(started)
+      Error(reason)
+    }
+  }
+}
+
+/// Bootstraps `started` and launches the `mailbox` onion service.
+fn bootstrap_and_host(
+  started: tor.Tor,
+  local_port: Int,
+) -> Result(tor.OnionHost, String) {
   use Nil <- result.try(
     tor.bootstrap(started, bootstrap_timeout_ms)
     |> result.replace_error("Tor did not bootstrap"),
   )
-  use onion <- result.try(
-    tor.host_onion(started, "mailbox", local_port, host_timeout_ms)
-    |> result.replace_error("the onion service could not be created"),
-  )
+  tor.host_onion(started, "mailbox", local_port, host_timeout_ms)
+  |> result.replace_error("the onion service could not be created")
+}
 
-  Ok(address.onion_host(onion.address) <> ":" <> int.to_string(onion_port))
+/// Starts a linked subscriber before the initial bootstrap so sidecar state
+/// transitions are logged and a restarted sidecar re-hosts the onion service.
+fn spawn_onion_watcher(started: tor.Tor, local_port: Int) -> Nil {
+  let ready = process.new_subject()
+  let _ =
+    process.spawn(fn() {
+      let events = process.new_subject()
+      tor.subscribe(started, events)
+      process.send(ready, Nil)
+      watch_onion_loop(started, events, local_port)
+    })
+  let _ = process.receive(ready, 5000)
+  Nil
+}
+
+/// Receives sidecar events for the lifetime of the serving mailbox.
+fn watch_onion_loop(
+  started: tor.Tor,
+  events: process.Subject(tor.Event),
+  local_port: Int,
+) -> Nil {
+  let event = process.receive_forever(events)
+  let step =
+    handle_sidecar_event(event, fn() {
+      bootstrap_and_host(started, local_port) |> result.replace(Nil)
+    })
+
+  // Keep draining until the sidecar machine permanently exhausts its restarts.
+  case step {
+    KeepWatching -> watch_onion_loop(started, events, local_port)
+    StopWatching -> Nil
+  }
+}
+
+/// Logs one sidecar event and re-runs `rehost` when a replacement sidecar starts.
+///
+/// ## Examples
+///
+/// ```gleam
+/// mailbox.handle_sidecar_event(tor.SidecarGaveUp, fn() { Ok(Nil) })
+/// // -> mailbox.StopWatching
+/// ```
+pub fn handle_sidecar_event(
+  event: tor.Event,
+  rehost: fn() -> Result(Nil, String),
+) -> WatcherStep {
+  // Each sidecar transition logs structured fields and re-hosts after restart.
+  case event {
+    tor.ServiceStateChanged(state:, ..) -> {
+      log.info("mailbox", "onion_state", [field.tag("state", state)])
+      KeepWatching
+    }
+
+    tor.SidecarDied(status:) -> {
+      log.warning("mailbox", "sidecar_died", [field.count("status", status)])
+      KeepWatching
+    }
+
+    tor.SidecarRestarted -> {
+      log.warning("mailbox", "sidecar_restarted", [])
+
+      // A replacement sidecar starts unbootstrapped, so re-host the service.
+      case rehost() {
+        Ok(Nil) -> log.info("mailbox", "onion_rehosted", [])
+        Error(_) -> log.error("mailbox", "onion_rehost_failed", [])
+      }
+
+      KeepWatching
+    }
+
+    tor.SidecarGaveUp -> {
+      log.error("mailbox", "sidecar_gave_up", [])
+      StopWatching
+    }
+  }
 }
 
 /// Creates a grant allowing `queues` queues and stores its capability in a
