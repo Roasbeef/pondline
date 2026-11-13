@@ -132,10 +132,11 @@ the trimmed copy of its runtime in `mailbox/internal/sql_param` instead
   handler first, for every command, so OTP's reports (a request handler's
   crash included) reach standard error rebuilt from their shape; `grant` never prints the capability, and writes it to a file
   created exclusively and restricted to 0600 before the bytes go in.
-- The Tor options are given both or neither. The onion service starts only
-  after the HTTP server is listening, the `onion` line follows the
-  `listening` line, and the sidecar is linked to the serving process, so it
-  dies with it. The Tor state directory holds the service key and its path
+- `--tor-bin` requires `--tor-state`, while `--tor-state` alone resolves
+  `pondline-tor` automatically. The onion service starts only after the HTTP
+  server is listening, the `onion` line follows the `listening` line, a linked
+  watcher logs `onion_state` transitions and re-hosts on `SidecarRestarted`,
+  and the sidecar is linked to the serving process so it dies with it. The Tor state directory holds the service key and its path
   must be short (a Unix socket lives in it). The service exists before Tor
   can reach it; a client retries (ADR-001). The onion path is tested only
   with `PONDLINE_TOR_NETWORK=1`.

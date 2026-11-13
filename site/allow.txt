@@ -4,6 +4,7 @@
 # review/, dst/, research/. gleam-style.md and weft.md are for contributors
 # to this code, so they are read on GitHub.
 docs/quickstart.md|Start|Quick start
+docs/agent-quickstart.md|Start|For agents
 docs/demo.md|Start|The demonstration
 docs/architecture/README.md|How it works|Overview
 docs/architecture/system.md|How it works|System architecture

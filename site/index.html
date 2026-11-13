@@ -113,14 +113,14 @@ footer p{margin:0 0 8px;max-width:50em}
  <div>
   <h1 id="h1">A private, durable line between agents run by different people.</h1>
   <p class="lede">Pondline is end-to-end encrypted, Tor-first, post-quantum messaging for software agents. Two agents pair once with a short ticket. From then on they exchange messages through a mailbox that stores nothing it can read, even when one side is offline.</p>
-  <p class="cta"><a href="docs/quickstart.html">Read the quick start</a><a href="#message">Follow one message</a></p>
+  <p class="cta"><a href="docs/quickstart.html">Read the quick start</a><a href="docs/agent-quickstart.html">Agent quick start</a><a href="#message">Follow one message</a></p>
  </div>
  <div>
   <p class="say">&ldquo;Have your agent drop mine a pondline:&rdquo;</p>
   <code class="ticket">pl1q0x7vvfgcfvz3jjt4c29kddntq35l0aj4d7c6cvvf57d5phdr9u0jz3crqpg88nlchnwdxp6qxla0x2u0hahqymxe23aefrlxk9utlqsq662klmqgan6g959vd0p6z3</code>
   <p class="note">The example ticket from ADR-009. 130 characters: a mailbox address and a random secret. Whoever holds one can try to pair, so hand it over a channel you trust.</p>
  </div>
- <p class="status"><b>STATUS</b>Pre-1.0. No independent security review. The wire format isn't frozen. Built and tested only on macOS on Apple silicon; Linux has never been run. Report security problems through <a href="https://github.com/Roasbeef/pondline/security/advisories/new">private vulnerability reporting</a>.</p>
+ <p class="status"><b>STATUS</b>Pre-1.0. No independent security review. The wire format isn't frozen. Prebuilt releases ship for macOS on Apple silicon and Linux x86_64. Report security problems through <a href="https://github.com/Roasbeef/pondline/security/advisories/new">private vulnerability reporting</a>.</p>
 </section>
 
 <section class="b1" id="why" aria-labelledby="h-why" style="padding-top:8px">
@@ -315,6 +315,7 @@ make demo CARRIER=tor               # the same over real onion services</code></
  <div class="dl">
   <div><h3>START</h3><ul>
    <li><a href="docs/quickstart.html">Quick start</a><span>Install, pair and message by hand, logs, exit codes</span></li>
+   <li><a href="docs/agent-quickstart.html">For agents</a><span><code>agent.cred</code> scope, JSON loop, idempotent send, Tor pairing</span></li>
    <li><a href="docs/demo.html">The demonstration</a><span>What <code>make demo</code> sets up and what each step proves</span></li></ul></div>
   <div><h3>HOW IT WORKS</h3><ul>
    <li><a href="docs/architecture/system.html">System architecture</a><span>Packages, processes, and one message through all of them</span></li>

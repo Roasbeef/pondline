@@ -28,11 +28,32 @@ fn replayed(hex: String) -> List(String) {
   }
 }
 
-pub fn the_corpus_replays_exactly_and_passes_test() {
-  list.each(sim.corpus(), fn(hex) {
+fn assert_corpus_slice(offset: Int, count: Int) {
+  sim.corpus()
+  |> list.drop(offset)
+  |> list.take(count)
+  |> list.each(fn(hex) {
     let found = replayed(hex)
     assert found == []
   })
+}
+
+pub fn corpus_slice_1_replays_exactly_and_passes_test() {
+  assert_corpus_slice(0, 5)
+}
+
+pub fn corpus_slice_2_replays_exactly_and_passes_test() {
+  assert_corpus_slice(5, 5)
+}
+
+pub fn corpus_slice_3_replays_exactly_and_passes_test() {
+  assert_corpus_slice(10, 4)
+}
+
+pub fn corpus_slice_4_replays_exactly_and_passes_test() {
+  let rest = list.length(sim.corpus()) - 14
+  assert rest > 0
+  assert_corpus_slice(14, rest)
 }
 
 pub fn every_regression_seed_still_finds_its_bug_test() {

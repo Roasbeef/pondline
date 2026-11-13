@@ -121,8 +121,11 @@ admission control, and PQ schemes aren't practical or standardised
 
 None of these is unfinished work somebody forgot.
 
-- **CI.** Undecided: Ubuntu's OTP links OpenSSL 3.0 (no ML-KEM), and macOS minutes
-  cost more. Needs the owner's call before a nightly swarm or a `make check` job.
+- **Nightly DST swarm in CI.** Pull requests and `main` now run `make check` and
+  clean-OS `release-smoke` + `test-update` on both `linux-x86_64` and
+  `darwin-arm64` (`.github/workflows/ci.yml`), and `v*` tags publish both
+  bundles via `.github/workflows/release.yml`; a longer nightly DST campaign is
+  still unscheduled.
 - **Weft on Hex.** Weft 0.4.7 is on GitHub; `gleam publish` needs the owner. Until
   then the packages pin weft by git ref.
 - **Hybrid PAKE for spoken codes** (Roasbeef/pondline#1): researched, unbuilt.
@@ -131,12 +134,12 @@ None of these is unfinished work somebody forgot.
   (`docs/crypto-profile-v1.md` §10).
 - **Queue provisioning linkability.** Queues from one account link at the mailbox.
   Anonymous provisioning tokens are the likely shape if this becomes a priority.
-- **Release signing and Linux.** No signing or notarization; the Linux recipe has
-  never run.
+- **Release signing and `linux-aarch64`.** `darwin-arm64` and `linux-x86_64`
+  ship self-contained bundles on GitHub Releases (`v0.1.0`), without code
+  signing, notarization, or `linux-aarch64` yet.
 - **Known operational gaps.** `raise_budget` is relative, so retrying it after a
   lost answer doubles the grant (ADR-011); `incidents` and `attempts` rows are never
-  pruned (ADR-010); blobs have no `DeleteBlob` (ADR-009); the ticket's onion path is
-  unit-tested only; a clock that jumps back stalls retries until it catches up
+  pruned (ADR-010); blobs have no `DeleteBlob` (ADR-009); cold Tor onion rendezvous budgets on `invite` and `ticket` calls match `provisioner` (`120 s`), while automated Tor CI stays opt-in (`PONDLINE_TOR_NETWORK=1`); a clock that jumps back stalls retries until it catches up
   (ADR-008). Gleam's generated entry module prints a main-process panic outside the
   handler, guarded only by the no-panics rule (ADR-012).
 

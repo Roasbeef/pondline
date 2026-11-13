@@ -297,7 +297,7 @@ sequenceDiagram
    `store.unacked` lists, and then, if the queue is still live, long-polls
    with `wait_seconds` `limits.long_poll_seconds` and `max_envelopes`
    `limits.fetch_batch_envelopes`. Each step is a one-task relayed run with
-   a 120_000 ms deadline (`ack_deadline_ms`, `poll_deadline_ms`). A failure
+   a 240_000 ms deadline (`ack_deadline_ms`, `poll_deadline_ms`). A failure
    enters `BackingOff` with `backoff_ms` between 500 and 30_000.
 9. **Process.** `process_batch` hands each envelope to `engine.process`
    (`daemon/engine.gleam:1035`). `handle_envelope` treats an envelope as a
