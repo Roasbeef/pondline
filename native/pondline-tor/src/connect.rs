@@ -198,6 +198,7 @@ fn error_code(kind: ErrorKind) -> &'static str {
         ErrorKind::OnionServiceNotRunning | ErrorKind::OnionServiceConnectionFailed => {
             "onion-unreachable"
         }
+        ErrorKind::TorNetworkTimeout => "timeout",
         _ => "connect-failed",
     }
 }
