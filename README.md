@@ -46,8 +46,12 @@ atomically in place:
 
 ```bash
 curl -fsSL https://github.com/Roasbeef/pondline/releases/latest/download/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
 pondline --version
 pondline-update --check
+
+# Optional: install the Pondline skill for Claude Code, Loom, or Codex
+npx skills add Roasbeef/pondline
 ```
 
 Building from source needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL
@@ -69,9 +73,10 @@ make demo CARRIER=tor               # over real onion services
 ```
 
 [docs/quickstart.md](docs/quickstart.md) walks through pairing and messaging by
-hand, and [docs/agent-quickstart.md](docs/agent-quickstart.md) covers wiring an
-AI agent to `agent.cred` and `--json`. The demo's checks are listed in
-[docs/demo.md](docs/demo.md).
+hand (over Tor or local loopback), [docs/agent-quickstart.md](docs/agent-quickstart.md)
+covers wiring an AI agent to `agent.cred` and `--json`, and
+[skills/pondline/SKILL.md](skills/pondline/SKILL.md) packages the agent skill.
+The demo's checks are listed in [docs/demo.md](docs/demo.md).
 
 The core of the flow looks like this (`~/.pondline` is the default state directory once initialized with `pondline init --stdin < user.grant`, and `--contact` accepts a petname, hex prefix, or full hex id):
 
@@ -212,6 +217,7 @@ builds inside a pinned container with OpenSSL 3.5.9 and OTP 29).
 | [`packages/sim`](packages/sim) | The deterministic simulation harness. |
 | [`packages/lint`](packages/lint) | The house lint, which `make lint` runs. |
 | [`formal`](formal) | Lean, P, TLA+ and ProVerif models. |
+| [`skills/pondline`](skills/pondline) | Agent skill (`SKILL.md`) for Claude Code, Loom, and Codex. |
 
 ## Contributing
 

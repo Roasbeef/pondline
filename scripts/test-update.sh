@@ -58,6 +58,10 @@ for cmd in pondline pondline-mailbox pondline-update; do
     exit 1
   }
 done
+[ -f "$PREFIX_DIR/lib/pondline/current/share/skills/pondline/SKILL.md" ] || {
+  echo "FAIL: missing bundled agent skill in $PREFIX_DIR/lib/pondline/current/share/skills/pondline/SKILL.md" >&2
+  exit 1
+}
 
 FIRST_TREE=$(cd "$PREFIX_DIR/lib/pondline/current" && pwd -P)
 "$PREFIX_DIR/bin/pondline" --version | grep -q "^pondline $VERSION " || {
