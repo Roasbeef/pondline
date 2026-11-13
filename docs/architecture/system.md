@@ -184,7 +184,7 @@ without the scheduler, provisioner and fetch manager, so local commands
 commit and nothing touches the network.
 
 The engine reaches the workers through exactly one function. It calls
-`notify` after each commit, and `route_notice` (`daemon/node.gleam:460`)
+`notify` after each commit, and `route_notice` (`daemon/node.gleam:479`)
 maps a notice to a nudge: `Transmit` to `scheduler.nudge`, `CreateQueue` to
 `provisioner.nudge`, `Topology` to `fetch_manager.nudge`, and
 `WakeAdapter` and `Changed` to the `events` list. Every nudge is advisory,

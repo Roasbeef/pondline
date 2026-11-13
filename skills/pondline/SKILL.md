@@ -105,10 +105,10 @@ If the user has a grant file on disk, pass `--grant-file <path>` or pipe via `--
 
 ```bash
 pondline init --state-dir "$STATE_DIR" --stdin < /path/to/mailbox.grant
-pondline daemon --state-dir "$STATE_DIR" 2>>"$STATE_DIR/daemon.log" &
+pondline service install --state-dir "$STATE_DIR"
 ```
 
-Poll `pondline health --state-dir "$STATE_DIR" --json` until `"tor": "bootstrapped"` (typically 15-30 seconds on first start) before creating or accepting a ticket.
+`pondline service install` configures and starts the user `launchd` (macOS) or `systemd --user` (Linux) daemon service (`pondline daemon --state-dir "$STATE_DIR" 2>>"$STATE_DIR/daemon.log" &` also works in container environments without a service manager). `invite create` and `invite accept` wait automatically if Tor is still bootstrapping.
 
 ### 3. Pair two peers over Tor (`pl1...` ticket)
 

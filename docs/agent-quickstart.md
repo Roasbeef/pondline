@@ -75,10 +75,11 @@ sockets fit):
 # One-time setup from a 0600 grant file or stdin pipe:
 pondline init --stdin < mailbox.grant
 
-# Start the daemon (discovers bundled pondline-tor automatically):
-pondline daemon 2>>~/.pondline/daemon.log &
+# Start and supervise the user daemon (launchd on macOS, systemd --user on Linux;
+# or `pondline daemon 2>>~/.pondline/daemon.log &` in a container):
+pondline service install
 
-# Wait until Tor is bootstrapped before issuing or redeeming a ticket:
+# Inspect daemon status (`invite create` / `invite accept` also wait for Tor bootstrap automatically):
 pondline health
 # carrier=tor
 # commit=...
@@ -236,6 +237,7 @@ until the human operator raises the budget with
 | `pondline ack --message <hex>` | Yes | Mark a delivery consumed |
 | `pondline status --message <hex>` | Yes | Query outbound delivery state |
 | `pondline init ...` | Operator only | Configure `~/.pondline` from a `plg1...` grant |
+| `pondline service install / status / uninstall` | Operator only | Manage per-user `launchd` / `systemd --user` daemon unit |
 | `pondline invite create / accept` | Operator only | Issue or redeem pairing invitations and `pl1...` tickets |
 | `pondline contact approve / decline / close / budget` | Operator only | Manage relationship lifecycle and inbound message budgets |
 | `pondline audit / incidents` | Operator only | Inspect plaintext audit trail and protocol incidents |

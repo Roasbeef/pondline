@@ -446,7 +446,7 @@ Invariants:
   flag, and a stray word is refused without being repeated, so a ticket
   never reaches argv or an error; `cli_test` checks every command. The
   local API's `invite` takes `"ticket": true`; `accept` takes exactly one
-  of `invitation` and `ticket`. The CLI waits `cli.invitation_timeout_ms` (490 s) for
+  of `invitation` and `ticket`. `api.invite` and onion `api.accept_ticket` wait up to `api.bootstrap_wait_ms` (180 s) while Tor is `TorStarting`, `carrier` nudges `provisioner`, `scheduler`, and `fetch_manager` when bootstrap completes, and `pondline service install|uninstall|status` (`daemon/service`) manages per-user `launchd` and `systemd --user` daemon units. The CLI waits `cli.invitation_timeout_ms` (670 s) for
   `invite create` and a ticket accept, at least the daemon's own bound
   (`cli_test`), and refuses a ticket input that is not text locally. An
   unknown `--name=value` is named without its value.

@@ -304,7 +304,7 @@ export PATH="$HOME/.local/bin:$PATH"
 npx skills add Roasbeef/pondline    # optional agent skill (also bundled in share/skills/)
 
 pondline init --stdin               # 1. once per daemon: save your plg1... mailbox grant
-pondline daemon 2&gt;&gt;~/.pondline/daemon.log &amp;
+pondline service install            # starts launchd / systemd --user daemon
 pondline invite create --description "peer" --budget 50 --auto-approve --ticket
                                     # 2. once per contact: exchange a pl1... pairing ticket</code></pre>
  <p class="prose" style="margin:0"><a href="docs/quickstart.html">The quick start</a> walks through initial Tor pairing and local loopback testing step by step, and <a href="docs/agent-quickstart.html">the agent guide</a> covers running an agent under <code>agent.cred</code>. Building from source (<code>make install</code>, <code>make demo</code>) needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5+, and Rust.</p>
