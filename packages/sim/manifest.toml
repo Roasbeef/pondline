@@ -9,7 +9,7 @@
 packages = [
   { name = "argv", version = "1.1.0", build_tools = ["gleam"], requirements = [], otp_app = "argv", source = "hex", outer_checksum = "3277D100448BDB4A29B6D58C0F36F631CBC349E8BDD09766C6309DF202831140" },
   { name = "core", version = "0.1.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], source = "local", path = "../core" },
-  { name = "daemon", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib", "mug", "primitives", "simplifile", "sqlight", "telemetry", "tor", "weft"], source = "local", path = "../daemon" },
+  { name = "daemon", version = "0.1.1", build_tools = ["gleam"], requirements = ["argv", "core", "gleam_erlang", "gleam_json", "gleam_otp", "gleam_stdlib", "mug", "primitives", "simplifile", "sqlight", "telemetry", "tor", "weft"], source = "local", path = "../daemon" },
   { name = "esqlite", version = "0.10.0", build_tools = ["rebar3"], requirements = [], otp_app = "esqlite", source = "hex", outer_checksum = "ED19577AC6A75A7E431F84907E14A1F045850CE11D17D0386D46436773E61516" },
   { name = "exception", version = "2.1.1", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "exception", source = "hex", outer_checksum = "6BDEA95248093599391C3B5DF1835C5C6A86C353C2F99CE539B450E3432FE117" },
   { name = "filepath", version = "1.1.2", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "filepath", source = "hex", outer_checksum = "B06A9AF0BF10E51401D64B98E4B627F1D2E48C154967DA7AF4D0914780A6D40A" },
@@ -26,7 +26,7 @@ packages = [
   { name = "gramps", version = "6.0.1", build_tools = ["gleam"], requirements = ["gleam_crypto", "gleam_erlang", "gleam_http", "gleam_stdlib"], otp_app = "gramps", source = "hex", outer_checksum = "D55636072DEE173F6586A5679D3C02EC7A0DE3F8646B78C351B72908FF223DF7" },
   { name = "hpack_erl", version = "0.3.0", build_tools = ["rebar3"], requirements = [], otp_app = "hpack", source = "hex", outer_checksum = "D6137D7079169D8C485C6962DFE261AF5B9EF60FBC557344511C1E65E3D95FB0" },
   { name = "logging", version = "1.5.0", build_tools = ["gleam"], requirements = ["gleam_stdlib"], otp_app = "logging", source = "hex", outer_checksum = "BC5F18CE5DD9686100229FE5409BDC3DD5C46D5A7DF2F804AD2D8F0DD6C5060E" },
-  { name = "mailbox", version = "0.1.0", build_tools = ["gleam"], requirements = ["argv", "core", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "mist", "primitives", "simplifile", "sqlight", "telemetry", "tor", "weft"], source = "local", path = "../mailbox" },
+  { name = "mailbox", version = "0.1.1", build_tools = ["gleam"], requirements = ["argv", "core", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "mist", "primitives", "simplifile", "sqlight", "telemetry", "tor", "weft"], source = "local", path = "../mailbox" },
   { name = "mist", version = "6.0.3", build_tools = ["gleam"], requirements = ["exception", "gleam_erlang", "gleam_http", "gleam_otp", "gleam_stdlib", "glisten", "gramps", "hpack_erl", "logging"], otp_app = "mist", source = "hex", outer_checksum = "1B07F321D5FA0CB162D81496F2DE96AEB6EF8980F4F38230A4CC3F849497E020" },
   { name = "mug", version = "3.1.0", build_tools = ["gleam"], requirements = ["gleam_erlang", "gleam_stdlib"], otp_app = "mug", source = "hex", outer_checksum = "C01279D98E40371DA23461774B63F0E3581B8F1396049D881B0C7EB32799D93F" },
   { name = "primitives", version = "0.1.0", build_tools = ["gleam"], requirements = ["core", "gleam_stdlib"], source = "local", path = "../primitives" },
