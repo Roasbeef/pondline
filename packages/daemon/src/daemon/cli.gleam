@@ -1253,12 +1253,12 @@ pub fn input_of(action: Action) -> Input {
 }
 
 /// How long the CLI waits for an invitation to be created or a ticket to be
-/// redeemed (130 s). `invite` waits up to `api.invite_wait_ms` for its
+/// redeemed (490 s). `invite` waits up to `api.invite_wait_ms` for its
 /// queue, and a ticket's mailbox call is retried for `api.ticket_wait_ms`
 /// with one call of up to `api.ticket_call_ms` still running at the end;
 /// giving up sooner would report a failure for an invitation that is then
 /// created, or a contact that is then accepted. `cli_test` checks the sum.
-pub const invitation_timeout_ms = 130_000
+pub const invitation_timeout_ms = 490_000
 
 /// How long to wait for the daemon's answer, in milliseconds: the wait the
 /// action asks for plus a margin.

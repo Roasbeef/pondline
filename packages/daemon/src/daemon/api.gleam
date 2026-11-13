@@ -91,19 +91,23 @@ import gleam/result
 import gleam/string
 import weft/poll
 
-/// How long `invite` waits for the mailbox to create the offer's queue.
-pub const invite_wait_ms = 30_000
+/// How long `invite` waits for the mailbox to create the offer's queue,
+/// matching `provisioner.create_timeout_ms` so a cold onion rendezvous does
+/// not time out in the caller while `CreateQueue` is still connecting.
+pub const invite_wait_ms = 120_000
 
 /// How often `invite` looks at the committed offer while it waits.
 pub const invite_poll_ms = 50
 
 /// How long `invite_ticket` keeps trying to store the sealed invitation,
-/// and `accept_ticket` to fetch it (ADR-009).
-pub const ticket_wait_ms = 60_000
+/// and `accept_ticket` to fetch it (ADR-009): room for two full cold onion
+/// rendezvous attempts.
+pub const ticket_wait_ms = 240_000
 
-/// The budget of one mailbox call made for a ticket, dial included. A
-/// first onion connection builds a rendezvous circuit, which takes seconds.
-pub const ticket_call_ms = 30_000
+/// The budget of one mailbox call made for a ticket, dial included. A cold
+/// v3 onion connection fetches a descriptor and builds a 6-hop rendezvous
+/// circuit, matching `provisioner.create_timeout_ms` (120 s).
+pub const ticket_call_ms = 120_000
 
 /// How long a ticket's mailbox call waits before it is tried again.
 pub const ticket_retry_ms = 1000

@@ -1,4 +1,5 @@
 import core/id
+import core/limits
 import core/offer.{AutoApprove, OperatorApproves}
 import daemon/api
 import daemon/cli.{
@@ -9,7 +10,10 @@ import daemon/cli.{
   RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents, Target,
   TicketAndFile, TicketOnly,
 }
+import daemon/fetcher
 import daemon/local_api_protocol as protocol
+import daemon/mailbox_client
+import daemon/provisioner
 import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
@@ -494,11 +498,23 @@ pub fn the_cli_outwaits_the_daemon_on_invitations_test() {
   let daemon_bound =
     api.invite_wait_ms + api.ticket_wait_ms + api.ticket_call_ms
 
+  assert api.invite_wait_ms >= provisioner.create_timeout_ms
+  assert api.ticket_call_ms >= provisioner.create_timeout_ms
+  assert api.ticket_wait_ms >= api.ticket_call_ms
   assert cli.invitation_timeout_ms >= daemon_bound
   assert cli.timeout_ms(CreateInvite("d", AutoApprove, 1, TicketOnly))
     == cli.invitation_timeout_ms
   assert cli.timeout_ms(AcceptInvite(InputStdin, FromTicket, "", None))
     == cli.invitation_timeout_ms
+
+  assert fetcher.call_timeout_ms >= provisioner.create_timeout_ms
+  assert fetcher.fetch_timeout_ms
+    >= fetcher.call_timeout_ms
+    + limits.long_poll_seconds
+    * 1000
+    + mailbox_client.long_poll_margin_ms
+  assert fetcher.ack_deadline_ms >= fetcher.call_timeout_ms
+  assert fetcher.poll_deadline_ms > fetcher.fetch_timeout_ms
 }
 
 pub fn contact_ref_resolution_and_disambiguation_test() {

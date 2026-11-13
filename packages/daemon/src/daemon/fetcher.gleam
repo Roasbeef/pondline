@@ -78,8 +78,13 @@ import weft
 import weft/state_machine as sm
 import weft/timer
 
-/// The budget for a call that is not a long poll.
-pub const call_timeout_ms = 30_000
+/// The budget for a call that is not a long poll, dial included: Tor needs
+/// minutes for a first connection to an onion service.
+pub const call_timeout_ms = 120_000
+
+/// The budget for one long-poll `Fetch`: `call_timeout_ms` for a cold onion
+/// rendezvous plus the 25-second hold and 10-second margin once connected.
+pub const fetch_timeout_ms = 155_000
 
 /// The first wait after a failed round, in milliseconds.
 pub const backoff_base_ms = 500
@@ -89,13 +94,12 @@ pub const backoff_cap_ms = 30_000
 
 /// How long the acknowledging run may take. Each acknowledgement is a call
 /// of at most `call_timeout_ms`, and a queue may owe several batches.
-pub const ack_deadline_ms = 120_000
+pub const ack_deadline_ms = 240_000
 
-/// How long the polling run may take: the long poll's own wait
-/// (`limits.long_poll_seconds`) and the client's margin for it, and a minute
-/// to hand the batch to the engine. A poll that hangs past it is abandoned
-/// and the round is retried.
-pub const poll_deadline_ms = 120_000
+/// How long the polling run may take: `fetch_timeout_ms` for a cold onion
+/// dial and long poll, plus over a minute to hand the batch to the engine. A
+/// poll that hangs past it is abandoned and the round is retried.
+pub const poll_deadline_ms = 240_000
 
 /// What a fetcher needs to run.
 pub type Config {
@@ -400,7 +404,7 @@ fn acknowledge(
   let request =
     protocol.Ack(queue: config.inbox.queue, read: config.inbox.read, envelopes:)
 
-  use answer <- result.try(call(config, request))
+  use answer <- result.try(call(config, request, call_timeout_ms))
 
   // Only `Acked` means the mailbox deleted them; anything else leaves the
   // rows unacknowledged, and the next round names them again.
@@ -429,7 +433,7 @@ fn fetch_batch(config: Config) -> Result(List(StoredEnvelope), RoundFailed) {
       max_envelopes: limits.fetch_batch_envelopes,
     )
 
-  use answer <- result.try(call(config, request))
+  use answer <- result.try(call(config, request, fetch_timeout_ms))
 
   // An empty batch is an ordinary long poll that saw nothing.
   case answer {
@@ -467,6 +471,7 @@ fn process_batch(
 fn call(
   config: Config,
   request: protocol.Request,
+  timeout_ms: Int,
 ) -> Result(protocol.Response, RoundFailed) {
   let answer =
     mailbox_client.call(
@@ -474,7 +479,7 @@ fn call(
       config.inbox.endpoint,
       mailbox_client.isolation_group(config.inbox.queue),
       request,
-      call_timeout_ms,
+      timeout_ms,
     )
 
   // Any answer, a refusal included, proves the mailbox is reachable.
