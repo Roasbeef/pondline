@@ -1,6 +1,18 @@
-# Service templates for `pondline-mailbox`
+# Service templates for `pondline` and `pondline-mailbox`
 
-These templates run `pondline-mailbox serve` as a supervised background service
+For the client daemon (`pondline daemon`), run `pondline init --stdin` once and
+then install, inspect, or remove the per-user background service directly:
+
+```bash
+pondline service install            # writes and starts launchd / systemd --user
+pondline service status
+pondline service uninstall
+```
+
+The reference client templates live in `contrib/launchd/io.pondline.daemon.plist`
+and `contrib/systemd/pondline.service`.
+
+The templates below run `pondline-mailbox serve` as a supervised background service
 over Tor. Both templates keep `--tor-state` on a short directory path because
 Arti opens a Unix domain socket (`connect.sock`) inside that directory, and
 `AF_UNIX` paths are bounded to roughly 100 bytes on macOS and 108 bytes on

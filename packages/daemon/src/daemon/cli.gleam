@@ -7,7 +7,7 @@
 ////
 //// ## Flow
 ////
-//// 1. `parse` and `parse_with_env` dispatch on the leading command words to `parse_init`, `parse_daemon`, `client`, `parse_send`, or `parse_receive`.
+//// 1. `parse` and `parse_with_env` dispatch on the leading command words to `parse_init`, `parse_daemon`, `parse_service`, `client`, `parse_send`, or `parse_receive`.
 //// 2. `read_options` scans `--name value` pairs and flags, rejecting unknown options or stray arguments through `unknown`.
 //// 3. `target` resolves the Unix socket and credential path from options and the environment.
 //// 4. `request` and `timeout_ms` turn a parsed `Action` and its input bytes into the local API call.
@@ -19,6 +19,8 @@
 ////   initializes a state directory (`~/.pondline` by default) and writes `config.json`.
 //// - `daemon [--state-dir D] [--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin]`
 ////   `[--carrier tor|loopback] [--tor-bin PATH]` runs the daemon.
+//// - `service install|uninstall|status [--state-dir D] [--json]` manages the
+////   per-user `launchd` or `systemd --user` background daemon service.
 //// - `invite create --description TEXT --budget N [--auto-approve]`
 ////   `[--out FILE] [--ticket]` (at least one of the two) and `invite accept`
 ////   `[--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]`.
@@ -95,6 +97,7 @@ commands:
        [--state-dir D] [--carrier tor|loopback] [--tor-bin PATH] [--json]
   daemon [--state-dir D] [--mailbox HOST:PORT --provision-file F | --grant-file F | --grant-stdin]
          [--carrier tor|loopback] [--tor-bin PATH]
+  service install|uninstall|status [--state-dir D] [--json]
   invite create --description TEXT --budget N [--auto-approve]
                 [--out FILE] [--ticket]
   invite accept [--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]
@@ -279,10 +282,23 @@ pub type Action {
   ShowHealth
 }
 
+/// Which operation `pondline service` performs.
+pub type ServiceOperation {
+  InstallService
+  UninstallService
+  ServiceStatus
+}
+
+/// The parsed `pondline service` command.
+pub type ServiceCommand {
+  ServiceCommand(operation: ServiceOperation, state_dir: String, output: Output)
+}
+
 /// A parsed command line.
 pub type Command {
   InitDaemon(InitCommand)
   RunDaemon(DaemonCommand)
+  ManageService(ServiceCommand)
   Client(target: Target, output: Output, action: Action)
   Help
 
@@ -342,6 +358,13 @@ pub fn parse_with_env(
     ["init", ..rest] -> parse_init(rest, env)
 
     ["daemon", ..rest] -> parse_daemon(rest, env)
+
+    ["service", "install", ..rest] -> parse_service(InstallService, rest, env)
+
+    ["service", "uninstall", ..rest] ->
+      parse_service(UninstallService, rest, env)
+
+    ["service", "status", ..rest] -> parse_service(ServiceStatus, rest, env)
 
     ["invite", "create", ..rest] ->
       client(
@@ -628,6 +651,24 @@ fn parse_daemon(
       tor_bin: option.from_result(dict.get(options.values, "--tor-bin")),
     )),
   )
+}
+
+/// Parses `service install|uninstall|status`.
+fn parse_service(
+  operation: ServiceOperation,
+  rest: List(String),
+  env: Environment,
+) -> Result(Command, String) {
+  use options <- result.try(read_options(rest, ["--state-dir"], ["--json"]))
+  use state_dir <- result.map(resolve_state_dir(options, env.default_state_dir))
+
+  // Select JSON or human output for `service`.
+  let output = case has_flag(options, "--json") {
+    True -> JsonOutput
+    False -> HumanOutput
+  }
+
+  ManageService(ServiceCommand(operation:, state_dir:, output:))
 }
 
 /// Resolves `--state-dir`, falling back to `default_state_dir` (`~/.pondline`).
@@ -1253,12 +1294,12 @@ pub fn input_of(action: Action) -> Input {
 }
 
 /// How long the CLI waits for an invitation to be created or a ticket to be
-/// redeemed (490 s). `invite` waits up to `api.invite_wait_ms` for its
-/// queue, and a ticket's mailbox call is retried for `api.ticket_wait_ms`
-/// with one call of up to `api.ticket_call_ms` still running at the end;
-/// giving up sooner would report a failure for an invitation that is then
-/// created, or a contact that is then accepted. `cli_test` checks the sum.
-pub const invitation_timeout_ms = 490_000
+/// redeemed (670 s). An onion call on a freshly started daemon may first wait
+/// up to `api.bootstrap_wait_ms` for Tor to finish bootstrapping, then up to
+/// `api.invite_wait_ms` for its queue, and a ticket's mailbox call is retried
+/// for `api.ticket_wait_ms` with one call of up to `api.ticket_call_ms` still
+/// running at the end. `cli_test` checks the sum.
+pub const invitation_timeout_ms = 670_000
 
 /// How long to wait for the daemon's answer, in milliseconds: the wait the
 /// action asks for plus a margin.

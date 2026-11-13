@@ -2,6 +2,7 @@ import core/id
 import core/limits
 import core/offer.{AutoApprove, OperatorApproves}
 import daemon/api
+import daemon/carrier as daemon_carrier
 import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, ContactEntry,
   CreateInvite, DeclineContact, Encoded, ExactContact, FromInvitation,
@@ -408,6 +409,9 @@ fn every_command() -> List(List(String)) {
     ["health"],
     ["init", "--stdin"],
     ["daemon", "--mailbox", "h:80", "--provision-file", "p"],
+    ["service", "install"],
+    ["service", "uninstall"],
+    ["service", "status"],
   ]
 }
 
@@ -496,8 +500,12 @@ pub fn no_command_accepts_a_grant_token_in_argv_test() {
 /// invitation that is then created or a contact that is then accepted.
 pub fn the_cli_outwaits_the_daemon_on_invitations_test() {
   let daemon_bound =
-    api.invite_wait_ms + api.ticket_wait_ms + api.ticket_call_ms
+    api.bootstrap_wait_ms
+    + api.invite_wait_ms
+    + api.ticket_wait_ms
+    + api.ticket_call_ms
 
+  assert api.bootstrap_wait_ms >= daemon_carrier.bootstrap_timeout_ms
   assert api.invite_wait_ms >= provisioner.create_timeout_ms
   assert api.ticket_call_ms >= provisioner.create_timeout_ms
   assert api.ticket_wait_ms >= api.ticket_call_ms

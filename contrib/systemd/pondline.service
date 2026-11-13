@@ -1,0 +1,19 @@
+[Unit]
+Description=Pondline client daemon (user service)
+Documentation=https://github.com/Roasbeef/pondline
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=PONDLINE_LOG_LEVEL=info
+# `pondline service install` renders and enables this unit automatically.
+ExecStart=%h/.local/bin/pondline daemon --state-dir %h/.pondline
+Restart=on-failure
+RestartSec=5
+LimitNOFILE=65536
+NoNewPrivileges=yes
+UMask=0077
+
+[Install]
+WantedBy=default.target

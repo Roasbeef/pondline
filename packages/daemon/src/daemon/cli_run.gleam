@@ -38,8 +38,9 @@ import daemon/build
 import daemon/cli.{
   type Action, type Carrier, type Command, type Input, type Output, type Target,
   Client, CreateInvite, DaemonOptions, ExplicitMailbox, GrantMailbox, Help,
-  HumanOutput, InitDaemon, InputFile, InputStdin, JsonOutput, Loopback, NoInput,
-  RunDaemon, SavedMailbox, Tor, Version,
+  HumanOutput, InitDaemon, InputFile, InputStdin, InstallService, JsonOutput,
+  Loopback, ManageService, NoInput, RunDaemon, SavedMailbox, ServiceStatus, Tor,
+  UninstallService, Version,
 }
 import daemon/cli_render
 import daemon/credential
@@ -50,6 +51,7 @@ import daemon/local_api_client.{CannotConnect, ConnectionFailed, MalformedReply}
 import daemon/local_api_protocol as protocol
 import daemon/lock
 import daemon/node
+import daemon/service
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -90,6 +92,7 @@ pub fn run(command: Command) -> Outcome {
 
     InitDaemon(init_cmd) -> run_init(init_cmd)
     RunDaemon(options) -> run_daemon(options)
+    ManageService(cmd) -> run_service(cmd)
     Client(target:, output:, action:) -> run_client(target, output, action)
   }
 }
@@ -126,6 +129,49 @@ fn start_resolved_daemon(options: cli.DaemonOptions) -> Outcome {
     }
 
     Error(message) -> failure(cli.exit_unavailable, message)
+  }
+}
+
+/// Runs `pondline service install|uninstall|status`.
+fn run_service(command: cli.ServiceCommand) -> Outcome {
+  run_service_with(service.default_effects(), command)
+}
+
+/// Runs `pondline service` against injected operating-system effects.
+///
+/// ## Examples
+///
+/// ```gleam
+/// // Refuses `install` when `<state_dir>/config.json` has not been initialized.
+/// ```
+pub fn run_service_with(
+  fx: service.Effects,
+  command: cli.ServiceCommand,
+) -> Outcome {
+  // Dispatch the requested service operation, requiring a saved config on install.
+  let executed = case command.operation {
+    InstallService -> {
+      use _saved <- result.try(load_daemon_config(command.state_dir))
+      service.install(fx, command.state_dir)
+      |> result.map_error(failure(cli.exit_local, _))
+    }
+
+    UninstallService ->
+      service.uninstall(fx, command.state_dir)
+      |> result.map_error(failure(cli.exit_local, _))
+
+    ServiceStatus ->
+      service.status(fx, command.state_dir)
+      |> result.map_error(failure(cli.exit_local, _))
+  }
+
+  // Render human key=value lines or a JSON envelope.
+  case executed, command.output {
+    Error(outcome), _ -> outcome
+    Ok(report), HumanOutput ->
+      Outcome(cli.exit_ok, <<service.format_human(report):utf8>>, "")
+    Ok(report), JsonOutput ->
+      Outcome(cli.exit_ok, <<service.format_json(report):utf8>>, "")
   }
 }
 
