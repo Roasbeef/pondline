@@ -520,3 +520,24 @@ pub fn a_sidecar_that_is_given_up_on_makes_the_carrier_unavailable_test() {
     support.when(tor_of(cell) == status.TorUnavailable)
   })
 }
+
+pub fn bootstrap_completion_invokes_on_bootstrapped_on_start_and_restart_test() {
+  let cell = status_cell(status.TorStarting)
+  let calls = process.new_subject()
+  let nudges = process.new_subject()
+  let handoff = process.new_subject()
+  let assert Ok(_) =
+    carrier.start_with_bootstrap_hook(
+      process.new_name("workers_test_carrier_hook"),
+      cell,
+      fn() { process.send(nudges, Nil) },
+      scripted([Succeeds, Succeeds], calls),
+      60_000,
+      process.send(handoff, _),
+    )
+  let assert Ok(events) = process.receive(handoff, 1000)
+
+  await_dials(nudges, 1, 5000)
+  process.send(events, tor.SidecarRestarted)
+  await_dials(nudges, 1, 5000)
+}

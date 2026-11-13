@@ -294,6 +294,24 @@ fn launch(
   let dialer = network_dialer(config, names)
   let notices = notice_routes(config, names)
 
+  // When Tor finishes bootstrapping, wake the network workers so any offer,
+  // outbox row or inbox committed during startup dials immediately instead of
+  // waiting out an earlier failure backoff.
+  let on_bootstrapped = case network {
+    Offline -> fn() { Nil }
+    Online -> {
+      let prov = address(config, names.provisioner, "carrier", "provisioner")
+      let sched = address(config, names.scheduler, "carrier", "scheduler")
+      let fetch =
+        address(config, names.fetch_manager, "carrier", "fetch_manager")
+      fn() {
+        provisioner.nudge(prov)
+        scheduler.nudge(sched)
+        fetch_manager.nudge(fetch)
+      }
+    }
+  }
+
   let base =
     static_supervisor.new(static_supervisor.RestForOne)
     |> static_supervisor.add(lock.supervised(directory <> "/" <> lock_file))
@@ -302,6 +320,7 @@ fn launch(
     |> static_supervisor.add(carrier.supervised(
       names.carrier,
       address(config, names.status, "carrier", "status"),
+      on_bootstrapped,
       config.tor,
       directory,
       config.timer,

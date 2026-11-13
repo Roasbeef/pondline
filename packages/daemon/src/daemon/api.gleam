@@ -91,6 +91,11 @@ import gleam/result
 import gleam/string
 import weft/poll
 
+/// How long `invite` and onion `accept_ticket` wait for a `TorStarting`
+/// carrier to reach `TorBootstrapped` before starting their mailbox wait,
+/// matching `carrier.bootstrap_timeout_ms` (180 s).
+pub const bootstrap_wait_ms = 180_000
+
 /// How long `invite` waits for the mailbox to create the offer's queue,
 /// matching `provisioner.create_timeout_ms` so a cold onion rendezvous does
 /// not time out in the caller while `CreateQueue` is still connecting.
@@ -358,6 +363,17 @@ pub fn engine_handle(daemon: Daemon) -> Handle(engine.Message) {
   daemon.engine
 }
 
+/// The status cell's handle, for tests that simulate Tor bootstrap transitions.
+///
+/// ## Examples
+///
+/// ```gleam
+/// status.read(api.status_handle(daemon))
+/// ```
+pub fn status_handle(daemon: Daemon) -> Handle(status.Message) {
+  daemon.status
+}
+
 /// Creates an invitation and returns its file bytes once the mailbox has
 /// created the queue. The file is a bearer credential: it carries the append
 /// capability of the inviter's queue.
@@ -378,12 +394,60 @@ pub fn invite(
   approval: Approval,
   budget: Int,
 ) -> Result(BitArray, ApiError) {
+  use Nil <- result.try(await_tor_for_policy(daemon))
   use invitation <- result.try(
     engine.invite(daemon.engine, description, approval, budget)
     |> result.map_error(from_failure),
   )
 
   await_file(daemon, invitation)
+}
+
+/// Waits for Tor bootstrap when the daemon's carrier policy requires Tor, so
+/// an `invite` called immediately after `pondline daemon` starts neither
+/// fails early nor burns `invite_wait_ms` while Arti is still bootstrapping.
+fn await_tor_for_policy(daemon: Daemon) -> Result(Nil, ApiError) {
+  case daemon.carrier {
+    endpoint.TorOnly -> await_tor_if_starting(daemon)
+    endpoint.TorOrLoopback -> Ok(Nil)
+  }
+}
+
+/// Waits for Tor bootstrap when a ticket names an `.onion` mailbox.
+fn await_tor_for_endpoint(
+  daemon: Daemon,
+  mailbox: Endpoint,
+) -> Result(Nil, ApiError) {
+  case mailbox {
+    endpoint.Onion(..) -> await_tor_if_starting(daemon)
+    endpoint.Loopback(..) -> Ok(Nil)
+  }
+}
+
+/// Polls the status cell while Tor is `TorStarting` up to `bootstrap_wait_ms`.
+/// `TorBootstrapped` and `TorNotUsed` return immediately on the first read;
+/// `TorUnavailable` fails fast as `Unavailable`.
+fn await_tor_if_starting(daemon: Daemon) -> Result(Nil, ApiError) {
+  let waited =
+    poll.until_on(
+      clock: daemon.poll_clock,
+      within: bootstrap_wait_ms,
+      every: poll.Fixed(invite_poll_ms),
+      attempt: fn() {
+        case status.read(daemon.status).tor {
+          status.TorBootstrapped | status.TorNotUsed -> poll.Done(Nil)
+          status.TorStarting -> poll.Retry
+          status.TorUnavailable -> poll.Fail(Unavailable)
+        }
+      },
+    )
+
+  // A spent or failed bootstrap wait leaves nothing committed.
+  case waited {
+    poll.Answered(Nil) -> Ok(Nil)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(Unavailable)
+  }
 }
 
 /// Polls the committed offer until its queue exists or the wait runs out.
@@ -565,6 +629,7 @@ pub fn accept_ticket_with_budget(
       "the carrier policy does not permit the ticket's mailbox",
     )),
   )
+  use Nil <- result.try(await_tor_for_endpoint(daemon, mailbox))
   use keys <- result.try(
     ticket.keys(daemon.suite, made) |> result.replace_error(Unavailable),
   )

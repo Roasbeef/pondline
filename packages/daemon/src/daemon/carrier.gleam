@@ -103,6 +103,7 @@ type Data {
   Data(
     held: Option(tor.Tor),
     status: Handle(status.Message),
+    on_bootstrapped: fn() -> Nil,
     self: Subject(Message),
     events: Subject(tor.Event),
     bootstrap: fn() -> Result(Nil, Nil),
@@ -128,24 +129,33 @@ pub fn start(
   state_dir: String,
   source: timer.Source,
 ) -> actor.StartResult(Subject(Message)) {
-  sm.start(builder(name, status_name, binary, state_dir, source))
+  sm.start(builder(name, status_name, fn() { Nil }, binary, state_dir, source))
 }
 
-/// The carrier as a supervised child.
+/// The carrier as a supervised child, invoking `on_bootstrapped` each time
+/// Tor reaches `Bootstrapped` so network workers retry queued work at once.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// carrier.supervised(name, status, None, dir, timer.WallClock)
+/// carrier.supervised(name, status, fn() { Nil }, None, dir, timer.WallClock)
 /// ```
 pub fn supervised(
   name: Name(Message),
   status_name: Handle(status.Message),
+  on_bootstrapped: fn() -> Nil,
   binary: Option(String),
   state_dir: String,
   source: timer.Source,
 ) -> supervision.ChildSpecification(Subject(Message)) {
-  sm.supervised(builder(name, status_name, binary, state_dir, source))
+  sm.supervised(builder(
+    name,
+    status_name,
+    on_bootstrapped,
+    binary,
+    state_dir,
+    source,
+  ))
 }
 
 /// Starts a carrier that bootstraps with `bootstrap` instead of a sidecar,
@@ -175,6 +185,38 @@ pub fn start_with_bootstrap(
   deadline_ms: Int,
   subscribe: fn(Subject(tor.Event)) -> Nil,
 ) -> actor.StartResult(Subject(Message)) {
+  start_with_bootstrap_hook(
+    name,
+    status_name,
+    fn() { Nil },
+    bootstrap,
+    deadline_ms,
+    subscribe,
+  )
+}
+
+/// `start_with_bootstrap` with an explicit `on_bootstrapped` hook for tests.
+///
+/// ## Examples
+///
+/// ```gleam
+/// carrier.start_with_bootstrap_hook(
+///   name,
+///   status_name,
+///   fn() { Nil },
+///   fn() { Ok(Nil) },
+///   1000,
+///   fn(_) { Nil },
+/// )
+/// ```
+pub fn start_with_bootstrap_hook(
+  name: Name(Message),
+  status_name: Handle(status.Message),
+  on_bootstrapped: fn() -> Nil,
+  bootstrap: fn() -> Result(Nil, Nil),
+  deadline_ms: Int,
+  subscribe: fn(Subject(tor.Event)) -> Nil,
+) -> actor.StartResult(Subject(Message)) {
   sm.new_with_initialiser(5000, fn(subject) {
     status.set_tor(status_name, status.TorStarting)
 
@@ -185,6 +227,7 @@ pub fn start_with_bootstrap(
       begin(Data(
         held: None,
         status: status_name,
+        on_bootstrapped:,
         self: subject,
         events:,
         bootstrap:,
@@ -203,12 +246,13 @@ pub fn start_with_bootstrap(
 fn builder(
   name: Name(Message),
   status_name: Handle(status.Message),
+  on_bootstrapped: fn() -> Nil,
   binary: Option(String),
   state_dir: String,
   source: timer.Source,
 ) -> sm.Builder(State, Data, Message, Subject(Message)) {
   sm.new_with_initialiser(60_000, fn(subject) {
-    launch(subject, status_name, binary, state_dir, source)
+    launch(subject, status_name, on_bootstrapped, binary, state_dir, source)
   })
   |> sm.on_event(handle)
   |> sm.named(name)
@@ -219,6 +263,7 @@ fn builder(
 fn launch(
   subject: Subject(Message),
   status_name: Handle(status.Message),
+  on_bootstrapped: fn() -> Nil,
   binary: Option(String),
   state_dir: String,
   source: timer.Source,
@@ -235,6 +280,7 @@ fn launch(
         Data(
           held: None,
           status: status_name,
+          on_bootstrapped:,
           self: subject,
           events: process.new_subject(),
           bootstrap: fn() { Error(Nil) },
@@ -264,6 +310,7 @@ fn launch(
         begin(Data(
           held: Some(started),
           status: status_name,
+          on_bootstrapped:,
           self: subject,
           events:,
           bootstrap: fn() {
@@ -389,6 +436,7 @@ fn settled(
 /// The bootstrap completed: report it and settle.
 fn succeed(data: Data) -> sm.Next(State, Data, Message) {
   status.set_tor(data.status, status.TorBootstrapped)
+  data.on_bootstrapped()
 
   sm.transition(to: Bootstrapped, data:)
 }
