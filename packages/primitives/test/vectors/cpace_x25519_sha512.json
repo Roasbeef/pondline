@@ -1,0 +1,136 @@
+{
+ "source": "draft-irtf-cfrg-cpace-21, Appendix B.1 (CPACE-X25519-SHA512): B.1.1 to B.1.5 as one run (tcId 1), B.1.10 low-order points (tcId 2 to 13). Extracted by script from the draft text; do not edit by hand.",
+ "tests": [
+  {
+   "tcId": 1,
+   "kind": "run",
+   "source": "B.1.1-B.1.5",
+   "prs": "50617373776f7264",
+   "ci": "0b415f696e69746961746f720b425f726573706f6e646572",
+   "sid": "7e4b4791d6a8ef019b936c79fb7f2c57",
+   "generator_string": "0843506163653235350850617373776f72646d00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000180b415f696e69746961746f720b425f726573706f6e646572107e4b4791d6a8ef019b936c79fb7f2c57",
+   "generator_hash": "03998087bdb1a2617bbe25ef5a7c18cd4f84f902328701790958755ee4aed1d3",
+   "field_element": "03998087bdb1a2617bbe25ef5a7c18cd4f84f902328701790958755ee4aed153",
+   "generator": "d04bf6d41f6a289632a2e929fa29bebd51092512a7829fdde7d314b62f05a73f",
+   "ada": "414461",
+   "ya": "21b4f4bd9e64ed355c3eb676a28ebedaf6d8f17bdc365995b319097153044080",
+   "share_a": "1d13c89278cdadd826f6d8d7f887701430f8380ddc17611cdd6dc989ce0c9f32",
+   "adb": "414462",
+   "yb": "848b0779ff415f0af4ea14df9dd1d3c29ac41d836c7808896c4eba19c51ac40a",
+   "share_b": "248cccf6d5cdc3646f0ad593f9e6cef4e69d4945f8372e623512ecea32185623",
+   "k_a": "5b067effbdc0b2a0e1d907b21ebb25cfedb96a852179a847c37e43ee71322c6b",
+   "k_b": "5b067effbdc0b2a0e1d907b21ebb25cfedb96a852179a847c37e43ee71322c6b",
+   "transcript_ir": "201d13c89278cdadd826f6d8d7f887701430f8380ddc17611cdd6dc989ce0c9f320341446120248cccf6d5cdc3646f0ad593f9e6cef4e69d4945f8372e623512ecea3218562303414462",
+   "isk_input": "0c43506163653235355f49534b107e4b4791d6a8ef019b936c79fb7f2c57205b067effbdc0b2a0e1d907b21ebb25cfedb96a852179a847c37e43ee71322c6b201d13c89278cdadd826f6d8d7f887701430f8380ddc17611cdd6dc989ce0c9f320341446120248cccf6d5cdc3646f0ad593f9e6cef4e69d4945f8372e623512ecea3218562303414462",
+   "isk": "6e19b875f7a561d6b3ca3dbb9ef42ac55de3e717881018204b8922b4d5e53bb2aa82c300bea7b65d2b671da71922ddf6472301b79bc270adfa8bf413285f2263"
+  },
+  {
+   "tcId": 2,
+   "kind": "low_order",
+   "source": "B.1.10 u0",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "0000000000000000000000000000000000000000000000000000000000000000",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 3,
+   "kind": "low_order",
+   "source": "B.1.10 u1",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "0100000000000000000000000000000000000000000000000000000000000000",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 4,
+   "kind": "low_order",
+   "source": "B.1.10 u2",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 5,
+   "kind": "low_order",
+   "source": "B.1.10 u3",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 6,
+   "kind": "low_order",
+   "source": "B.1.10 u4",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 7,
+   "kind": "low_order",
+   "source": "B.1.10 u5",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 8,
+   "kind": "low_order",
+   "source": "B.1.10 u6",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "q": "d8e2c776bbacd510d09fd9278b7edcd25fc5ae9adfba3b6e040e8d3b71b21806",
+   "abort": "no_abort"
+  },
+  {
+   "tcId": 9,
+   "kind": "low_order",
+   "source": "B.1.10 u7",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+   "q": "0000000000000000000000000000000000000000000000000000000000000000",
+   "abort": "abort"
+  },
+  {
+   "tcId": 10,
+   "kind": "low_order",
+   "source": "B.1.10 u8",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "q": "c85c655ebe8be44ba9c0ffde69f2fe10194458d137f09bbff725ce58803cdb38",
+   "abort": "no_abort"
+  },
+  {
+   "tcId": 11,
+   "kind": "low_order",
+   "source": "B.1.10 u9",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "d9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+   "q": "db64dafa9b8fdd136914e61461935fe92aa372cb056314e1231bc4ec12417456",
+   "abort": "no_abort"
+  },
+  {
+   "tcId": 12,
+   "kind": "low_order",
+   "source": "B.1.10 ua",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "cdeb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b880",
+   "q": "e062dcd5376d58297be2618c7498f55baa07d7e03184e8aada20bca28888bf7a",
+   "abort": "no_abort"
+  },
+  {
+   "tcId": 13,
+   "kind": "low_order",
+   "source": "B.1.10 ub",
+   "scalar": "af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff",
+   "u": "4c9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7",
+   "q": "993c6ad11c4c29da9a56f7691fd0ff8d732e49de6250b6c2e80003ff4629a175",
+   "abort": "no_abort"
+  }
+ ]
+}

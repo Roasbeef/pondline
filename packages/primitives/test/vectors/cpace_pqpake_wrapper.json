@@ -1,0 +1,29 @@
+{
+ "source": "draft-vos-cfrg-pqpake-03: the CPace wrapper of Appendix B under cpaceoquake-x25519-mlbuaskem1024 (Section 9.4.1, whose DST is `dst`). tcId 1 is the CPace part of Appendix E.4, with the shares taken from msg1 and msg2 less their lv_encode prefix (Appendix C.4); tcId 2 is the neutral-element msg1 of Appendix E.5.4, less its prefix. Extracted by script from the draft text; do not edit by hand.",
+ "dst": "443e3089985f0f8dddfb20cc5e8618f447bdcfe6dd39abb23911cd784c075120",
+ "tests": [
+  {
+   "tcId": 1,
+   "kind": "run",
+   "source": "E.4",
+   "prs": "70617373776f7264",
+   "sid": "5f02c05f74ddc40c6a72580fcca6c10e",
+   "client": "636c69656e74",
+   "server": "736572766572",
+   "public_context": "000000105f02c05f74ddc40c6a72580fcca6c10e00000006636c69656e7400000006736572766572",
+   "secret_context": "",
+   "ya": "1e2c3bbc8e3792c29232575e35cc4d80393fb8c42bd3987f4cb43c36b21021c0",
+   "yb": "1babee87af38b812ab8e4dd164b09624e38ee28b250755061e2d9d4d494d43a7",
+   "share_a": "bcb5882fe0e6dd63cc591f6395c2bed43267ece198751e3a3cfb57af04f07137",
+   "share_b": "8fcefc32c6872b6fdc6294c7f1616d5e79cc06557fb1b7fba54f1a533821187b",
+   "isk": "76068b5b5bb45cd2ba4ebc558057af5d371c23a59d271de8c4ca8d589f5549e0548e84c13d9c3c9dc7f33707edfcc6dfcba16113298b0282d0c531c800e04814",
+   "transcript_hash": "56903ef8c04ffaba94a9f63b0573398ce519289408909da20580c10120dc40a3"
+  },
+  {
+   "tcId": 2,
+   "kind": "neutral",
+   "source": "E.5.4",
+   "share_a": "0000000000000000000000000000000000000000000000000000000000000000"
+  }
+ ]
+}
