@@ -225,7 +225,7 @@ behaviour that matters today, and no production code was changed.
    equals `now` (`offers_at_deadline_refused`). The scheduler
    reaches this case: it fails a row without a send only when `is_past`
    holds for the row's deadline, which is false at the deadline itself
-   (`daemon/scheduler.gleam:453`). The mailbox then refuses the one offer
+   (`daemon/scheduler.gleam:463`). The mailbox then refuses the one offer
    with `BadDeadline`, which costs one append; the retry finds the row past
    its deadline and fails it. The module doc
    of `retention.gleam` and its test (`no_offer_is_made_for_a_deadline_already_reached_test`)

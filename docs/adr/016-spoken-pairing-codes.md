@@ -263,6 +263,8 @@ The decision above is unchanged. Writing `core/rendezvous` and the
 ProVerif model of `docs/formal/crypto.md` made three things explicit that
 the record did not state. The first two are rules for the daemon, whose
 side of this change is still in progress; `core` cannot enforce them.
+(That side has since landed: `daemon/pairing` enforces both, each with a
+test.)
 
 **Each step runs on the first message at its index only.** The run's
 states are opaque and each step takes the state the previous one

@@ -624,7 +624,12 @@ draft's vectors are not reproduced, because OTP's `crypto` takes neither
 a key-generation seed nor an encapsulation seed; those tests answer
 ML-KEM's part from the vector, and separate runs use the real ML-KEM. The
 ProVerif model of the exchange is in `docs/formal/crypto.md`, "Spoken
-pairing codes". Assumed, until an outside reader says otherwise: that the
+pairing codes". The daemon's run, `daemon/pairing`, holds the two rules
+above that `core` cannot, acting only on the first message at each index
+and sealing `m4` once and resending those bytes; both are tested against a
+scripted mailbox in `packages/daemon/test/daemon/pairing_test.gleam`, and
+the whole pairing between two daemons and a real mailbox in
+`pairing_code_test.gleam`. Assumed, until an outside reader says otherwise: that the
 draft's argument carries over to a store-and-forward rendezvous, that the
 confirmation and hand-off derivations above are sound uses of the session
 key, and the timing argument. No outside cryptographer has reviewed this

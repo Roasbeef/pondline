@@ -450,10 +450,16 @@ attack when and only when the commitment check is removed.
 `formal/crypto/rendezvous.pv.in` models the exchange ADR-016 decides:
 CPaceOQUAKE (`draft-vos-cfrg-pqpake-03` section 7) between a joiner, the
 draft's client, and an inviter, its server, at a rendezvous mailbox, then
-the hand-off of a ticket under the PAKE's session key. There is no code
-for it yet, so the model follows the ADR and the draft, not an
-implementation, and it should be read against `core/rendezvous` when that
-lands. The 28 `rv_` rows run in 0 to 4 seconds each.
+the hand-off of a ticket under the PAKE's session key. The model was
+written from the ADR and the draft before the code; the code now exists,
+in `core/crypto/cpace_oquake` (the PAKE), `core/rendezvous` (the steps and
+the schedule) and `daemon/pairing` (the run at the mailbox). The code
+carries the derivations the model abstracts, the check of `confirm_J`
+before release, and the ticket minted and stored before the run. Two of its rules the model cannot represent,
+because a process here runs each step once on whatever message it
+receives: that each side acts only on the first message at each index,
+and that `m4` is sealed once and resent as the same bytes. Both are
+enforced in the daemon and tested there, not proved here. The 28 `rv_` rows run in 0 to 4 seconds each.
 
 ### What is modelled
 
@@ -728,8 +734,8 @@ repository, commit, path and the SHA-256 of the upstream file;
 `primitives` module (`primitives.gleam`), never through `crypto:`
 directly, so a vector that passes is a statement about the function the
 protocol calls, including the Erlang shim's size guards and exception
-catching (`primitives_ffi.erl:50`, `primitives_ffi.erl:66`,
-`primitives_ffi.erl:85`, `primitives_ffi.erl:106`, `primitives_ffi.erl:124`).
+catching (`primitives_ffi.erl:58`, `primitives_ffi.erl:74`,
+`primitives_ffi.erl:93`, `primitives_ffi.erl:114`, `primitives_ffi.erl:132`).
 
 Wycheproof, `C2SP/wycheproof` at `d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9`
 (`testvectors_v1/`):
@@ -886,14 +892,14 @@ would want to know them.
    that compared Ed25519 keys on their own (a directory, a pin) would
    have to revisit this.
    Evidence: 29 `acceptable` cases of `ed25519_test.json`, pinned through
-   `ed25519_verify`, `primitives_ffi.erl:66`.
+   `ed25519_verify`, `primitives_ffi.erl:74`.
 7. **X25519 accepts non-canonical public key encodings** (informational,
    pinned). RFC 7748 masks the top bit and reduces, and OpenSSL does; the
    fingerprint hashes the encoding, so two encodings of one key are two
    identities with one agreement key, which an attacker cannot use
    without the secret.
    Evidence: the `acceptable` `NonCanonicalPublic` cases of
-   `x25519_test.json`, pinned through `x25519`, `primitives_ffi.erl:50`.
+   `x25519_test.json`, pinned through `x25519`, `primitives_ffi.erl:58`.
 8. **The spec's `join_secret` is unimplemented** (documentation; see
    difference 1). Nothing to change in the code.
    Evidence: the module doc of `invitation.gleam:5`, and row `base`, where

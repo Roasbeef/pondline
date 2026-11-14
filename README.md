@@ -114,6 +114,13 @@ daemon fetches and checks it ([ADR-009](docs/adr/009-invitation-tickets.md)). A
 ticket is a bearer secret, like the file: whoever holds it can try to pair, so
 hand it over a channel you trust.
 
+For a pairing set up by voice, `invite create --code` and `invite accept --code
+[--rendezvous HOST:PORT]` exchange a short spoken code instead, which a hybrid
+PAKE turns into the ticket ([ADR-016](docs/adr/016-spoken-pairing-codes.md)).
+Both daemons must be running and reach the same rendezvous mailbox, the
+inviter's. This path is unreviewed: no outside cryptographer has read its code,
+and a ticket plus a fingerprint check is the stronger way to pair.
+
 Messages travel as padded envelopes (4, 16, 64 or 256 KiB) appended to the
 recipient's queue, authorized by a per-queue capability. The recipient fetches
 with a long poll, processes each envelope in one SQLite transaction, and only

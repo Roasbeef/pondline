@@ -315,9 +315,10 @@ the hook that hits it.
 | `Kills` | none: `kill` | one child, by registered role | The supervisor's restart; at most two per incarnation of `daemon.kills` (`sim/runner.gleam:790`), and two on the mailbox |
 | `Restore` | none: `restore_mailbox` | the mailbox's tables | Every tombstoned envelope back at its old `seq` |
 
-`seed.job_kinds` (`sim/seed.gleam:583`) lists 23 of the engine's 27 kinds: an
-`ArmEngine` never aims at `Retransmit`, `Incidents`, `IncidentCount` or
-`DrainingInboxes`.
+`seed.job_kinds` (`sim/seed.gleam:583`) lists 23 of the engine's 29 kinds: an
+`ArmEngine` never aims at `Retransmit`, `Incidents`, `IncidentCount`,
+`DrainingInboxes`, or ADR-016's `RendezvousFailures` and
+`RecordRendezvousFailure`.
 
 ## The oracle
 
@@ -356,7 +357,7 @@ a fault caused is still a stall when liveness reads it.
 
 Determinism is checked by `sim.double_run`, which runs a seed twice and compares
 snapshots: the event trace, op outcomes, sorted log lines, and a digest of each
-row of the listed tables. The list (`sim/runner.gleam:1689`) holds eight daemon
+row of the listed tables. The list (`sim/runner.gleam:1705`) holds eight daemon
 tables and four mailbox tables. `fingerprints`, `incidents`, `attempts`,
 `send_keys` and `blobs` are not in it, so a divergence only those tables show
 is not detected.
@@ -403,7 +404,7 @@ prints `157 passed, no failures`.
 
 The three misses are harness gaps, each for a different reason.
 
-- **Processed id and digest.** The arm (`engine.gleam:1049`) needs one envelope
+- **Processed id and digest.** The arm (`engine.gleam:1068`) needs one envelope
   id to arrive with different bytes after a `Processed` row exists. The only
   source is a `Corrupt` lie on a `Batch` followed by the intact copy being
   fetched again, so the mailbox must keep the envelope past a corrupted round.
@@ -413,7 +414,7 @@ The three misses are harness gaps, each for a different reason.
   anywhere defends it.
 - **Carrier.** The runner starts each daemon with `tor: None`, so the carrier is
   `Unused`, never subscribes to the sidecar and never reaches `followed`
-  (`carrier.gleam:347`). `workers_test` is what defends the fix.
+  (`carrier.gleam:394`). `workers_test` is what defends the fix.
 - **Expired payloads.** The arm (`relationship.gleam:930`) needs a message past
   its `expires_at`, and the bound in "Seeds and ops" leaves a run about 590,000
   virtual seconds short. `sim/forge` also seals with the full lifetime
@@ -601,8 +602,11 @@ Three rules follow.
 ## Known gaps
 
 - Not driven: the Tor carrier, the local API socket and CLI, mist and
-  `mailbox/http`, `node.stop`, pairing by ticket, and the sweeper's expiry of
-  envelopes.
+  `mailbox/http`, `node.stop`, pairing by ticket, pairing by spoken code
+  (ADR-016: no op opens or claims a rendezvous, the `pairing` registry
+  runs in each daemon tree but is never given a run, and the mailbox's
+  nameplate draw would read the system's randomness), and the sweeper's
+  expiry of envelopes.
 - Not reached in the measurements above: end-to-end retransmit, quarantine,
   offer and message expiry, the digest-mismatch arm.
 - An at-limit input that is refused passes (`ops.exceed`).

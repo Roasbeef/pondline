@@ -52,7 +52,8 @@ cryptographer has reviewed this code.
   `max_rendezvous_body_bytes` (2048), `max_rendezvous_messages` (4 per
   side), `max_grant_rendezvous` (4), `max_live_rendezvous` (1000),
   `max_rendezvous_failures` (3) and `rendezvous_failure_window_seconds`
-  (86 400). The last two are the daemon's, which has not landed.
+  (86 400). The last two are the daemon's: `daemon/api` refuses a code at
+  an endpoint once that many confirmations failed there inside the window.
 - `core/tlv`: a BOLT #1 TLV codec (BigSize, `parse`/`Stream`, a `use`-style
   `Decoder` with `required`/`optional`/`run`, field codecs, `Builder`).
   Canonical by construction.
@@ -315,8 +316,9 @@ derivations are sound uses of the session key, and the timing argument.
   a Gleam value can be stepped twice. Each step run on a second message at
   the same index hands the peer another guess at the words, so the shell
   MUST take only the first message at each index and drop the run on any
-  `RunError`. Nothing in `core` enforces this; the daemon side that will
-  is in progress.
+  `RunError`. Nothing in `core` enforces this; `daemon/pairing` does, and
+  `packages/daemon/test/daemon/pairing_test.gleam` checks it against a
+  mailbox that serves two messages at one index.
 - `m4` is sealed once. The hand-off key and nonce are fixed by the
   session key, so `inviter_release` is the only sealing path, it seals
   only after `confirm_J` matched in constant time, and the caller keeps

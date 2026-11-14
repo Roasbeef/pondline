@@ -73,7 +73,8 @@ this before changing any of them.
   `sql/NNN_<name>.sql`, one per schema version, which
   `dev/embed_schema.gleam` embeds in `daemon/schema` (`version`,
   `migrations`); the statements are named queries in `src/daemon/sql/*.sql`
-  (`state`, `outbox`, `inbound`, `agent`, `meta`, `incident`, `send_key`),
+  (`state`, `outbox`, `inbound`, `agent`, `meta`, `incident`, `send_key`,
+  `rendezvous`),
   which parrot generates into `daemon/sql`. The store's `query`, `write` and `bind` bridge binds the
   generated parameters as sqlight values; only the pragmas, the transaction
   statements and the migration runner are hand-written. After editing any
@@ -104,7 +105,16 @@ this before changing any of them.
   `contact_by_invitation`) and `send_keys(contact, key, message_id,
   digest, expires_at)`, written by the `KeyedSend` commit and pruned as each
   key is stored (`send_by_key`). `draining_inboxes` lists retired inboxes
-  whose processed rows are not all acknowledged.
+  whose processed rows are not all acknowledged. Schema 6 (ADR-016,
+  `sql/006_rendezvous_failures.sql`) adds `rendezvous_failures(seq,
+  endpoint, at)` with an index on `(endpoint, at)`: one row per failed
+  spoken-code confirmation, keyed by the rendezvous endpoint's text as
+  `endpoint.to_string` spells it, and never a code, a word or a message.
+  `rendezvous_failures(store, endpoint, now)` counts the rows with `at`
+  inside `limits.rendezvous_failure_window_seconds` before `now`;
+  `record_rendezvous_failure(store, endpoint, now)` deletes every row past
+  the window and inserts the new one in one transaction. It is the only
+  rendezvous state the daemon stores.
 - `daemon/engine`: the single writer. One `weft/actor` holds the connection and
   runs each operation as a job: load state, run the pure transition with the
   real `Suite` and injected clock, commit, then call `notify`. It never touches
@@ -122,6 +132,12 @@ this before changing any of them.
   `send` takes an optional idempotency key (`KeyedSend`; ADR-011).
   `retransmit` (job `Retransmit`, label `retransmit`) commits a copy of each
   stored row whose receipt window passed, or ends its schedule.
+  `rendezvous_failures(name, endpoint)` and
+  `record_rendezvous_failure(name, endpoint)` (jobs `RendezvousFailures`
+  and `RecordRendezvousFailure`, labels `rendezvous_failures` and
+  `record_rendezvous_failure`) run the store's two failure-count calls at
+  the engine's clock; the pairing code reaches the count only through
+  them.
   The store opens in the initialiser, not a `continuing` message, so a
   database that cannot open fails the start; it traps exits and `on_shutdown`
   closes the store.
@@ -174,14 +190,20 @@ this before changing any of them.
   state with a sidecar, `SidecarGaveUp` settles `Unavailable`. The
   onion `Dialer` asks it for the handle on every dial.
 - `daemon/node`: the `rest_for_one` tree (`lock`, `status`, `events`,
-  `carrier`, `engine`, `scheduler`, `provisioner`, `fetch_manager`), the
-  directory preparation and `route_notice`, the only engine-to-worker wiring.
-  `start_offline` omits the three network workers. `stop` kills the tree and
-  waits for the lock with `weft/poll`.
+  `carrier`, `engine`, `scheduler`, `provisioner`, `fetch_manager`,
+  `pairing`), the directory preparation and `route_notice`, the only
+  engine-to-worker wiring. `start_offline` omits the three network workers
+  and keeps `pairing`, whose code calls then fail at the mailbox.
+  `pairing` is last, so its restart touches nothing else, but a crash of
+  any child before it restarts it too. `launch` builds the `api.Rendezvous`
+  from the configured mailbox endpoint, the provisioning capability and
+  the engine's wall clock. `stop` kills the tree and waits for the lock
+  with `weft/poll`.
 - `daemon/api`: the contract the local API codes against (`invite`, `accept`,
   `contacts`, `approve`, `decline`, `close`, `raise_budget`, `send`,
   `send_with_key`, `receive`, `acknowledge`, `status`, `audit`, `incidents`,
-  `subscribe`, `health`; health counts incidents). `invite` waits for
+  `subscribe`, `health`, and ADR-016's `invite_code`, `await_code` and
+  `accept_code`; health counts incidents). `invite` waits for
   its queue with `weft/poll` (a durable row landing, probed every
   `invite_poll_ms` for at most `invite_wait_ms`). `invite_ticket` and
   `accept_ticket` (ADR-009) are the only calls that reach a mailbox
@@ -193,7 +215,73 @@ this before changing any of them.
   then commitment), checks the invitation names the ticket's mailbox, and
   then calls `accept`. Each call is retried with `weft/poll` for at most
   `ticket_wait_ms` on the poll clock; neither writes durable state of its
-  own.
+  own. The spoken-code calls (ADR-016) reach a mailbox from the caller's
+  process too. `invite_code(daemon, description, approval, budget) ->
+  CodeInvite(run, code, expires_at)` checks the failure count at the
+  daemon's own mailbox (refused past the cap, before anything is minted),
+  runs `invite_ticket` whole, so the ticket's blob is `BlobStored` before
+  a slot exists, draws a fresh `Id(Rendezvous)` and two capabilities,
+  opens the slot (`open_slot`, `OpenRendezvous` with
+  `limits.rendezvous_seconds` under `Rendezvous.provision`), builds the
+  code from the nameplate the mailbox drew, and hands
+  `pairing.run_inviter` to the registry with a deadline of the slot's
+  lifetime plus `pairing.run_slack_ms`; every failure after the open
+  closes the slot first (`or_close_slot`). The code is a `Secret`.
+  `await_code(daemon, run)` waits up to `code_wait_ms` (700 s) for the
+  registry's answer: `Paired(contact: None)` or the ending, `NotFound` for
+  a run the registry does not know (never started here, a restart since,
+  or kept past `pairing.keep_ms`), `Unavailable` for no answer.
+  `accept_code(daemon, code, rendezvous, description, budget)` decodes the
+  code strictly (an error names a word's position, never a word), parses
+  `rendezvous` (`HOST:PORT`, else the daemon's own mailbox) and admits it
+  under the carrier policy, waits for Tor as a ticket does, checks the
+  count at that endpoint, claims the slot (`claim_slot`; a refused claim
+  is a plain `Refused` and counts nothing), runs `pairing.run_joiner` in
+  the caller's process, and redeems the delivered ticket with
+  `accept_ticket_with_budget`, answering `Paired(contact: Some(_))`.
+  `PairingOutcome` is `Paired(contact)`, `NeverClaimed`, `Stalled` or
+  `ConfirmationFailed`. Opens and claims are retried as a ticket's calls
+  are (`rendezvous_call`: `ticket_wait_ms`, `ticket_retry_ms`,
+  `ticket_call_ms`). A run's lifetime is the remainder of the slot by the
+  mailbox's `expires_at` read against `Rendezvous.clock`, used only when it
+  lies between 1 s and the cap (600 s inviting, 120 s joining) and the cap
+  otherwise, since the two clocks may disagree. `Rendezvous(mailbox,
+  provision, clock)` is what `node` passes in for these calls.
+- `daemon/pairing` (ADR-016): the two run drivers and the registry that
+  owns an inviter's run. A `Link(call, clock)` is one rendezvous call
+  with a budget and the poll clock every wait uses; `api` builds it over
+  the daemon's dialer, one onion circuit group per run, and a test over a
+  fake mailbox. A `Slot(rendezvous, read, append)` is one side's hold on
+  the slot and is never logged. `run_inviter(suite, link, slot, waiting,
+  lifetime_ms, record_failure)` waits for `m1`, sends `m2`, waits for `m3`,
+  calls `rendezvous.inviter_release` once and sends `m4`, then lingers
+  until the joiner closes or the slot ends so its own close cannot delete
+  `m4` unread; `run_joiner(suite, link, slot, code, lifetime_ms,
+  record_failure)` sends `m1`, waits for `m2`, sends `m3`, waits for `m4`
+  and returns the ticket text. Both close the slot on every path
+  (`close`, retried for `close_ms`, best effort) and end `Ok` or with an
+  `Ending`: `NeverClaimed` (the inviter's slot gone or timed out before
+  `m1`), `Stalled` (stopped or interfered with before a verdict; a
+  malformed message or a low-order share is interference) or
+  `ConfirmationFailed`. Each side numbers its own messages 0 and 1
+  (`first_index`, `second_index`). Every wait is `weft/poll` on the link's
+  clock against the run's deadline, and each long poll asks the mailbox
+  to hold it no longer than what remains. Constants: `call_ms` (60 s),
+  `retry_ms` (250 ms), `close_ms` (30 s), `run_slack_ms` (95 s), `keep_ms`
+  (600 s). `describe_code_error` words a `pairing_code.CodeError` by
+  position. The registry is a supervised `weft/actor` named
+  `daemon_pairing`, the last child of the node's tree. `begin` hands it a
+  run, which it starts as a relayed one-task `weft` run with a `deadline`
+  on the configured timer source; `await` answers `Unknown` or
+  `Ended(result)`, at once for a finished run or when it ends. Every run
+  has its own subject and the selector is rebuilt from the table after
+  each message, as the scheduler does. A run that crashes, is abandoned at
+  its deadline or never reports ends `Stalled`, uncounted, and its slot is
+  closed by its `abandon` function in a one-task cleanup run of its own
+  (deadline `close_ms + call_ms`), so the registry never waits on the
+  network. A finished outcome is kept `keep_ms` and pruned on the next
+  `Begin`. The relay is linked to the registry, so a registry restart
+  takes its runs with it; their slots are left to the mailbox's expiry.
 - `daemon/lock`: the exclusive SQLite lock held by a trapping `weft/actor`
   whose `on_shutdown` closes the connection. `daemon/status` (the Tor and
   mailbox cell) and `daemon/events` (the subscriber list) are plain
@@ -215,6 +303,18 @@ Traffic: the engine tells the shell through `notify` after each commit
 change to the fetch manager, `WakeAdapter` and relationship changes to the
 event registry). Every nudge is advisory, since each worker also scans on a
 timer. Workers read committed rows back through the engine.
+
+The pairing registry's mailbox is `pairing.Message`, opaque: `Begin(run,
+work, within, abandon, reply_with: Subject(Nil))` from `api.invite_code`
+through a `mail.Handle` (`from` `api`, `to` `pairing`, labels `begin` and
+`await`), answered once the run has started; `Await(run, reply_with:
+Subject(Watch))` from `api.await_code`, answered with `Unknown` or
+`Ended(Result(Nil, Ending))`; `Settled(key, pulled: weft.Pulled(Nil,
+Ending))`, mapped from each run's own relay subject; and `Cleaned`, mapped
+from the shared cleanup subject and ignored. A run calls the engine only
+through the `record_failure` function `api` gives it
+(`engine.record_rendezvous_failure`). The joiner's run has no process of
+its own: it runs inside the local API connection that asked for it.
 
 Invariants:
 
@@ -321,13 +421,83 @@ Invariants:
   answering with another ticket's invitation refused; an expired ticket,
   a ticket for nothing and a mistyped one refused cleanly; a loopback
   ticket refused under `TorOnly` before any connection.
+- Pairing by spoken code (ADR-016) is tested two ways:
+  `test/daemon/pairing_test.gleam` drives `daemon/pairing` against a
+  scripted, adversarial mailbox on a fake clock, and
+  `test/daemon/pairing_code_test.gleam` runs real daemons and a real
+  mailbox over loopback (an honest pairing and a message,
+  `a_spoken_code_pairs_two_daemons_and_a_message_crosses_test`). The rules
+  it holds, each with its test:
+  - Each step runs on the first message at its index only, and any step
+    error ends the run: given a malformed message and then an honest one
+    at index 0, either side ends `Stalled`, sends nothing further, closes
+    the slot and counts nothing
+    (`an_inviter_steps_once_on_the_first_message_at_an_index_test`,
+    `a_joiner_steps_once_on_the_first_message_at_an_index_test`).
+  - `m4` is sealed once and a resend is the same bytes: a hand-off whose
+    first answer is lost is sent again byte for byte, and the suite saw
+    one AEAD seal (`a_retried_hand_off_carries_the_bytes_sealed_once_test`).
+  - The ticket and its blob exist before `m1` is read: `invite_code` runs
+    `invite_ticket`, which returns only after `BlobStored`, before it opens
+    the slot, and `rendezvous.invite` takes the ticket text, so the run's
+    state cannot exist without it. That order is held by construction; no
+    test isolates it. The refusal past the cap is checked to store no blob.
+  - A run never outlives its slot: an unclaimed inviter ends at its
+    lifetime on the link's clock and no long poll asked for more than
+    remained (`a_run_never_outlives_its_slot_test`); a run that hangs past
+    the registry's deadline is abandoned, reported `Stalled` and its slot
+    closed (`the_registry_abandons_a_run_at_its_deadline_test`).
+  - Only a confirmation failure is counted, on the side that saw it: an
+    inviter whose check fails sends no `m4` and counts one
+    (`an_inviter_whose_check_fails_counts_it_and_sends_nothing_test`); a
+    joiner whose `m3` was stored and answered by nothing, the slot empty
+    until its end or closed, counts one
+    (`a_joiner_whose_confirmation_goes_unanswered_counts_it_test`); one
+    misheard word counts once on each side
+    (`one_wrong_word_fails_and_counts_on_both_sides_test`); a slot gone
+    before `m1`, a code nobody claims and a joiner that stops after `m1`
+    count nothing (`a_slot_gone_before_the_first_message_was_never_claimed_test`,
+    `a_code_nobody_claims_ends_never_claimed_test`,
+    `a_joiner_that_stops_stalls_the_inviter_test`). A stranger who claims
+    first spends the code: the real joiner's claim is refused at no cost
+    and the inviter counts the stranger's guess
+    (`a_stranger_who_claims_first_spends_the_code_test`).
+  - The cap and its window: failures older than
+    `limits.rendezvous_failure_window_seconds` do not count and are pruned
+    by the next record; at `limits.max_rendezvous_failures` the daemon
+    refuses codes at that endpoint to invite (no blob stored) and to join,
+    while another endpoint is unaffected
+    (`failures_past_the_cap_refuse_codes_at_that_endpoint_test`;
+    `store_test.rendezvous_failures_count_inside_their_window_test` at the
+    window's last second).
+  - A daemon stopped mid-run loses the run (`await_code` is `NotFound`
+    after a restart) and its database files hold no rendezvous row and no
+    spelling of the code or its words
+    (`a_restart_mid_run_leaves_nothing_of_the_run_test`).
+  - The code reaches no log and no rendering: a whole pairing, a misheard
+    code and refusals that read a code leave no spelling of the code, its
+    words, the password or the delivered ticket in stderr or in any
+    rendered result
+    (`secrets_test.a_spoken_code_reaches_no_log_and_no_rendering_test`).
+    The one line that prints it is `invite create --code`'s answer to the
+    operator; no command takes it in argv
+    (`cli_test.no_command_accepts_a_code_in_argv_test`).
+  No mutation results are recorded for these tests.
 - Known gaps: nothing in the state directory is encrypted (permissions only);
   `invite` waits at most `api.invite_wait_ms` for the queue and a timed-out
   offer opens later unexported; a supervisor that fails to start takes its
   starter with it, so `node.start` probes the lock, the database and the Tor
   binary first; the TorOnly path with the real sidecar is behind
   `PONDLINE_TOR_NETWORK=1` and is not run by default; no queue rotation at
-  accept; no metrics.
+  accept; no metrics. For spoken codes: a registry restart, its own or one
+  caused by an earlier child's crash, loses the runs it held and leaves
+  their slots to the mailbox's expiry (at most `limits.rendezvous_seconds`),
+  and a caller waiting in `await_code` hears `NotFound` or `Unavailable`,
+  not an ending; a failure the engine fails to record goes uncounted, so
+  the cap can let one more code through; the simulation's
+  `seed.job_kinds` does not include `RendezvousFailures` or
+  `RecordRendezvousFailure`, and no simulation op opens or claims a
+  rendezvous; no outside cryptographer has reviewed the exchange.
 
 ## Simulation seams
 
@@ -342,12 +512,15 @@ written out at its default and checks each set seam reaches its boundary.
   `node.launch` into `scheduler` and `fetch_manager`
   (`actor.with_timer_source`), `fetcher`, `provisioner` and `carrier`
   (`sm.with_timer_source`), and into every weft run deadline:
-  `scheduler.send_batch`, `fetcher.start_run` and the carrier's bootstrap
-  `run` (`weft.with_timer_source`, from the sibling weft checkout).
+  `scheduler.send_batch`, `fetcher.start_run`, the carrier's bootstrap
+  `run` and the pairing registry's run and cleanup deadlines
+  (`weft.with_timer_source`, from the sibling weft checkout).
   `carrier.start_with_bootstrap` (tests only) stays on the wall clock.
 - **Poll clock** (`Config.poll_clock`, default `poll.monotonic()`): kept in
-  `api.Daemon`; `api.await_file` (invite) and `node.wait_for_lock` (stop)
-  use `poll.until_on`.
+  `api.Daemon`; `api.await_file` (invite), `node.wait_for_lock` (stop),
+  the rendezvous open and claim, and every wait of a pairing run (the
+  `pairing.Link` clock) use `poll.until_on`. The registry measures a kept
+  outcome's age on the same clock's `now`.
 - **Network** (`Config.dialer`, default `None` = `carrier.dialer`).
 - **Database** (`Config.database`, default `None` = `daemon.db` in the state
   directory, created `0600`). An override, such as a shared-cache in-memory
@@ -362,7 +535,8 @@ written out at its default and checks each set seam reaches its boundary.
   `Unavailable`.
 - **Mail interception** (`Config.interceptor`): every cross-actor `tell` and
   `ask` (`engine`, `status`, `events`, `scheduler`, `provisioner`,
-  `fetch_manager`, `carrier.GetTor`) goes through a `mail.Handle`. Without an
+  `fetch_manager`, `pairing`, `carrier.GetTor`) goes through a
+  `mail.Handle`. Without an
   interceptor it is a direct send, no extra hop. With one, the send becomes a
   `Parcel(from, to, label, deliver)` handed to the runner; `from` and `to` are
   roles (`fetcher/<queue hex>` per fetcher), `label` a fixed word (the
@@ -397,7 +571,22 @@ the operator, and the `pondline` command that speaks to it.
   acceptor (blocked in `accept`) and the connection processes (an idle read
   timeout on the socket) stay plain `spawn_unlinked`: neither is a task with a
   deadline over its total time. It serves a `Backend` record
-  (`daemon/local_api_types`), never the runtime directly.
+  (`daemon/local_api_types`), never the runtime directly. Spoken codes
+  (ADR-016) add `Backend.invite_code`, `await_code` and `accept_code` and
+  the types `CodeInvite(run, code, expires_at)` and `PairingOutcome`
+  (`Paired(contact)`, `NeverClaimed`, `Stalled`, `ConfirmationFailed`).
+  On the wire: `invite` with `"code": true` (with `"ticket"` true as well
+  it is `invalid`) answers `{"run": hex, "code": text, "expires_at":
+  unix seconds}` and nothing of the invitation; `await_code` takes
+  `{"run": hex}` and holds the connection until the run ends, up to
+  `api.code_wait_ms`; `accept` takes `"code"` (text) and an optional
+  `"rendezvous"` (`HOST:PORT`, refused without a code) in place of
+  `"invitation"` or `"ticket"`, exactly one of the three. `await_code` and
+  a code `accept` answer `{"outcome": "paired" | "never_claimed" |
+  "stalled" | "confirmation_failed", "contact": hex | null}`, the contact
+  set only when a joiner paired. The run belongs to the registry, so a
+  client that goes away between `invite` and `await_code` strands
+  nothing.
 - `daemon/local_api_backend`: the only module that maps the runtime's
   `daemon/api` onto `Backend` (`from_daemon`), and `start_node`, which turns
   the CLI's options into a runtime `Config` (`127.0.0.1:PORT` is a loopback
@@ -406,6 +595,31 @@ the operator, and the `pondline` command that speaks to it.
 - `daemon/local_api_client`: one request over the socket; used by the CLI
   and the tests.
 - `daemon/cli` (pure parse, `Environment` default `~/.pondline` / `PONDLINE_STATE_DIR`, `ContactRef` petname/prefix resolution, request building, exit codes), `cli_render` (human output), `cli_run` (`init` and persisted `<state-dir>/config.json` + `provision.cap`, `plg1` grant token materialization, runtime effects; ADR-015), and the top-level `pondline` module (`gleam run -m pondline -- <command>`). Release launchers export `PONDLINE_TOR_BIN` and `start_node` resolves `pondline-tor` automatically or fails fast under `--carrier tor`. `invite accept` takes an optional `--budget N` (`api.accept_with_budget`).
+  Spoken codes (ADR-016): `invite create --description TEXT --budget N
+  [--auto-approve] --code`, with `--code` alone (beside `--out` or
+  `--ticket` it is a usage error), and `invite accept --code [--file FILE
+  | --stdin] [--rendezvous HOST:PORT] [--description TEXT] [--budget N]`,
+  where neither source means a prompt (`Input.InputPrompt`), `--rendezvous`
+  is checked as `HOST:PORT` and goes only with `--code`, and `--ticket`
+  with `--code` is a usage error (`InviteOutput.SpokenCode`,
+  `AcceptForm.FromCode(rendezvous)`). `cli_run.run_with(command,
+  announce)` is `run` with the function that writes what must appear
+  before the command ends: `hand_out_code` prints the code alone on
+  standard output (with `waiting for the joiner to enter the code` on
+  standard error) the moment the daemon answers, then sends
+  `cli.await_code_request(run)` and reports the outcome; in JSON mode the
+  first answer is printed as a response line and the outcome's as the
+  second. A prompt writes `pairing code: ` to standard error and reads one
+  line. `prepare_input` trims a code and refuses one that does not decode,
+  locally and with exit 5, before the daemon is asked. Timeouts: the
+  first `invite create --code` call waits `cli.invitation_timeout_ms`
+  (670 s), the wait for the run `cli.code_wait_timeout_ms` (710 s), and a
+  code accept `cli.code_accept_timeout_ms` (1120 s: a bootstrap, the claim
+  retried as a ticket's call, the claimed slot's run with one call and the
+  close, and the ticket's redemption); `cli_test` checks both bounds. Only
+  `paired` exits 0; `never_claimed`, `stalled` and `confirmation_failed`
+  exit 5 with a message naming the operator's next step, different for
+  the inviter and the joiner.
 - `daemon/build`: the running build's identity (`Identity(version,
   commit)`), read from `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`,
   which the release launcher exports (`scripts/release.sh`, ADR-003
@@ -415,6 +629,12 @@ the operator, and the `pondline` command that speaks to it.
 - `daemon/internal/ffi_local_socket` and `ffi_local_system` over
   `src/daemon_local_ffi.erl`: Unix sockets, the monotonic clock, private
   files and directories, raw fd-1 stdout and stdin, executable lookup, and the environment.
+  `read_stdin_line(max)` (`file:read_line` on `/dev/stdin`, raw) is the
+  code prompt's one line, newline included, empty at end of input and
+  `too_large` past `max`; the prompt passes `limits.max_pairing_code_bytes
+  * 4`. It exists because `gleam_stdlib` and `gleam_erlang` read nothing
+  from standard input, and `read_stdin` reads to end of input, which a
+  prompt cannot wait for.
 
 Invariants:
 
@@ -422,8 +642,8 @@ Invariants:
   arguments, backend. A forbidden operation never has its arguments read and
   never reaches the backend.
 - The agent scope may do contacts, send, receive, acknowledge, status and
-  health only. Invite, accept, approve, decline, close, raise_budget, audit
-  and incidents are operator-only (`required_scope`).
+  health only. Invite, await_code, accept, approve, decline, close,
+  raise_budget, audit and incidents are operator-only (`required_scope`).
 - `send` takes an optional `idempotency_key` (CLI `--idempotency-key`),
   sent only when given; `incidents` (CLI `pondline incidents [--limit N]`)
   lists identifiers, counts and times and never a payload.
@@ -431,7 +651,12 @@ Invariants:
   argv: the CLI reads it from `--credential-file`, `PONDLINE_CREDENTIAL_FILE`
   or `<state-dir>/operator.cred`. A payload comes from `--file` or `--stdin`
   only. No option named for either exists, which `cli_test` checks for every
-  command.
+  command. A spoken code is the same: it comes from `--file`, `--stdin` or
+  the prompt, `--code` is a flag, and a code typed after it or anywhere
+  else is a stray word refused without repeating it or any of its words
+  (`cli_test.no_command_accepts_a_code_in_argv_test`); a mistyped code's
+  refusal names the word's position and never the word
+  (`cli_run_test.a_mistyped_code_is_refused_locally_test`).
 - Line framing is `recv_line` in the shim, not `{packet, line}`, because the
   built-in mode truncates a long line instead of refusing it. A line over
   `max_line_bytes` gets `too_large` and the connection closes.
@@ -446,15 +671,26 @@ Invariants:
   flag, and a stray word is refused without being repeated, so a ticket
   never reaches argv or an error; `cli_test` checks every command. The
   local API's `invite` takes `"ticket": true`; `accept` takes exactly one
-  of `invitation` and `ticket`. `api.invite` and onion `api.accept_ticket` wait up to `api.bootstrap_wait_ms` (180 s) while Tor is `TorStarting`, `carrier` nudges `provisioner`, `scheduler`, and `fetch_manager` when bootstrap completes, and `pondline service install|uninstall|status` (`daemon/service`) manages per-user `launchd` and `systemd --user` daemon units. The CLI waits `cli.invitation_timeout_ms` (670 s) for
+  of `invitation`, `ticket` and `code` (ADR-016). `api.invite` and onion `api.accept_ticket` wait up to `api.bootstrap_wait_ms` (180 s) while Tor is `TorStarting`, `carrier` nudges `provisioner`, `scheduler`, and `fetch_manager` when bootstrap completes, and `pondline service install|uninstall|status` (`daemon/service`) manages per-user `launchd` and `systemd --user` daemon units. The CLI waits `cli.invitation_timeout_ms` (670 s) for
   `invite create` and a ticket accept, at least the daemon's own bound
   (`cli_test`), and refuses a ticket input that is not text locally. An
   unknown `--name=value` is named without its value.
 - Exit codes: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden,
   4 not found, 5 refused, invalid or too large, 6 unavailable.
+- The spoken-code surface is tested at each layer:
+  `local_api_test.invite_await_and_accept_carry_a_spoken_code_test`,
+  `every_code_outcome_has_its_own_name_test` and
+  `a_code_is_one_source_and_its_refusals_do_not_repeat_it_test`;
+  `cli_test.invite_create_with_a_code_test` and
+  `invite_accept_with_a_code_test`;
+  `cli_run_test.invite_create_with_a_code_prints_it_then_waits_test`,
+  `invite_accept_with_a_code_trims_and_sends_it_test` and
+  `every_code_outcome_is_told_apart_test`.
 - Known gaps: a connection process that crashes leaves its socket open until the
   acceptor exits; a Unix socket path is limited to about 100 bytes, so a
-  long state dir fails at `listen`.
+  long state dir fails at `listen`. The code prompt does not turn off the
+  terminal's echo, so the typed code stays on the screen, and no test
+  drives the prompt.
 
 ## Deep Docs
 
@@ -462,5 +698,8 @@ Invariants:
 - `docs/adr/010-dedup-and-quarantine.md` (repeated identifiers, quarantine,
   incidents) and `docs/adr/011-idempotent-accept-and-send.md` (idempotency
   keys).
+- `docs/adr/016-spoken-pairing-codes.md` (pairing by spoken code, both
+  addenda), `docs/spec.md` §4.3, §4.4 and §9.2, and
+  `packages/core/src/core/rendezvous.gleam` (the steps the drivers run).
 - `packages/core/src/core/http1.gleam` (framing and bounds) and
   `core/mailbox/codec.gleam` (the body).

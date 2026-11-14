@@ -440,9 +440,9 @@ queue"), and a queue holding a zombie is never quiet. On the mailbox side:
   `limits.fetch_batch_envelopes` (16) live envelopes `ORDER BY seq`, so
   sixteen zombies at the head (a restored backup puts them back at their
   old positions) hide everything behind them.
-- `mailbox/service.gleam:358` (`append_to`) answers a repeat from the
+- `mailbox/service.gleam:515` (`append_to`) answers a repeat from the
   stored envelope or the tombstone, and otherwise inserts;
-  `mailbox/store.gleam:845` (`sweep`) deletes tombstones past their
+  `mailbox/store.gleam:1274` (`sweep`) deletes tombstones past their
   deadline (`DeleteStaleTombstones`).
 - The pure simulation does not show this: `core/world.gleam:1036` (`ack`)
   acknowledges every stored envelope whose processed record matches, with
@@ -462,9 +462,9 @@ path needs a sender that got no answer for about a week, and costs one
 zombie for at most `retention_slack_seconds`; it matters because it needs
 no operator action.
 
-**The fix** (ADR-010, addendum). `engine.gleam:1093` (`repeat`) answers
+**The fix** (ADR-010, addendum). `engine.gleam:1095` (`repeat`) answers
 a `Repeat` by marking the envelope's processed row unacknowledged
-(`daemon/store.gleam:1769`, `mark_unacked`; `MarkUnacked` in
+(`daemon/store.gleam:1772`, `mark_unacked`; `MarkUnacked` in
 `daemon/sql/inbound.sql`), so the next round's `ack_pending` names it and
 the mailbox deletes it and writes a fresh tombstone. The fetcher keeps its
 one rule, acknowledge exactly what the store says is committed and
