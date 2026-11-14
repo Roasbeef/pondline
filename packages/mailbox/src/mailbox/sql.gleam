@@ -2,6 +2,7 @@
 ////
 
 import gleam/dynamic/decode
+import gleam/option.{type Option}
 import mailbox/internal/sql_param as dev
 
 pub type BlobRecord {
@@ -459,4 +460,311 @@ pub fn queue_summary_decoder() -> decode.Decoder(QueueSummary) {
   use bytes_used <- decode.field(1, decode.int)
   use capacity_total <- decode.field(2, decode.int)
   decode.success(QueueSummary(queues:, bytes_used:, capacity_total:))
+}
+
+pub type RendezvousById {
+  RendezvousById(
+    rendezvous_id: BitArray,
+    nameplate: Int,
+    grant_hash: BitArray,
+    opener_read_hash: BitArray,
+    opener_append_hash: BitArray,
+    claimant_read_hash: Option(BitArray),
+    claimant_append_hash: Option(BitArray),
+    lifetime: Int,
+    expires_at: Int,
+  )
+}
+
+pub fn rendezvous_by_id(rendezvous_id rendezvous_id: BitArray, now now: Int) {
+  let sql =
+    "
+SELECT rendezvous_id, nameplate, grant_hash, opener_read_hash,
+       opener_append_hash, claimant_read_hash, claimant_append_hash,
+       lifetime, expires_at
+FROM rendezvous
+WHERE rendezvous_id = ?1
+  AND expires_at >= ?2"
+  #(
+    sql,
+    [dev.ParamBitArray(rendezvous_id), dev.ParamInt(now)],
+    rendezvous_by_id_decoder(),
+  )
+}
+
+pub fn rendezvous_by_id_decoder() -> decode.Decoder(RendezvousById) {
+  use rendezvous_id <- decode.field(0, decode.bit_array)
+  use nameplate <- decode.field(1, decode.int)
+  use grant_hash <- decode.field(2, decode.bit_array)
+  use opener_read_hash <- decode.field(3, decode.bit_array)
+  use opener_append_hash <- decode.field(4, decode.bit_array)
+  use claimant_read_hash <- decode.field(5, decode.optional(decode.bit_array))
+  use claimant_append_hash <- decode.field(6, decode.optional(decode.bit_array))
+  use lifetime <- decode.field(7, decode.int)
+  use expires_at <- decode.field(8, decode.int)
+  decode.success(RendezvousById(
+    rendezvous_id:,
+    nameplate:,
+    grant_hash:,
+    opener_read_hash:,
+    opener_append_hash:,
+    claimant_read_hash:,
+    claimant_append_hash:,
+    lifetime:,
+    expires_at:,
+  ))
+}
+
+pub type RendezvousByNameplate {
+  RendezvousByNameplate(
+    rendezvous_id: BitArray,
+    nameplate: Int,
+    grant_hash: BitArray,
+    opener_read_hash: BitArray,
+    opener_append_hash: BitArray,
+    claimant_read_hash: Option(BitArray),
+    claimant_append_hash: Option(BitArray),
+    lifetime: Int,
+    expires_at: Int,
+  )
+}
+
+pub fn rendezvous_by_nameplate(nameplate nameplate: Int, now now: Int) {
+  let sql =
+    "SELECT rendezvous_id, nameplate, grant_hash, opener_read_hash,
+       opener_append_hash, claimant_read_hash, claimant_append_hash,
+       lifetime, expires_at
+FROM rendezvous
+WHERE nameplate = ?1 AND expires_at >= ?2"
+  #(
+    sql,
+    [dev.ParamInt(nameplate), dev.ParamInt(now)],
+    rendezvous_by_nameplate_decoder(),
+  )
+}
+
+pub fn rendezvous_by_nameplate_decoder() -> decode.Decoder(
+  RendezvousByNameplate,
+) {
+  use rendezvous_id <- decode.field(0, decode.bit_array)
+  use nameplate <- decode.field(1, decode.int)
+  use grant_hash <- decode.field(2, decode.bit_array)
+  use opener_read_hash <- decode.field(3, decode.bit_array)
+  use opener_append_hash <- decode.field(4, decode.bit_array)
+  use claimant_read_hash <- decode.field(5, decode.optional(decode.bit_array))
+  use claimant_append_hash <- decode.field(6, decode.optional(decode.bit_array))
+  use lifetime <- decode.field(7, decode.int)
+  use expires_at <- decode.field(8, decode.int)
+  decode.success(RendezvousByNameplate(
+    rendezvous_id:,
+    nameplate:,
+    grant_hash:,
+    opener_read_hash:,
+    opener_append_hash:,
+    claimant_read_hash:,
+    claimant_append_hash:,
+    lifetime:,
+    expires_at:,
+  ))
+}
+
+pub type LiveRendezvous {
+  LiveRendezvous(live: Int)
+}
+
+pub fn live_rendezvous(now now: Int) {
+  let sql = "SELECT COUNT(*) AS live FROM rendezvous WHERE expires_at >= ?1"
+  #(sql, [dev.ParamInt(now)], live_rendezvous_decoder())
+}
+
+pub fn live_rendezvous_decoder() -> decode.Decoder(LiveRendezvous) {
+  use live <- decode.field(0, decode.int)
+  decode.success(LiveRendezvous(live:))
+}
+
+pub type LiveRendezvousOfGrant {
+  LiveRendezvousOfGrant(held: Int)
+}
+
+pub fn live_rendezvous_of_grant(grant_hash grant_hash: BitArray, now now: Int) {
+  let sql =
+    "SELECT COUNT(*) AS held FROM rendezvous
+WHERE grant_hash = ?1 AND expires_at >= ?2"
+  #(
+    sql,
+    [dev.ParamBitArray(grant_hash), dev.ParamInt(now)],
+    live_rendezvous_of_grant_decoder(),
+  )
+}
+
+pub fn live_rendezvous_of_grant_decoder() -> decode.Decoder(
+  LiveRendezvousOfGrant,
+) {
+  use held <- decode.field(0, decode.int)
+  decode.success(LiveRendezvousOfGrant(held:))
+}
+
+pub type NameplateTaken {
+  NameplateTaken(taken: Int)
+}
+
+pub fn nameplate_taken(nameplate nameplate: Int) {
+  let sql = "SELECT COUNT(*) AS taken FROM rendezvous WHERE nameplate = ?"
+  #(sql, [dev.ParamInt(nameplate)], nameplate_taken_decoder())
+}
+
+pub fn nameplate_taken_decoder() -> decode.Decoder(NameplateTaken) {
+  use taken <- decode.field(0, decode.int)
+  decode.success(NameplateTaken(taken:))
+}
+
+pub fn insert_rendezvous(
+  rendezvous_id rendezvous_id: BitArray,
+  nameplate nameplate: Int,
+  grant_hash grant_hash: BitArray,
+  opener_read_hash opener_read_hash: BitArray,
+  opener_append_hash opener_append_hash: BitArray,
+  lifetime lifetime: Int,
+  expires_at expires_at: Int,
+) {
+  let sql =
+    "INSERT INTO rendezvous (rendezvous_id, nameplate, grant_hash,
+                        opener_read_hash, opener_append_hash, lifetime,
+                        expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(rendezvous_id),
+    dev.ParamInt(nameplate),
+    dev.ParamBitArray(grant_hash),
+    dev.ParamBitArray(opener_read_hash),
+    dev.ParamBitArray(opener_append_hash),
+    dev.ParamInt(lifetime),
+    dev.ParamInt(expires_at),
+  ])
+}
+
+pub fn claim_rendezvous(
+  read_hash read_hash: Option(BitArray),
+  append_hash append_hash: Option(BitArray),
+  expires_at expires_at: Int,
+  rendezvous_id rendezvous_id: BitArray,
+) {
+  let sql =
+    "
+UPDATE rendezvous
+SET claimant_read_hash = ?1,
+    claimant_append_hash = ?2,
+    expires_at = ?3
+WHERE rendezvous_id = ?4
+  AND claimant_read_hash IS NULL"
+  #(sql, [
+    dev.ParamNullable(option.map(read_hash, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamNullable(option.map(append_hash, fn(v) { dev.ParamBitArray(v) })),
+    dev.ParamInt(expires_at),
+    dev.ParamBitArray(rendezvous_id),
+  ])
+}
+
+pub fn delete_rendezvous(rendezvous_id rendezvous_id: BitArray) {
+  let sql = "DELETE FROM rendezvous WHERE rendezvous_id = ?"
+  #(sql, [dev.ParamBitArray(rendezvous_id)])
+}
+
+pub type RendezvousMessageDigest {
+  RendezvousMessageDigest(digest: BitArray)
+}
+
+pub fn rendezvous_message_digest(
+  rendezvous_id rendezvous_id: BitArray,
+  side side: Int,
+  message_index message_index: Int,
+) {
+  let sql =
+    "SELECT digest FROM rendezvous_messages
+WHERE rendezvous_id = ? AND side = ? AND message_index = ?"
+  #(
+    sql,
+    [
+      dev.ParamBitArray(rendezvous_id),
+      dev.ParamInt(side),
+      dev.ParamInt(message_index),
+    ],
+    rendezvous_message_digest_decoder(),
+  )
+}
+
+pub fn rendezvous_message_digest_decoder() -> decode.Decoder(
+  RendezvousMessageDigest,
+) {
+  use digest <- decode.field(0, decode.bit_array)
+  decode.success(RendezvousMessageDigest(digest:))
+}
+
+pub fn insert_rendezvous_message(
+  rendezvous_id rendezvous_id: BitArray,
+  side side: Int,
+  message_index message_index: Int,
+  digest digest: BitArray,
+  body body: BitArray,
+) {
+  let sql =
+    "INSERT INTO rendezvous_messages (rendezvous_id, side, message_index, digest,
+                                 body)
+VALUES (?, ?, ?, ?, ?)"
+  #(sql, [
+    dev.ParamBitArray(rendezvous_id),
+    dev.ParamInt(side),
+    dev.ParamInt(message_index),
+    dev.ParamBitArray(digest),
+    dev.ParamBitArray(body),
+  ])
+}
+
+pub type RendezvousMessagesAfter {
+  RendezvousMessagesAfter(message_index: Int, body: BitArray)
+}
+
+pub fn rendezvous_messages_after(
+  rendezvous_id rendezvous_id: BitArray,
+  side side: Int,
+  after after: Int,
+) {
+  let sql =
+    "SELECT message_index, body FROM rendezvous_messages
+WHERE rendezvous_id = ?1
+  AND side = ?2
+  AND message_index > ?3
+ORDER BY message_index ASC"
+  #(
+    sql,
+    [dev.ParamBitArray(rendezvous_id), dev.ParamInt(side), dev.ParamInt(after)],
+    rendezvous_messages_after_decoder(),
+  )
+}
+
+pub fn rendezvous_messages_after_decoder() -> decode.Decoder(
+  RendezvousMessagesAfter,
+) {
+  use message_index <- decode.field(0, decode.int)
+  use body <- decode.field(1, decode.bit_array)
+  decode.success(RendezvousMessagesAfter(message_index:, body:))
+}
+
+pub type ExpiredRendezvous {
+  ExpiredRendezvous(expired: Int)
+}
+
+pub fn expired_rendezvous(now now: Int) {
+  let sql = "SELECT COUNT(*) AS expired FROM rendezvous WHERE expires_at < ?1"
+  #(sql, [dev.ParamInt(now)], expired_rendezvous_decoder())
+}
+
+pub fn expired_rendezvous_decoder() -> decode.Decoder(ExpiredRendezvous) {
+  use expired <- decode.field(0, decode.int)
+  decode.success(ExpiredRendezvous(expired:))
+}
+
+pub fn delete_expired_rendezvous(now now: Int) {
+  let sql = "DELETE FROM rendezvous WHERE expires_at < ?1"
+  #(sql, [dev.ParamInt(now)])
 }
