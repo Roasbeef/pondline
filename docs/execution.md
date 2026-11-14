@@ -200,6 +200,18 @@ agents are live and it must not write. Record the ruling in an ADR.
 Empty at the start. Add one bold sentence per incident, with what it cost
 and the fix, when a hazard costs real time.
 
+**A sub-agent's worktree may start from an older commit than the
+orchestrator's head.** Three slices of the spoken-code work began without
+the decision record and the limits their briefs named, and one wrote its
+own stand-ins before it was corrected. Create the worktree from `HEAD`
+yourself, or have the brief's first step be `git log -1`, and give
+absolute paths for anything the slice must read.
+
+**An interrupted orchestrator turn can stop every running sub-agent
+without a completion notice.** Three agents were reported as running for
+twenty-five minutes after they had stopped. Judge liveness by whether the
+worktree is still changing over an interval, not by one recent file time.
+
 ---
 
 ## 9. A wave, end to end

@@ -6,9 +6,10 @@ so nobody re-litigates them, what is deliberately left open, and how to
 verify a change. Rewrite it when you finish a body of work.
 
 It is deliberately not a history; the git log and the commit bodies carry
-how each change was reviewed. This edition was written 2026-11-02 against
-`main` after `1e770a7`. Every claim about `main` was checked against that
-tree.
+how each change was reviewed. This edition was written 2026-11-14 on
+branch `ccr-0ad8b239-6a8knz`, which adds spoken pairing codes (ADR-016) on
+top of `main` at `a1be404`. Its claims about that work were checked against
+the branch; the rest stands as the 2026-11-02 edition left it.
 
 The previous edition's three unmerged worktrees have landed, its
 `join_secret` and crypto items are closed, and its DST judging is done. Its
@@ -34,7 +35,8 @@ modelled code has changed since except line positions.
 | Tor (`packages/tor`, `native/pondline-tor`) | Arti sidecar over an Erlang port (ADR-001). |
 | Shell DST (`packages/sim`) | Real daemons and mailbox, exact replay. Judged; see item 1 below and `docs/architecture/sim.md`. |
 | Packaging | Self-contained release, install, dist, `pondline-update` and CI/release workflows (ADR-003). macOS arm64 and Linux x86_64 built and smoke-tested. |
-| Formal (`docs/formal/README.md`) | Lean, P, TLA+ (18 configurations) and ProVerif (30 rows). Mutants fail as expected in each. |
+| Formal (`docs/formal/README.md`) | Lean, P, TLA+ (18 configurations) and ProVerif (58 rows, 28 of them the spoken-code exchange). Mutants fail as expected in each. |
+| Spoken pairing codes (ADR-016) | `invite create --code` and `invite accept --code`: a six-digit nameplate and three words, the password of the CPaceOQUAKE hybrid PAKE, run over a rendezvous slot at the inviter's mailbox, handing off a ticket. On the branch, unmerged. See "Spoken pairing codes" below for what is implemented, tested and assumed. |
 | Docs | Every package has an architecture `README.md`; `docs/architecture/system.md` covers the whole. The top README and `docs/quickstart.md` are for outside readers. |
 
 ## In flight
@@ -48,6 +50,55 @@ of harness fixes and uncommitted doc edits, with its campaign logs in a session
 scratch directory. Its first recall run found 6 of 10, and its mutation labels
 contradict their own results, so read those numbers as unverified. Merge `main`
 into it before going on; item 1 below is what it is working towards.
+
+## Spoken pairing codes: implemented, tested, assumed
+
+**Implemented.** The PAKE in pure Gleam (`core/crypto/elligator2`, `cpace`,
+`kemeleon`, `bua_skem`, `oquake`, `cpace_oquake`), the code and its word
+table (`core/pairing_code`, `core/nameplate`), the run (`core/rendezvous`),
+five mailbox operations and their store (`packages/mailbox`, migration 003),
+and the daemon (`daemon/pairing`, migration 006, the local API and CLI).
+
+**Tested.** The drafts' vectors: cpace-21 B.1 with the low-order points, and
+pqpake-03 E.2 and E.4 end to end for both roles. ML-KEM's own key generation
+and encapsulation inside those vectors are pinned by overriding the suite,
+not reproduced, because OTP cannot take the seeds. Properties on fixed seeds,
+a model-based test of the mailbox slot, end-to-end pairing over a loopback
+mailbox, and one mutant per invariant family in each slice, each rerun by
+hand at merge. The ProVerif model: the code resists offline guessing unless
+X25519 and ML-KEM are both broken, and the broken variants each yield their
+attack (`docs/formal/crypto.md`).
+
+**Assumed.** That the draft's argument carries over to a store-and-forward
+rendezvous; that the confirmation and hand-off derivations are sound uses of
+the session key; that variable-time big-integer arithmetic on
+password-derived values is acceptable across Tor for a single-use code; and,
+in the model, that honest parties publishing their CPace points is no weaker
+than a Diffie-Hellman oracle, which ProVerif does not terminate on. **No
+outside cryptographer has read any of it.** The quickstart mentions the
+commands and does not recommend them.
+
+**Not run on this branch.** `make formal` in full (only the 28 new ProVerif
+rows and two old ones), `make release release-smoke`, and anything over a
+real Tor network.
+
+**Follow-ups, none started.**
+
+- An outside review of ADR-016, the key schedule and the timing argument.
+  This gates recommending the feature.
+- A P model of the slot lifecycle (claims, expiry, the first-message rule)
+  and Lean proofs for Kemeleon's round trip and the Elligator 2 map.
+- Simulation coverage: `node.Config` does not carry the nameplate
+  randomness, `seed.job_kinds` lacks the two new engine jobs, and no seed
+  opens a rendezvous.
+- Seeded ML-KEM key generation and encapsulation in the suite, which would
+  let the vectors run without the override.
+- The prompt for a code echoes what is typed and has no test. A pairing
+  registry restart loses its runs and leaves their slots to expire.
+- A claim carries no credential, so a stranger who guesses a live nameplate
+  (one chance in a thousand per try at most) spends that code.
+- Named intro endpoints by DNS (Roasbeef/pondline#9), which would also let
+  a code find a self-hosted rendezvous.
 
 ## What to do next
 
@@ -107,6 +158,10 @@ shape; the formatter must not raise** (ADR-012).
 **The invitation embeds the bundle and there is no join secret** (ADR-013).
 **The project is Pondline, on the wire as well as in the docs** (ADR-014).
 **Provisioning grants travel as `plg1` codex32 tokens, daemons persist `~/.pondline/config.json` via `pondline init`, and `pondline-tor` is auto-discovered or fails fast** (ADR-015).
+**A spoken code is the password of CPaceOQUAKE over a rendezvous slot; the
+joiner speaks first, confirmation is explicit both ways, the hand-off is a
+ticket, and three failed confirmations in a day close the path at that
+endpoint** (ADR-016 and its addenda).
 **The license is MIT, and security reports go through GitHub's private reporting**
 (`LICENSE`, `SECURITY.md`).
 **One agent per daemon, a per-pairing message budget, a plaintext audit log, HTTP
@@ -128,7 +183,9 @@ None of these is unfinished work somebody forgot.
   still unscheduled.
 - **Weft on Hex.** Weft 0.4.7 is on GitHub; `gleam publish` needs the owner. Until
   then the packages pin weft by git ref.
-- **Hybrid PAKE for spoken codes** (Roasbeef/pondline#1): researched, unbuilt.
+- **Spoken pairing codes** (Roasbeef/pondline#1): built on the branch, not
+  reviewed outside, not recommended. The follow-ups are listed above.
+- **Named intro endpoints** (Roasbeef/pondline#9): research.
 - **Initiator deniability** (Roasbeef/pondline#2): sketched for a CryptoProfileV2,
   which is also where `CT || PQSPK` goes into the HKDF info
   (`docs/crypto-profile-v1.md` §10).
@@ -174,6 +231,13 @@ Hazards that have cost real time here:
 - **After editing any `.sql`, run `make gen-sql`**; never edit a shipped migration.
 - **A worker stopped by a usage limit leaves uncommitted work.** Read the worktree's
   status before assuming a branch is what its log says.
+- **A sub-agent's worktree may be cut from the session's starting commit, not
+  the current head.** Three slices started without the ADR and the limits
+  they were briefed on. Check `git log -1` in the worktree, or create it
+  yourself from `HEAD`.
+- **Line-number citations go stale when a cited source grows.** This work
+  broke 29 of them and drifted 50 more inside the checker's five-line window.
+  Run `scripts/doc_check.sh` after every merge that touches a cited file.
 - **A formal row can pass vacuously.** `no_ct_weak_kem` passed until its events
   carried the term the attack changes. A broken variant with no attack is a finding.
 
