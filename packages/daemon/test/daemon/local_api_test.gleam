@@ -200,6 +200,13 @@ pub fn the_agent_credential_is_forbidden_on_operator_ops_test() {
     ]),
     #("audit", []),
     #("incidents", []),
+    #("invite", [
+      #("description", json.string("x")),
+      #("budget", json.int(1)),
+      #("code", json.bool(True)),
+    ]),
+    #("await_code", [#("run", json.string(id.to_hex(fixture.run())))]),
+    #("accept", [#("code", json.string(fixture.fake_code))]),
   ]
 
   list.each(operator_ops, fn(op) {
@@ -512,6 +519,129 @@ pub fn invite_and_accept_carry_a_ticket_test() {
 
   assert fixture.calls(f.fake)
     == ["invite_ticket t OperatorApproves 2", "accept_ticket pl1abc al"]
+}
+
+/// `invite` with `"code": true` answers the run, the code and the slot's
+/// expiry and nothing of the invitation; `await_code` answers the run's
+/// outcome; `accept` takes a code and an optional rendezvous in place of a
+/// file or a ticket, and answers the outcome and the contact (ADR-016).
+pub fn invite_await_and_accept_carry_a_spoken_code_test() {
+  use f <- fixture.with_server
+
+  let invited =
+    ask(f, f.operator, "invite", [
+      #("description", json.string("t")),
+      #("budget", json.int(2)),
+      #("code", json.bool(True)),
+    ])
+    |> succeeded
+  assert string_at(invited, ["code"]) == fixture.fake_code
+  assert string_at(invited, ["run"]) == id.to_hex(fixture.run())
+  assert decode.run(invited, decode.at(["expires_at"], decode.int))
+    == Ok(1_700_000_600)
+  assert decode.run(invited, decode.at(["invitation"], decode.string))
+    |> option.from_result
+    == None
+
+  let awaited =
+    ask(f, f.operator, "await_code", [
+      #("run", json.string(id.to_hex(fixture.run()))),
+    ])
+    |> succeeded
+  assert string_at(awaited, ["outcome"]) == "paired"
+  assert decode.run(
+      awaited,
+      decode.at(["contact"], decode.optional(decode.string)),
+    )
+    == Ok(None)
+
+  let accepted =
+    ask(f, f.operator, "accept", [
+      #("code", json.string(fixture.fake_code)),
+      #("rendezvous", json.string("127.0.0.1:4000")),
+      #("description", json.string("al")),
+    ])
+    |> succeeded
+  assert string_at(accepted, ["outcome"]) == "paired"
+  assert string_at(accepted, ["contact"]) == contact_hex()
+
+  let _ =
+    ask(f, f.operator, "accept", [#("code", json.string(fixture.fake_code))])
+    |> succeeded
+
+  assert fixture.calls(f.fake)
+    == [
+      "invite_code t OperatorApproves 2",
+      "await_code " <> id.to_hex(fixture.run()),
+      "accept_code " <> fixture.fake_code <> " 127.0.0.1:4000 al",
+      "accept_code " <> fixture.fake_code <> " - ",
+    ]
+}
+
+/// Each ending of a code's run is its own outcome name on the wire, so a
+/// client tells them apart without reading prose.
+pub fn every_code_outcome_has_its_own_name_test() {
+  let outcomes = [
+    #(local_api_types.NeverClaimed, "never_claimed"),
+    #(local_api_types.Stalled, "stalled"),
+    #(local_api_types.ConfirmationFailed, "confirmation_failed"),
+  ]
+
+  list.each(outcomes, fn(pair) {
+    let make = fn(fake) {
+      local_api_types.Backend(
+        ..fixture.backend(fake),
+        await_code: fn(_) { Ok(pair.0) },
+        accept_code: fn(_, _, _, _) { Ok(pair.0) },
+      )
+    }
+    use f <- fixture.with_backend(make)
+
+    let run = [#("run", json.string(id.to_hex(fixture.run())))]
+    let awaited = ask(f, f.operator, "await_code", run) |> succeeded
+    let accepted =
+      ask(f, f.operator, "accept", [#("code", json.string(fixture.fake_code))])
+      |> succeeded
+
+    assert string_at(awaited, ["outcome"]) == pair.1
+    assert string_at(accepted, ["outcome"]) == pair.1
+  })
+}
+
+/// A code is one source among the three, a ticket and a code at once are
+/// refused on both `invite` and `accept`, a rendezvous needs a code, and no
+/// refusal repeats the code.
+pub fn a_code_is_one_source_and_its_refusals_do_not_repeat_it_test() {
+  use f <- fixture.with_server
+
+  let code = json.string(fixture.fake_code)
+  let refused = [
+    ask(f, f.operator, "accept", [
+      #("ticket", json.string("pl1abc")),
+      #("code", code),
+    ]),
+    ask(f, f.operator, "accept", [
+      #("invitation", json.string("AAAA")),
+      #("code", code),
+    ]),
+    ask(f, f.operator, "accept", [
+      #("ticket", json.string("pl1abc")),
+      #("rendezvous", json.string("127.0.0.1:4000")),
+    ]),
+    ask(f, f.operator, "invite", [
+      #("description", json.string("t")),
+      #("budget", json.int(2)),
+      #("ticket", json.bool(True)),
+      #("code", json.bool(True)),
+    ]),
+    ask(f, f.operator, "await_code", [#("run", code)]),
+  ]
+
+  list.each(refused, fn(response) {
+    assert category(response) == protocol.Invalid
+    assert !string.contains(string.inspect(response), fixture.fake_code)
+  })
+  assert fixture.calls(f.fake) == []
 }
 
 /// `accept` takes exactly one of an invitation and a ticket, and its

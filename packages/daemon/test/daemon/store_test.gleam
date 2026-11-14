@@ -3,6 +3,7 @@
 
 import core/endpoint
 import core/id
+import core/limits
 import core/offer
 import core/plan.{Plan}
 import core/relationship
@@ -92,6 +93,7 @@ pub fn a_populated_first_schema_migrates_test() {
        DROP INDEX relationships_by_invitation;
        ALTER TABLE relationships DROP COLUMN invitation;
        DROP TABLE send_keys;
+       DROP TABLE rendezvous_failures;
        PRAGMA user_version=1;",
       connection,
     )
@@ -109,6 +111,34 @@ pub fn a_populated_first_schema_migrates_test() {
   let assert Ok(connection) = sqlight.open(path)
   assert outbox_rows(connection) == Ok(rows_before)
   let assert Ok(Nil) = sqlight.close(connection)
+}
+
+/// Failed spoken-code confirmations count per endpoint inside the window
+/// that ends now, and recording one prunes those that left it (ADR-016).
+pub fn rendezvous_failures_count_inside_their_window_test() {
+  let #(opened, _) = open()
+  let window = limits.rendezvous_failure_window_seconds
+  let here = "127.0.0.1:4000"
+  let there = "127.0.0.1:4001"
+  let later = Instant(at.unix_seconds + window)
+
+  let assert Ok(Nil) = store.record_rendezvous_failure(opened, here, at)
+  let assert Ok(Nil) = store.record_rendezvous_failure(opened, here, at)
+  let assert Ok(Nil) = store.record_rendezvous_failure(opened, there, at)
+
+  assert store.rendezvous_failures(opened, here, at) == Ok(2)
+  assert store.rendezvous_failures(opened, there, at) == Ok(1)
+
+  // The last second inside the window still counts; the next does not.
+  let edge = Instant(later.unix_seconds - 1)
+  assert store.rendezvous_failures(opened, here, edge) == Ok(2)
+  assert store.rendezvous_failures(opened, here, later) == Ok(0)
+
+  // A record made once the old ones left the window prunes them.
+  let assert Ok(Nil) = store.record_rendezvous_failure(opened, there, later)
+  assert store.rendezvous_failures(opened, here, at) == Ok(0)
+  assert store.rendezvous_failures(opened, there, later) == Ok(1)
+  let assert Ok(Nil) = store.close(opened)
 }
 
 fn outbox_rows(connection: sqlight.Connection) -> Result(Int, sqlight.Error) {

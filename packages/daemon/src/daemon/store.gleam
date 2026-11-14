@@ -93,6 +93,9 @@
 ////    `put_record`.
 //// 4. `due` and `record_send` are what the scheduler reads and updates after
 ////    a commit, and `unacked` and `mark_acked` what the fetchers do.
+//// 5. `rendezvous_failures` and `record_rendezvous_failure` keep the count
+////    of failed spoken-code confirmations per rendezvous endpoint (schema
+////    6, ADR-016), the one piece of rendezvous state a daemon stores.
 
 import core/crypto/suite.{type Suite}
 import core/envelope.{type Padded}
@@ -1910,6 +1913,60 @@ pub fn incident_count(store: Store) -> Result(Int, Error) {
   use rows <- result.try(query(store, sql.incident_count()))
 
   Ok(first_or(list.map(rows, fn(row) { row.total }), 0))
+}
+
+// ------------------------------------------------------------ rendezvous
+
+/// How many confirmation failures of a spoken-code pairing (ADR-016) were
+/// recorded at a rendezvous endpoint inside the window that ends at `now`,
+/// `limits.rendezvous_failure_window_seconds` long. The endpoint is its
+/// text, as `endpoint.to_string` spells it. This count, with the time of
+/// each failure, is the only rendezvous state the daemon keeps.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.rendezvous_failures(store, "127.0.0.1:4000", now)
+/// // -> Ok(0)
+/// ```
+pub fn rendezvous_failures(
+  store: Store,
+  endpoint: String,
+  now: Instant,
+) -> Result(Int, Error) {
+  let since = now.unix_seconds - limits.rendezvous_failure_window_seconds
+
+  use rows <- result.try(query(
+    store,
+    sql.rendezvous_failure_count(endpoint:, since:),
+  ))
+
+  Ok(first_or(list.map(rows, fn(row) { row.total }), 0))
+}
+
+/// Records one confirmation failure at a rendezvous endpoint, at `now`, and
+/// prunes every failure that has left the window, in one transaction. Rows
+/// that no longer count are deleted as each new one is written, so the
+/// table holds at most what the window can count plus what one failure
+/// adds.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.record_rendezvous_failure(store, "127.0.0.1:4000", now)
+/// // -> Ok(Nil)
+/// ```
+pub fn record_rendezvous_failure(
+  store: Store,
+  endpoint: String,
+  now: Instant,
+) -> Result(Nil, Error) {
+  let since = now.unix_seconds - limits.rendezvous_failure_window_seconds
+
+  use <- transaction(store)
+  use _ <- result.try(write(store, sql.prune_rendezvous_failures(since:)))
+
+  write(store, sql.insert_rendezvous_failure(endpoint:, at: now.unix_seconds))
 }
 
 // ------------------------------------------------------------------ meta

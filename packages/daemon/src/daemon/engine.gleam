@@ -244,6 +244,8 @@ pub type JobKind {
   Incidents
   IncidentCount
   DrainingInboxes
+  RendezvousFailures
+  RecordRendezvousFailure
 }
 
 /// What the fault hook makes of one job. Only a simulation sets a hook; a
@@ -1391,6 +1393,44 @@ pub fn incident_count(name: Handle(Message)) -> Result(Int, Failure) {
   })
 }
 
+/// How many spoken-code confirmations failed at a rendezvous endpoint inside
+/// `limits.rendezvous_failure_window_seconds` of the engine's clock
+/// (ADR-016). The endpoint is its text, `endpoint.to_string`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.rendezvous_failures(name, "127.0.0.1:4000")
+/// // -> Ok(0)
+/// ```
+pub fn rendezvous_failures(
+  name: Handle(Message),
+  endpoint: String,
+) -> Result(Int, Failure) {
+  run(name, RendezvousFailures, fn(state) {
+    fault(store.rendezvous_failures(state.store, endpoint, state.clock()))
+  })
+}
+
+/// Records one failed spoken-code confirmation at a rendezvous endpoint, at
+/// the engine's clock, and prunes the failures that left the window. The
+/// pairing drivers call it; nothing else about a run is stored.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.record_rendezvous_failure(name, "127.0.0.1:4000")
+/// // -> Ok(Nil)
+/// ```
+pub fn record_rendezvous_failure(
+  name: Handle(Message),
+  endpoint: String,
+) -> Result(Nil, Failure) {
+  run(name, RecordRendezvousFailure, fn(state) {
+    fault(store.record_rendezvous_failure(state.store, endpoint, state.clock()))
+  })
+}
+
 /// The inboxes to fetch from.
 ///
 /// ## Examples
@@ -1734,5 +1774,7 @@ pub fn kind_label(kind: JobKind) -> String {
     Incidents -> "incidents"
     IncidentCount -> "incident_count"
     DrainingInboxes -> "draining_inboxes"
+    RendezvousFailures -> "rendezvous_failures"
+    RecordRendezvousFailure -> "record_rendezvous_failure"
   }
 }

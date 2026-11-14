@@ -59,6 +59,72 @@ pub fn ticket(result: Dynamic) -> Result(String, String) {
   field(result, "ticket", decode.string)
 }
 
+/// What `invite create --code` got back before it waits: the run to wait
+/// for, the code to print, and the slot's expiry by the mailbox's clock.
+pub type CodeInvite {
+  CodeInvite(run: String, code: String, expires_at: Int)
+}
+
+/// How a spoken-code pairing ended, as the daemon reported it (ADR-016).
+pub type CodeOutcome {
+  /// The hand-off completed; the contact when this side joined.
+  CodePaired(contact: option.Option(String))
+
+  /// The code expired with nobody using it.
+  CodeNeverClaimed
+
+  /// The exchange stopped before any confirmation verdict.
+  CodeStalled
+
+  /// The code did not match, or the exchange was interrupted after the
+  /// joiner's confirmation.
+  CodeConfirmationFailed
+}
+
+/// The run, code and expiry of an `invite create --code` result.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_render.code_invite(result)
+/// // -> Ok(CodeInvite(run: "00..", code: "482719-cradle-noble-velvet", expires_at: 1700000600))
+/// ```
+pub fn code_invite(result: Dynamic) -> Result(CodeInvite, String) {
+  use run <- result.try(field(result, "run", decode.string))
+  use code <- result.try(field(result, "code", decode.string))
+  use expires_at <- result.try(field(result, "expires_at", decode.int))
+
+  Ok(CodeInvite(run:, code:, expires_at:))
+}
+
+/// The outcome of a spoken-code run, from an `await_code` or a code
+/// `accept` result. An outcome name this build does not know is a malformed
+/// result, never a guess.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_render.code_outcome(result)
+/// // -> Ok(CodePaired(contact: None))
+/// ```
+pub fn code_outcome(result: Dynamic) -> Result(CodeOutcome, String) {
+  use name <- result.try(field(result, "outcome", decode.string))
+  use contact <- result.try(field(
+    result,
+    "contact",
+    decode.optional(decode.string),
+  ))
+
+  // The names are the local API's four; anything else is not an answer.
+  case name {
+    "paired" -> Ok(CodePaired(contact:))
+    "never_claimed" -> Ok(CodeNeverClaimed)
+    "stalled" -> Ok(CodeStalled)
+    "confirmation_failed" -> Ok(CodeConfirmationFailed)
+    _ -> Error("the daemon sent a malformed result")
+  }
+}
+
 /// Renders a result for human reading. `CreateInvite` renders nothing:
 /// `cli_run` writes the file and prints the ticket or path itself.
 ///

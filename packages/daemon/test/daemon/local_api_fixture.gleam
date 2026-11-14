@@ -5,7 +5,7 @@
 //// must not reach it). It also holds an inbox and a subscriber list, which
 //// is enough to drive the wake path of `receive`.
 
-import core/id.{type Contact, type Id, type Message}
+import core/id.{type Contact, type Id, type Message, type Rendezvous}
 import core/secret
 import core/time.{Instant}
 import daemon/credential
@@ -69,6 +69,16 @@ pub fn message() -> Id(Message) {
   let assert Ok(identifier) = id.from_bytes(<<2:128>>)
   identifier
 }
+
+/// The run the fake backend's `invite_code` answers with.
+pub fn run() -> Id(Rendezvous) {
+  let assert Ok(identifier) = id.from_bytes(<<3:128>>)
+  identifier
+}
+
+/// The code the fake backend issues: a well-formed code, so the CLI's local
+/// check accepts it, that no daemon ever opened.
+pub const fake_code = "482719-cradle-noble-velvet"
 
 /// A delivery with the given payload.
 pub fn delivery(payload: BitArray) -> Delivery {
@@ -229,6 +239,42 @@ pub fn backend(fake: Fake) -> Backend {
       }
       record("accept_ticket " <> text <> " " <> description <> suffix)
       Ok(contact())
+    },
+    invite_code: fn(description, approval, budget) {
+      record(
+        "invite_code "
+        <> description
+        <> " "
+        <> string.inspect(approval)
+        <> " "
+        <> string.inspect(budget),
+      )
+      Ok(local_api_types.CodeInvite(
+        run: run(),
+        code: secret.new(<<fake_code:utf8>>),
+        expires_at: Instant(1_700_000_600),
+      ))
+    },
+    await_code: fn(run) {
+      record("await_code " <> id.to_hex(run))
+      Ok(local_api_types.Paired(contact: None))
+    },
+    accept_code: fn(code, rendezvous, description, budget) {
+      let assert Ok(text) = bit_array.to_string(secret.expose(code))
+      let suffix = case budget {
+        Some(n) -> " budget=" <> int.to_string(n)
+        None -> ""
+      }
+      record(
+        "accept_code "
+        <> text
+        <> " "
+        <> option.unwrap(rendezvous, "-")
+        <> " "
+        <> description
+        <> suffix,
+      )
+      Ok(local_api_types.Paired(contact: Some(contact())))
     },
     contacts: fn() {
       record("contacts")

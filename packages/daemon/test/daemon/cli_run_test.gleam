@@ -5,6 +5,7 @@ import daemon/internal/ffi_local_system
 import daemon/local_api_fixture as fixture
 import daemon/local_api_types
 import gleam/bit_array
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None}
 import gleam/string
@@ -298,4 +299,174 @@ pub fn an_unreadable_payload_file_exits_local_test() {
     ])
 
   assert outcome.status == cli.exit_local
+}
+
+// ---------------------------------------------------------- spoken codes
+
+/// Runs a command as `run` does, collecting what it announces before its
+/// answer.
+fn run_announcing(
+  f: fixture.Fixture,
+  arguments: List(String),
+) -> #(Outcome, List(#(BitArray, String))) {
+  let assert Ok(command) =
+    cli.parse(list.append(arguments, ["--state-dir", f.dir]), None)
+  let announced = process.new_subject()
+
+  let outcome =
+    cli_run.run_with(command, fn(stdout, stderr) {
+      process.send(announced, #(stdout, stderr))
+    })
+
+  #(outcome, drain(announced, []))
+}
+
+fn drain(subject: Subject(a), found: List(a)) -> List(a) {
+  case process.receive(subject, 0) {
+    Ok(value) -> drain(subject, [value, ..found])
+    Error(Nil) -> list.reverse(found)
+  }
+}
+
+/// `invite create --code` prints the code the moment the daemon answers,
+/// alone on standard output, then waits for the run with a second request
+/// and reports how it ended; the invitation is never printed (ADR-016).
+pub fn invite_create_with_a_code_prints_it_then_waits_test() {
+  use f <- fixture.with_server
+
+  let base = ["invite", "create", "--description", "t", "--budget", "2"]
+  let #(outcome, announced) = run_announcing(f, list.append(base, ["--code"]))
+
+  assert announced
+    == [
+      #(
+        <<fixture.fake_code:utf8, "\n">>,
+        "waiting for the joiner to enter the code\n",
+      ),
+    ]
+  assert outcome.status == 0
+  assert outcome.stdout == <<>>
+  assert string.starts_with(outcome.stderr, "paired:")
+  assert fixture.calls(f.fake)
+    == [
+      "invite_code t OperatorApproves 2",
+      "await_code " <> id.to_hex(fixture.run()),
+    ]
+
+  // In JSON mode both answers are response lines, the code's first.
+  let #(json, announced) =
+    run_announcing(f, list.append(base, ["--code", "--json"]))
+  let assert [#(first, "")] = announced
+  let assert Ok(first) = bit_array.to_string(first)
+  assert first
+    == "{\"ok\":true,\"result\":{\"run\":\""
+    <> id.to_hex(fixture.run())
+    <> "\",\"code\":\""
+    <> fixture.fake_code
+    <> "\",\"expires_at\":1700000600}}\n"
+  assert json.status == 0
+  assert stdout(json)
+    == "{\"ok\":true,\"result\":{\"outcome\":\"paired\",\"contact\":null}}\n"
+  assert !string.contains(first <> stdout(json), "SU5WSVRBVElPTi")
+}
+
+/// `invite accept --code` trims the code it reads and sends it as text;
+/// the paired contact is printed as an accept always printed it.
+pub fn invite_accept_with_a_code_trims_and_sends_it_test() {
+  use f <- fixture.with_server
+
+  let path = f.dir <> "/code.txt"
+  let assert Ok(Nil) =
+    simplifile.write(path, "  " <> fixture.fake_code <> " \n")
+  let outcome =
+    run(f, [
+      "invite",
+      "accept",
+      "--code",
+      "--file",
+      path,
+      "--rendezvous",
+      "127.0.0.1:4000",
+      "--description",
+      "al",
+    ])
+
+  assert outcome.status == 0
+  assert stdout(outcome) == contact_hex() <> "\n"
+  assert fixture.calls(f.fake)
+    == ["accept_code " <> fixture.fake_code <> " 127.0.0.1:4000 al"]
+}
+
+/// A code that does not decode is refused before the daemon is asked, so
+/// it spends nothing; the refusal names the word's position and repeats
+/// neither the code nor the word.
+pub fn a_mistyped_code_is_refused_locally_test() {
+  use f <- fixture.with_server
+
+  let path = f.dir <> "/code.txt"
+  let typed = "482719-cradle-nobel-velvet"
+  let assert Ok(Nil) = simplifile.write(path, typed <> "\n")
+  let outcome = run(f, ["invite", "accept", "--code", "--file", path])
+
+  assert outcome.status == cli.exit_refused
+  assert string.contains(outcome.stderr, "word 2 of the code")
+  assert !string.contains(outcome.stderr, "nobel")
+  assert !string.contains(outcome.stderr, "482719")
+  assert fixture.calls(f.fake) == []
+}
+
+/// Each ending of a code's run is its own message and a refusal's exit
+/// status, on both sides; the joiner's failed confirmation says it may have
+/// been an interruption.
+pub fn every_code_outcome_is_told_apart_test() {
+  let endings = [
+    #(local_api_types.NeverClaimed, "expired before anyone used it"),
+    #(local_api_types.Stalled, "stopped before the exchange finished"),
+    #(local_api_types.ConfirmationFailed, "the code did not match"),
+  ]
+
+  list.each(endings, fn(pair) {
+    let make = fn(fake) {
+      local_api_types.Backend(
+        ..fixture.backend(fake),
+        await_code: fn(_) { Ok(pair.0) },
+        accept_code: fn(_, _, _, _) { Ok(pair.0) },
+      )
+    }
+    use f <- fixture.with_backend(make)
+
+    let #(inviting, _) =
+      run_announcing(f, [
+        "invite",
+        "create",
+        "--description",
+        "t",
+        "--budget",
+        "2",
+        "--code",
+      ])
+    let path = f.dir <> "/code.txt"
+    let assert Ok(Nil) = simplifile.write(path, fixture.fake_code)
+    let joining = run(f, ["invite", "accept", "--code", "--file", path])
+
+    assert inviting.status == cli.exit_refused
+    assert joining.status == cli.exit_refused
+    assert string.contains(inviting.stderr, pair.1)
+    assert string.contains(joining.stderr, pair.1)
+    assert inviting.stdout == <<>>
+    assert joining.stdout == <<>>
+  })
+
+  // Only the joiner's failed confirmation may be an interruption.
+  let make = fn(fake) {
+    local_api_types.Backend(
+      ..fixture.backend(fake),
+      accept_code: fn(_, _, _, _) { Ok(local_api_types.ConfirmationFailed) },
+    )
+  }
+  use f <- fixture.with_backend(make)
+  let path = f.dir <> "/code.txt"
+  let assert Ok(Nil) = simplifile.write(path, fixture.fake_code)
+  let joining = run(f, ["invite", "accept", "--code", "--file", path])
+  assert string.contains(joining.stderr, "or the exchange was interrupted")
 }

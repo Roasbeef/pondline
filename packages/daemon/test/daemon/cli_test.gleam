@@ -5,15 +5,16 @@ import daemon/api
 import daemon/carrier as daemon_carrier
 import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, ContactEntry,
-  CreateInvite, DeclineContact, Encoded, ExactContact, FromInvitation,
-  FromTicket, HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput,
-  ListContacts, LookupContact, MessageStatus, RaiseBudget, Raw, ReceiveMessages,
-  RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents, Target,
-  TicketAndFile, TicketOnly,
+  CreateInvite, DeclineContact, Encoded, ExactContact, FromCode, FromInvitation,
+  FromTicket, HumanOutput, InputFile, InputPrompt, InputStdin, InvitationFile,
+  JsonOutput, ListContacts, LookupContact, MessageStatus, RaiseBudget, Raw,
+  ReceiveMessages, RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
+  SpokenCode, Target, TicketAndFile, TicketOnly,
 }
 import daemon/fetcher
 import daemon/local_api_protocol as protocol
 import daemon/mailbox_client
+import daemon/pairing
 import daemon/provisioner
 import gleam/json
 import gleam/list
@@ -79,7 +80,106 @@ pub fn invite_create_with_a_ticket_test() {
 
   // With neither there is nothing to hand out.
   assert parse(list.append(base, common))
-    == Error("give --out FILE, --ticket, or both")
+    == Error("give --out FILE, --ticket, or both, or --code")
+}
+
+/// `--code` asks for a spoken code alone (ADR-016): it hands out neither a
+/// file nor a ticket, so either beside it is a usage error, and its request
+/// is the invite's with `"code": true`.
+pub fn invite_create_with_a_code_test() {
+  let base = ["invite", "create", "--description", "d", "--budget", "1"]
+
+  let assert Ok(Client(action:, ..)) =
+    parse(list.flatten([base, ["--code"], common]))
+  assert action == CreateInvite("d", OperatorApproves, 1, SpokenCode)
+
+  let #(op, args) = cli.request(action, <<>>)
+  assert op == "invite"
+  assert json.to_string(args)
+    == "{\"description\":\"d\",\"approval\":\"operator\",\"budget\":1,\"ticket\":false,\"code\":true}"
+  assert cli.invitation_path(SpokenCode) == None
+
+  let alone = Error("--code is given alone, without --out or --ticket")
+  assert parse(list.flatten([base, ["--code", "--ticket"], common])) == alone
+  assert parse(list.flatten([base, ["--code", "--out", "o"], common])) == alone
+
+  // The plain invite's request is what it always was.
+  let #(_, plain) =
+    cli.request(CreateInvite("d", OperatorApproves, 1, TicketOnly), <<>>)
+  assert !string.contains(json.to_string(plain), "code")
+}
+
+/// `invite accept --code` reads the code from a file, standard input, or,
+/// with neither, a prompt; `--rendezvous` names where the slot is and goes
+/// only with `--code`; and its request carries the code as text.
+pub fn invite_accept_with_a_code_test() {
+  let assert Ok(Client(action:, ..)) =
+    parse(["invite", "accept", "--code", ..common])
+  assert action == AcceptInvite(InputPrompt, FromCode(None), "", None)
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["invite", "accept", "--code", "--stdin", ..common])
+  assert action == AcceptInvite(InputStdin, FromCode(None), "", None)
+
+  let assert Ok(Client(action:, ..)) =
+    parse([
+      "invite",
+      "accept",
+      "--code",
+      "--file",
+      "c.txt",
+      "--rendezvous",
+      "127.0.0.1:4000",
+      "--description",
+      "al",
+      "--budget",
+      "7",
+      ..common
+    ])
+  assert action
+    == AcceptInvite(
+      InputFile("c.txt"),
+      FromCode(Some("127.0.0.1:4000")),
+      "al",
+      Some(7),
+    )
+
+  let #(op, args) = cli.request(action, <<"482719-cradle-noble-velvet":utf8>>)
+  assert op == "accept"
+  assert json.to_string(args)
+    == "{\"code\":\"482719-cradle-noble-velvet\",\"description\":\"al\",\"rendezvous\":\"127.0.0.1:4000\",\"budget\":7}"
+
+  assert parse(["invite", "accept", "--code", "--ticket", "--stdin", ..common])
+    == Error("give at most one of --ticket and --code")
+  assert parse([
+      "invite",
+      "accept",
+      "--ticket",
+      "--stdin",
+      "--rendezvous",
+      "127.0.0.1:4000",
+      ..common
+    ])
+    == Error("--rendezvous is given only with --code")
+  assert parse([
+      "invite",
+      "accept",
+      "--code",
+      "--rendezvous",
+      "nowhere",
+      ..common
+    ])
+    == Error("--rendezvous must be HOST:PORT")
+  assert parse([
+      "invite",
+      "accept",
+      "--code",
+      "--stdin",
+      "--file",
+      "c",
+      ..common
+    ])
+    == Error("give exactly one of --file and --stdin")
 }
 
 pub fn invite_accept_with_a_ticket_test() {
@@ -472,6 +572,31 @@ pub fn no_command_accepts_a_ticket_in_argv_test() {
   })
 }
 
+/// A spoken code is a secret, so no command takes one in argv: `--code` is a
+/// flag, and a code typed after it, or anywhere else, is refused without
+/// the refusal repeating it or any of its words (ADR-016).
+pub fn no_command_accepts_a_code_in_argv_test() {
+  let code = "482719-cradle-noble-velvet"
+  let commands = [
+    ["invite", "create", "--description", "d", "--budget", "1", "--code"],
+    ["invite", "accept", "--code"],
+    ["invite", "accept", "--code", "--rendezvous", "127.0.0.1:4000"],
+    ..every_command()
+  ]
+
+  list.each(commands, fn(command) {
+    list.each([[code], ["--code", code], ["--code=" <> code]], fn(extra) {
+      let line = list.flatten([command, extra, common])
+      let assert Error(message) = parse(line)
+
+      assert !string.contains(message, "482719")
+      list.each(["cradle", "noble", "velvet"], fn(word) {
+        assert !string.contains(message, word)
+      })
+    })
+  })
+}
+
 pub fn no_command_accepts_a_grant_token_in_argv_test() {
   let grant_token = "plg1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"
   let commands = [["daemon", "--grant-stdin"], ..every_command()]
@@ -510,6 +635,30 @@ pub fn the_cli_outwaits_the_daemon_on_invitations_test() {
   assert api.ticket_call_ms >= provisioner.create_timeout_ms
   assert api.ticket_wait_ms >= api.ticket_call_ms
   assert cli.invitation_timeout_ms >= daemon_bound
+
+  // A code's run: the daemon waits out the slot and the registry's slack,
+  // and the CLI waits out the daemon.
+  assert api.code_wait_ms
+    >= limits.rendezvous_seconds * 1000 + pairing.run_slack_ms
+  assert cli.code_wait_timeout_ms > api.code_wait_ms
+  assert pairing.keep_ms >= limits.rendezvous_seconds * 1000
+
+  // A code's accept: a bootstrap, the claim retried as a ticket's call is,
+  // the run on a claimed slot with one call and the close past it, and the
+  // ticket's own redemption.
+  let joiner_bound =
+    api.bootstrap_wait_ms
+    + api.ticket_wait_ms
+    + api.ticket_call_ms
+    + limits.rendezvous_claimed_seconds
+    * 1000
+    + pairing.call_ms
+    + pairing.close_ms
+    + api.ticket_wait_ms
+    + api.ticket_call_ms
+  assert cli.code_accept_timeout_ms >= joiner_bound
+  assert cli.timeout_ms(AcceptInvite(InputPrompt, FromCode(None), "", None))
+    == cli.code_accept_timeout_ms
   assert cli.timeout_ms(CreateInvite("d", AutoApprove, 1, TicketOnly))
     == cli.invitation_timeout_ms
   assert cli.timeout_ms(AcceptInvite(InputStdin, FromTicket, "", None))

@@ -10,9 +10,14 @@
 //// ├── engine        the single writer
 //// ├── scheduler     sends committed outbox rows (actor, runs of sends)
 //// ├── provisioner   creates committed queues at the mailbox (state machine)
-//// └── fetch_manager one fetcher per live inbound queue (actor; each fetcher
-////                   is a state machine linked to it)
+//// ├── fetch_manager one fetcher per live inbound queue (actor; each fetcher
+//// │                 is a state machine linked to it)
+//// └── pairing       owns each inviter's spoken-code run (actor, ADR-016)
 //// ```
+////
+//// The pairing registry is last so that its restart touches nothing else;
+//// a run it held is lost with it and its slot is left to the mailbox's
+//// expiry. It runs offline too, where the code calls fail at the mailbox.
 ////
 //// The order is the dependency order and the supervisor is `rest_for_one`:
 //// a crash of the engine restarts the three workers that call it, and a
@@ -73,6 +78,7 @@ import daemon/events
 import daemon/fetch_manager
 import daemon/lock
 import daemon/mail
+import daemon/pairing
 import daemon/provisioner
 import daemon/scheduler
 import daemon/status
@@ -133,6 +139,7 @@ type Names {
     scheduler: process.Name(scheduler.Message),
     provisioner: process.Name(provisioner.Message),
     fetch_manager: process.Name(fetch_manager.Message),
+    pairing: process.Name(pairing.Message),
   )
 }
 
@@ -289,6 +296,7 @@ fn launch(
       scheduler: process.new_name("daemon_scheduler"),
       provisioner: process.new_name("daemon_provisioner"),
       fetch_manager: process.new_name("daemon_fetch_manager"),
+      pairing: process.new_name("daemon_pairing"),
     )
   let directory = config.state_dir
   let dialer = network_dialer(config, names)
@@ -340,8 +348,8 @@ fn launch(
       ),
     ))
 
-  // The supervisor's start result decides whether the tree is up or why it is not.
-  let tree = case network {
+  // The network workers join an online tree only.
+  let workers = case network {
     Offline -> base
 
     Online ->
@@ -379,6 +387,20 @@ fn launch(
       ))
   }
 
+  let tree =
+    workers
+    |> static_supervisor.add(pairing.supervised(
+      names.pairing,
+      config.timer,
+      config.poll_clock.now,
+    ))
+  let rendezvous =
+    api.Rendezvous(
+      mailbox: config.mailbox.endpoint,
+      provision:,
+      clock: config.clock,
+    )
+
   // The supervisor's start result decides whether the tree is up or why it is not.
   case static_supervisor.start(tree) {
     Ok(started) ->
@@ -392,6 +414,8 @@ fn launch(
         directory,
         config.poll_clock,
         dialer,
+        address(config, names.pairing, "api", "pairing"),
+        rendezvous,
       ))
 
     Error(_) -> Error(classify_failure(directory))

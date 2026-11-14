@@ -3,6 +3,7 @@
     listen/1, accept/1, connect/2, recv_line/4, send/2, close/1,
     monotonic_ms/0, create_private_file/2, write_private_file/2,
     make_private_dir/1, file_mode/1, write_stdout/1, read_stdin/1,
+    read_stdin_line/1,
     getenv/1, find_executable/1, host_os/0, absolute_path/1,
     current_uid/0, run_program/3, halt/1
 ]).
@@ -195,6 +196,26 @@ read_all(Fd, Max, Acc) ->
             {ok, iolist_to_binary(lists:reverse(Acc))};
         {error, Reason} ->
             reason(Reason)
+    end.
+
+%% Reads one line from standard input for a prompt, giving up with
+%% `too_large` past `Max` bytes. End of input is an empty line.
+read_stdin_line(Max) ->
+    case file:open("/dev/stdin", [read, raw, binary]) of
+        {ok, Fd} ->
+            Result = read_one_line(Fd, Max),
+            _ = file:close(Fd),
+            Result;
+        {error, Reason} ->
+            reason(Reason)
+    end.
+
+read_one_line(Fd, Max) ->
+    case file:read_line(Fd) of
+        {ok, Line} when byte_size(Line) > Max -> {error, <<"too_large">>};
+        {ok, Line} -> {ok, Line};
+        eof -> {ok, <<>>};
+        {error, Reason} -> reason(Reason)
     end.
 
 getenv(Name) ->

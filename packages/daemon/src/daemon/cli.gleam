@@ -22,8 +22,12 @@
 //// - `service install|uninstall|status [--state-dir D] [--json]` manages the
 ////   per-user `launchd` or `systemd --user` background daemon service.
 //// - `invite create --description TEXT --budget N [--auto-approve]`
-////   `[--out FILE] [--ticket]` (at least one of the two) and `invite accept`
-////   `[--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]`.
+////   `[--out FILE] [--ticket]` (at least one of the two), or `--code` alone,
+////   which prints a spoken code and waits for the joiner (ADR-016); and
+////   `invite accept [--ticket] (--file FILE | --stdin)` or `invite accept`
+////   `--code [--file FILE | --stdin] [--rendezvous HOST:PORT]`, which reads
+////   the code from a prompt when neither source is given, each with
+////   `[--description TEXT] [--budget N]`.
 //// - `contacts list`, `contact approve|decline|close --contact CONTACT` and
 ////   `contact budget --contact CONTACT --add N`.
 //// - `send --contact CONTACT [--content-type T] (--file F | --stdin)`
@@ -46,12 +50,13 @@
 ////
 //// ## What argv never carries
 ////
-//// A payload, a credential and a ticket are secrets, and a command line is
-//// visible to every process on the machine and kept in shell history. So no
-//// option takes one: payloads and tickets come from `--file` or `--stdin`,
-//// credentials from a file. An option such as `--payload` or `--credential`
-//// is unknown and fails as a usage error, and `--ticket` is a flag, so a
-//// ticket typed after it is a stray word. A stray word is refused without
+//// A payload, a credential, a ticket and a pairing code are secrets, and a
+//// command line is visible to every process on the machine and kept in
+//// shell history. So no option takes one: payloads, tickets and codes come
+//// from `--file`, `--stdin` or (a code only) a prompt, credentials from a
+//// file. An option such as `--payload` or `--credential` is unknown and
+//// fails as a usage error, and `--ticket` and `--code` are flags, so a
+//// secret typed after one is a stray word. A stray word is refused without
 //// being repeated, since it may be exactly the secret that was misplaced.
 
 import core/id.{type Contact, type Id, type Message}
@@ -99,8 +104,10 @@ commands:
          [--carrier tor|loopback] [--tor-bin PATH]
   service install|uninstall|status [--state-dir D] [--json]
   invite create --description TEXT --budget N [--auto-approve]
-                [--out FILE] [--ticket]
+                ([--out FILE] [--ticket] | --code)
   invite accept [--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]
+  invite accept --code [--file FILE | --stdin] [--rendezvous HOST:PORT]
+                [--description TEXT] [--budget N]
   contacts list
   contact approve|decline|close --contact CONTACT
   contact budget --contact CONTACT --add N
@@ -193,6 +200,9 @@ pub type Input {
   NoInput
   InputFile(path: String)
   InputStdin
+
+  /// One line typed at a prompt on standard error, for a spoken code.
+  InputPrompt
 }
 
 /// What `invite create` hands the operator: the invitation file, a ticket
@@ -207,6 +217,10 @@ pub type InviteOutput {
 
   /// Write the file and print the ticket.
   TicketAndFile(path: String)
+
+  /// Print a spoken code, then wait for the joiner (ADR-016). The file
+  /// stays in the daemon.
+  SpokenCode
 }
 
 /// What `invite accept` reads from its input.
@@ -216,6 +230,10 @@ pub type AcceptForm {
 
   /// A ticket's text, fetched and opened by the daemon.
   FromTicket
+
+  /// A spoken code, run at `rendezvous` (`HOST:PORT`) or, when `None`, at
+  /// the daemon's own mailbox (ADR-016).
+  FromCode(rendezvous: Option(String))
 }
 
 /// How `receive` prints a payload.
@@ -371,7 +389,7 @@ pub fn parse_with_env(
         rest,
         env,
         ["--description", "--budget", "--out"],
-        ["--auto-approve", "--ticket"],
+        ["--auto-approve", "--ticket", "--code"],
         fn(options) {
           use description <- result.try(required(options, "--description"))
           use budget <- result.try(number(
@@ -391,10 +409,11 @@ pub fn parse_with_env(
       client(
         rest,
         env,
-        ["--file", "--description", "--budget"],
-        ["--stdin", "--ticket"],
+        ["--file", "--description", "--budget", "--rendezvous"],
+        ["--stdin", "--ticket", "--code"],
         fn(options) {
-          use source <- result.try(one_source(options))
+          use form <- result.try(accept_form(options))
+          use source <- result.try(accept_source(options, form))
           use budget <- result.try(optional_present_number(
             options,
             "--budget",
@@ -402,12 +421,6 @@ pub fn parse_with_env(
             limits.max_budget_messages,
           ))
           let description = dict_get(options, "--description", "")
-
-          // `--ticket` says what the input is; it never carries it.
-          let form = case has_flag(options, "--ticket") {
-            True -> FromTicket
-            False -> FromInvitation
-          }
 
           Ok(AcceptInvite(source:, form:, description:, budget:))
         },
@@ -489,16 +502,62 @@ fn approval_of(options: Options) -> Approval {
   }
 }
 
-/// Where `invite create` puts the invitation: a file, a ticket, or both.
+/// Where `invite create` puts the invitation: a file, a ticket, both, or a
+/// spoken code alone.
 fn invite_output(options: Options) -> Result(InviteOutput, String) {
-  // The two choices are independent flags; asking for neither is the one
-  // combination with nothing to hand out.
-  case dict.get(options.values, "--out"), has_flag(options, "--ticket") {
-    Ok(path), False -> Ok(InvitationFile(path))
-    Ok(path), True -> Ok(TicketAndFile(path))
-    Error(Nil), True -> Ok(TicketOnly)
-    Error(Nil), False -> Error("give --out FILE, --ticket, or both")
+  let path = dict.get(options.values, "--out")
+
+  // A code hands out nothing else; the file and the ticket are independent
+  // flags, and asking for none of the three hands out nothing.
+  case has_flag(options, "--code"), path, has_flag(options, "--ticket") {
+    True, Error(Nil), False -> Ok(SpokenCode)
+    True, _, _ -> Error("--code is given alone, without --out or --ticket")
+    False, Ok(path), False -> Ok(InvitationFile(path))
+    False, Ok(path), True -> Ok(TicketAndFile(path))
+    False, Error(Nil), True -> Ok(TicketOnly)
+    False, Error(Nil), False ->
+      Error("give --out FILE, --ticket, or both, or --code")
   }
+}
+
+/// What `invite accept` reads: an invitation file, a ticket, or a spoken
+/// code, with the code's optional rendezvous. `--ticket` and `--code` say
+/// what the input is; they never carry it.
+fn accept_form(options: Options) -> Result(AcceptForm, String) {
+  let rendezvous = dict.get(options.values, "--rendezvous")
+
+  // A rendezvous belongs to a code alone, and a ticket and a code at once
+  // say two things about one input.
+  case has_flag(options, "--ticket"), has_flag(options, "--code"), rendezvous {
+    True, True, _ -> Error("give at most one of --ticket and --code")
+    True, False, Ok(_) | False, False, Ok(_) ->
+      Error("--rendezvous is given only with --code")
+    False, True, Ok(text) ->
+      check_rendezvous(text) |> result.map(fn(at) { FromCode(Some(at)) })
+    False, True, Error(Nil) -> Ok(FromCode(None))
+    True, False, Error(Nil) -> Ok(FromTicket)
+    False, False, Error(Nil) -> Ok(FromInvitation)
+  }
+}
+
+/// Where `invite accept` reads its input: exactly one of `--file` and
+/// `--stdin`, except that a code with neither is typed at a prompt.
+fn accept_source(options: Options, form: AcceptForm) -> Result(Input, String) {
+  let file = dict.get(options.values, "--file")
+
+  // Only a code may be typed; an invitation or a ticket is too long to.
+  case form, file, has_flag(options, "--stdin") {
+    FromCode(..), Error(Nil), False -> Ok(InputPrompt)
+    FromCode(..), _, _ | FromTicket, _, _ | FromInvitation, _, _ ->
+      one_source(options)
+  }
+}
+
+/// Checks that a rendezvous is `HOST:PORT` with a usable port, naming the
+/// option it came from. The daemon decides whether it may dial it.
+fn check_rendezvous(text: String) -> Result(String, String) {
+  check_endpoint(text)
+  |> result.replace_error("--rendezvous must be HOST:PORT")
 }
 
 /// The one input of a command that reads from exactly one of `--file`
@@ -1301,6 +1360,17 @@ pub fn input_of(action: Action) -> Input {
 /// running at the end. `cli_test` checks the sum.
 pub const invitation_timeout_ms = 670_000
 
+/// How long `invite create --code` waits for its run once the code is
+/// printed (710 s): the daemon's own `api.code_wait_ms` and a margin for the
+/// answer. `cli_test` checks it.
+pub const code_wait_timeout_ms = 710_000
+
+/// How long `invite accept --code` waits for the daemon (1120 s): a Tor
+/// bootstrap, the claim retried like a ticket's call, the run on a claimed
+/// slot with one call and the close past it, and then the ticket's own
+/// redemption. `cli_test` checks the sum.
+pub const code_accept_timeout_ms = 1_120_000
+
 /// How long to wait for the daemon's answer, in milliseconds: the wait the
 /// action asks for plus a margin.
 ///
@@ -1313,6 +1383,7 @@ pub const invitation_timeout_ms = 670_000
 pub fn timeout_ms(action: Action) -> Int {
   case action {
     ReceiveMessages(wait_seconds:, ..) -> wait_seconds * 1000 + 10_000
+    AcceptInvite(form: FromCode(..), ..) -> code_accept_timeout_ms
     CreateInvite(..) | AcceptInvite(form: FromTicket, ..) ->
       invitation_timeout_ms
     _ -> 10_000
@@ -1337,6 +1408,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
         #("approval", json.string(approval_name(approval))),
         #("budget", json.int(budget)),
         #("ticket", json.bool(wants_ticket(output))),
+        ..code_args(output)
       ]),
     )
 
@@ -1357,6 +1429,16 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
         #("ticket", json.string(result.unwrap(bit_array.to_string(input), ""))),
         #("description", json.string(description)),
         ..budget_args(budget)
+      ]),
+    )
+
+    // The code goes as text, already trimmed and checked by `cli_run`.
+    AcceptInvite(form: FromCode(rendezvous:), description:, budget:, ..) -> #(
+      "accept",
+      json.object([
+        #("code", json.string(result.unwrap(bit_array.to_string(input), ""))),
+        #("description", json.string(description)),
+        ..list.append(rendezvous_args(rendezvous), budget_args(budget))
       ]),
     )
 
@@ -1413,11 +1495,42 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
   }
 }
 
+/// The request that waits for the run `invite create --code` started, named
+/// by the `run` its first answer carried.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.await_code_request("000102030405060708090a0b0c0d0e0f")
+/// // -> #("await_code", json.object([#("run", json.string("0001..."))]))
+/// ```
+pub fn await_code_request(run: String) -> #(String, Json) {
+  #("await_code", json.object([#("run", json.string(run))]))
+}
+
 /// Whether an invite output includes a ticket.
 fn wants_ticket(output: InviteOutput) -> Bool {
   case output {
-    InvitationFile(..) -> False
+    InvitationFile(..) | SpokenCode -> False
     TicketOnly | TicketAndFile(..) -> True
+  }
+}
+
+/// The `code` argument of an invite, present only for a spoken code, so
+/// every other invite's request is what it always was.
+fn code_args(output: InviteOutput) -> List(#(String, Json)) {
+  case output {
+    SpokenCode -> [#("code", json.bool(True))]
+    InvitationFile(..) | TicketOnly | TicketAndFile(..) -> []
+  }
+}
+
+/// The `rendezvous` argument of a code accept, present only when the
+/// operator named one; the daemon's own mailbox is the default.
+fn rendezvous_args(rendezvous: Option(String)) -> List(#(String, Json)) {
+  case rendezvous {
+    Some(at) -> [#("rendezvous", json.string(at))]
+    None -> []
   }
 }
 
@@ -1432,7 +1545,7 @@ fn wants_ticket(output: InviteOutput) -> Bool {
 pub fn invitation_path(output: InviteOutput) -> Option(String) {
   case output {
     InvitationFile(path:) | TicketAndFile(path:) -> Some(path)
-    TicketOnly -> None
+    TicketOnly | SpokenCode -> None
   }
 }
 

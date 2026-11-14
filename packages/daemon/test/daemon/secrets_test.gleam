@@ -4,7 +4,10 @@
 
 import core/capability
 import core/codex32
+import core/crypto/suite.{type Suite, Suite} as _core_suite
+import core/endpoint
 import core/offer
+import core/pairing_code/words
 import core/route
 import core/secret.{type Secret}
 import core/ticket
@@ -15,7 +18,7 @@ import daemon/mail
 import daemon/node
 import daemon/support
 import gleam/bit_array
-import gleam/erlang/process
+import gleam/erlang/process.{type Subject}
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -273,4 +276,157 @@ pub fn crash_reports_carry_no_secret_test() {
   assert string.contains(captured, "event=foreign_text")
   assert string.contains(captured, "context=child_terminated")
   assert !string.contains(captured, "event=unformattable")
+}
+
+// ---------------------------------------------------------- spoken codes
+
+/// The words the recording suite draws for every code, chosen so that no
+/// log line spells one by accident: a common word such as `event` would
+/// make the search below find what was never leaked.
+const spoken = ["quantum", "vintage", "walnut"]
+
+/// The real suite, except that it reports every 32-byte draw to `draws`, so
+/// the test can rebuild the ticket a code's run hands off from its secret,
+/// and answers the five-byte draw a code's words are read from with the
+/// `spoken` words.
+fn recording_suite(draws: Subject(BitArray)) -> Suite {
+  let real = suite.suite()
+  let assert [first, second, third] =
+    list.map(spoken, fn(word) {
+      let assert Ok(index) = words.index_of(word)
+      index
+    })
+
+  Suite(..real, random: fn(size) {
+    case size {
+      5 -> <<first:11, second:11, third:11, 0:7>>
+
+      32 -> {
+        let drawn = real.random(size)
+        process.send(draws, drawn)
+        drawn
+      }
+
+      _ -> real.random(size)
+    }
+  })
+}
+
+/// Every ticket text one of the recorded draws would make at `mailbox`: the
+/// ticket a code's run hands off is one of them.
+fn possible_tickets(
+  draws: Subject(BitArray),
+  mailbox: endpoint.Endpoint,
+) -> List(BitArray) {
+  drain(draws, [])
+  |> list.filter_map(fn(drawn) {
+    case ticket.from_parts(mailbox, drawn) {
+      Ok(made) -> Ok(secret.expose(ticket.encode(made)))
+      Error(Nil) -> Error(Nil)
+    }
+  })
+}
+
+fn drain(subject: Subject(a), found: List(a)) -> List(a) {
+  case process.receive(subject, 0) {
+    Ok(value) -> drain(subject, [value, ..found])
+    Error(Nil) -> found
+  }
+}
+
+/// A whole pairing by spoken code, a misheard one and the refusals around
+/// it log nothing and render nothing that spells the code, any of its
+/// words, the words joined as the password, or the ticket the run handed
+/// off (ADR-016, ADR-012). The one place the code is printed is the
+/// operator's answer, which is not a log.
+pub fn a_spoken_code_reaches_no_log_and_no_rendering_test() {
+  let assert Ok(Nil) = handler.install(level.Info)
+  support.capture_start()
+
+  let draws = process.new_subject()
+  let mailbox = support.start_mailbox()
+  let settings =
+    config.Config(
+      ..support.daemon_config(mailbox, support.fresh("state")),
+      suite: recording_suite(draws),
+    )
+  let assert Ok(a) = node.start(settings)
+  let #(b, _) = support.start_daemon(mailbox)
+
+  let assert Ok(invited) = api.invite_code(a, "spoken", offer.AutoApprove, 5)
+  let joined = api.accept_code(b, invited.code, None, "a", None)
+  let assert Ok(api.Paired(contact: Some(_))) = joined
+  let awaited = api.await_code(a, invited.run)
+
+  let assert Ok(code_text) = bit_array.to_string(secret.expose(invited.code))
+  assert string.contains(code_text, string.join(spoken, "-"))
+
+  // A second code, misheard by one word, and refusals that read a code.
+  let assert Ok(again) = api.invite_code(a, "misheard", offer.AutoApprove, 5)
+  let assert Ok(again_text) = bit_array.to_string(secret.expose(again.code))
+  let misheard = string.replace(again_text, "walnut", "abandon")
+  let failed =
+    api.accept_code(b, secret.new(<<misheard:utf8>>), None, "a", None)
+  assert failed == Ok(api.ConfirmationFailed)
+  let failed_inviter = api.await_code(a, again.run)
+
+  let typo = string.replace(code_text, "vintage", "vintag")
+  let errors = [
+    string.inspect(api.accept_code(
+      b,
+      secret.new(<<typo:utf8>>),
+      None,
+      "a",
+      None,
+    )),
+    string.inspect(api.accept_code(
+      b,
+      secret.new(<<code_text:utf8>>),
+      Some("not an endpoint"),
+      "a",
+      None,
+    )),
+    string.inspect(api.accept_code(b, invited.code, None, "a", None)),
+  ]
+
+  let rendered =
+    [
+      string.inspect(invited),
+      string.inspect(again),
+      string.inspect(joined),
+      string.inspect(awaited),
+      string.inspect(failed),
+      string.inspect(failed_inviter),
+      ..errors
+    ]
+    |> list.map(string.replace(_, " ", ""))
+
+  let assert Ok(port) = endpoint.port(mailbox.port)
+  let tickets = possible_tickets(draws, endpoint.Loopback(port))
+  assert tickets != []
+
+  let secrets =
+    [
+      <<code_text:utf8>>,
+      <<again_text:utf8>>,
+      <<misheard:utf8>>,
+      <<string.join(spoken, "-"):utf8>>,
+      ..list.map(spoken, fn(word) { <<word:utf8>> })
+    ]
+    |> list.append(tickets)
+    |> list.flat_map(support.spellings)
+
+  let captured = support.flatten(support.capture_stop())
+
+  // The log is not empty, so the search means something.
+  assert string.contains(captured, "response=rendezvous_opened")
+
+  list.each(secrets, fn(spelling) {
+    assert !string.contains(captured, spelling)
+    assert !string.contains(string.lowercase(captured), spelling)
+    assert list.all(rendered, fn(text) { !string.contains(text, spelling) })
+  })
+
+  let _ = node.stop(a)
+  let _ = node.stop(b)
 }
