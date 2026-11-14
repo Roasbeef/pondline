@@ -12,6 +12,12 @@
 //// `waiters` is the table lookup every message starts from: a queue with no
 //// entry has no waiters.
 ////
+//// A rendezvous fetch (ADR-016) waits here too, under a different key: the
+//// SHA-256 of its reader's capability (`service.rendezvous_wake`), which
+//// the coordinator notifies after the other side's send or a close. That
+//// key is 32 bytes and a queue's is 16, so the two never meet in the table,
+//// and the registry treats both as opaque bytes.
+////
 //// The registry holds one entry per queue that currently has a waiter, never
 //// one per queue that exists (spec §10.2: no permanent process or state per
 //// queue). A waiter that gives up removes itself with `forget`. A waiter

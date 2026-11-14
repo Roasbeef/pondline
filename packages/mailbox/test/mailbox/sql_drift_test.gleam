@@ -65,6 +65,10 @@ const shipped = [
     "002_blobs.sql",
     "FD907FCCF13C21E149F1229D1CCEDCF44D137DC25FD46BEFE127A08EBB7B6CA8",
   ),
+  #(
+    "003_rendezvous.sql",
+    "3E9C56171E10829531DB3064AF5F6CAFDBA62FE4091D80DE138E33C9AA010CCB",
+  ),
 ]
 
 pub fn shipped_migrations_never_change_test() {

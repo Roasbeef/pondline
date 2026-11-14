@@ -15,8 +15,11 @@
 ////
 //// ## Long polling
 ////
-//// Only `Fetch` can wait, and the wait happens here, in the caller's own
-//// process, not in the coordinator and not inside a transaction:
+//// Only `Fetch` and `RendezvousFetch` can wait, and the wait happens here,
+//// in the caller's own process, not in the coordinator and not inside a
+//// transaction. A queue's fetch waits under the queue identifier; a
+//// rendezvous fetch waits under the hash of its reader's capability, the
+//// key a send by the other side wakes:
 ////
 //// 1. Fetch once. A non-empty batch, or a refusal, is the answer. A wrong
 ////    capability is refused here, before anything is registered, so an
@@ -58,8 +61,9 @@
 //// 1. `start` brings up the three processes under one supervisor.
 //// 2. `handle` sends everything but a waiting `Fetch` straight to the
 ////    coordinator through `run`.
-//// 3. A waiting `Fetch` goes through `long_poll` and `wait_for_append`,
-////    the three steps above.
+//// 3. A waiting `Fetch` or `RendezvousFetch` goes through `long_poll` and
+////    `wait_for_append`, the three steps above; `is_empty` decides which
+////    answers are worth waiting past.
 ////
 //// ## Simulation seams
 ////
@@ -82,6 +86,7 @@ import gleam/otp/static_supervisor
 import mailbox/coordinator
 import mailbox/mail
 import mailbox/notifier
+import mailbox/service
 import mailbox/store
 import mailbox/sweeper
 import weft/timer
@@ -226,9 +231,15 @@ pub fn start(
 /// // -> protocol.Acked
 /// ```
 pub fn handle(node: Node, request: Request) -> Response {
+  // A queue's fetch waits under the queue's identifier; a rendezvous fetch
+  // waits under its reader's capability hash, which is what a send by the
+  // other side wakes (`service.rendezvous_wake`).
   case request {
-    protocol.Fetch(wait_seconds:, ..) if wait_seconds > 0 ->
-      long_poll(node, request, wait_seconds)
+    protocol.Fetch(queue:, wait_seconds:, ..) if wait_seconds > 0 ->
+      long_poll(node, request, id.to_bytes(queue), wait_seconds)
+
+    protocol.RendezvousFetch(read:, wait_seconds:, ..) if wait_seconds > 0 ->
+      long_poll(node, request, service.rendezvous_wake(read), wait_seconds)
 
     protocol.CreateQueue(..)
     | protocol.Append(..)
@@ -236,7 +247,12 @@ pub fn handle(node: Node, request: Request) -> Response {
     | protocol.Ack(..)
     | protocol.DeleteQueue(..)
     | protocol.PutBlob(..)
-    | protocol.GetBlob(..) -> run(node, request)
+    | protocol.GetBlob(..)
+    | protocol.OpenRendezvous(..)
+    | protocol.ClaimRendezvous(..)
+    | protocol.RendezvousSend(..)
+    | protocol.RendezvousFetch(..)
+    | protocol.CloseRendezvous(..) -> run(node, request)
   }
 }
 
@@ -266,16 +282,44 @@ fn registry(node: Node) -> mail.Handle(notifier.Message) {
 }
 
 /// Step 1 of a long poll: one immediate fetch, which settles every case
-/// except an empty batch.
-fn long_poll(node: Node, request: Request, wait_seconds: Int) -> Response {
-  // Only an empty batch is worth waiting on.
-  case run(node, request), request {
-    // Only an empty batch is worth waiting on; everything else, including
-    // a refusal, is already the answer.
-    protocol.Batch(envelopes: []), protocol.Fetch(queue:, ..) ->
-      wait_for_append(node, request, id.to_bytes(queue), wait_seconds)
+/// except an empty answer.
+fn long_poll(
+  node: Node,
+  request: Request,
+  key: BitArray,
+  wait_seconds: Int,
+) -> Response {
+  let first = run(node, request)
 
-    first, _ -> first
+  // Only an empty answer is worth waiting on; everything else, including
+  // a refusal, is already the answer, and nothing has been registered.
+  case is_empty(first) {
+    True -> wait_for_append(node, request, key, wait_seconds)
+    False -> first
+  }
+}
+
+/// Whether an answer is the empty result a long poll waits past: a batch
+/// with no envelopes, or a rendezvous fetch with no messages.
+fn is_empty(response: Response) -> Bool {
+  // Every other answer, a refusal above all, settles the poll.
+  case response {
+    protocol.Batch(envelopes: []) | protocol.RendezvousMessages(messages: []) ->
+      True
+
+    protocol.Batch(envelopes: [_, ..])
+    | protocol.RendezvousMessages(messages: [_, ..])
+    | protocol.QueueCreated(..)
+    | protocol.Appended(..)
+    | protocol.Acked
+    | protocol.QueueDeleted
+    | protocol.BlobStored(..)
+    | protocol.SealedBlob(..)
+    | protocol.RendezvousOpened(..)
+    | protocol.RendezvousClaimed(..)
+    | protocol.RendezvousSent
+    | protocol.RendezvousClosed
+    | protocol.Refused(..) -> False
   }
 }
 
@@ -293,15 +337,19 @@ fn wait_for_append(
   // Registered first, looked second: an append that committed between the
   // first fetch and the registration is visible here, and any later one
   // wakes the registration.
-  let answer = case run(node, request) {
-    protocol.Batch(envelopes: []) -> {
+  let second = run(node, request)
+
+  // Still empty after registering: sleep until the registry wakes this
+  // caller or the clamped wait runs out, then look a last time.
+  let answer = case is_empty(second) {
+    True -> {
       let seconds = int.min(wait_seconds, limits.long_poll_seconds)
       await_wake(node.timer, wake, seconds * 1000)
 
       run(node, request)
     }
 
-    settled -> settled
+    False -> second
   }
 
   // After `forget` returns the registry will not send again, so draining

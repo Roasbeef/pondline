@@ -234,7 +234,8 @@ pub fn the_sweep_removes_expired_blobs_test() {
     put(db, cap(admin), 2, 50, time.add(tomorrow(), 100), sealed(2, 20))
 
   let assert Ok(report) = service.sweep(db, time.add(tomorrow(), 1))
-  assert report == store.SweepReport(envelopes: 0, tombstones: 0, blobs: 1)
+  assert report
+    == store.SweepReport(envelopes: 0, tombstones: 0, blobs: 1, rendezvous: 0)
   assert bytes_used(db) == 20
   assert get(db, now, 1, 50) == protocol.Refused(protocol.Unauthorized)
   assert get(db, now, 2, 50) == protocol.SealedBlob(sealed(2, 20))

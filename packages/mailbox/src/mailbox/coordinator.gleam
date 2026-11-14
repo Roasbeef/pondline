@@ -10,10 +10,15 @@
 //// later message, so a slow or dead caller can never leave a lock held
 //// (design review B, §3.10).
 ////
-//// After an append commits, the coordinator tells the notification registry,
-//// so a long-polling fetch wakes on a row that is already durable. The tell
+//// After an append or a rendezvous send or close commits, the coordinator
+//// tells the notification registry each wake-up `service.serve` names, so a
+//// long-polling fetch wakes on a row that is already durable. The tell
 //// follows the commit and precedes the reply; a crash between them loses a
 //// wake-up, never an envelope, and the waiter's own timeout answers it.
+////
+//// The coordinator is also where the system CSPRNG
+//// (`primitives.random_bytes`) is handed to `service.serve`, for the one
+//// request whose answer the mailbox draws: a rendezvous nameplate.
 ////
 //// The actor is addressed by a `Name`, which survives a restart. The caller
 //// functions below fail soft: if the coordinator is down or does not answer
@@ -52,10 +57,11 @@
 //// because it does not monitor either.
 
 import core/capability.{type Capability, type Provision}
-import core/id
+
 import core/mailbox/protocol.{type Request, type Response}
 import core/time.{type Instant}
 import gleam/erlang/process.{type Name, type Subject}
+import gleam/list
 import gleam/option.{type Option}
 import gleam/otp/supervision
 import gleam/result
@@ -63,6 +69,7 @@ import mailbox/mail.{type Handle}
 import mailbox/notifier
 import mailbox/service.{type GrantError, type Random}
 import mailbox/store.{type Store, type SweepReport}
+import primitives
 import weft/actor
 
 /// What the coordinator needs to start.
@@ -201,13 +208,14 @@ fn handle_message(
   // One arm per command; each runs a whole transaction's worth of work.
   case message {
     Handle(now:, request:, reply_with:) -> {
-      let response = service.handle(state.store, now, request)
+      let served =
+        service.serve(state.store, now, primitives.random_bytes, request)
 
-      // The transaction inside `handle` has committed before this line, so
+      // The transaction inside `serve` has committed before this line, so
       // the woken fetch will see the row. The reply follows, so a client
       // that appended and then fetched never misses its own envelope.
-      announce(state, response)
-      process.send(reply_with, response)
+      list.each(served.wakes, notifier.notify(state.notifier, _))
+      process.send(reply_with, served.response)
       actor.continue(state)
     }
 
@@ -221,23 +229,5 @@ fn handle_message(
       process.send(reply_with, granted)
       actor.continue(state)
     }
-  }
-}
-
-/// Wakes the queue's long-polling fetches after an append has committed.
-/// Only `Appended` can add a row, so only it notifies.
-fn announce(state: State, response: Response) -> Nil {
-  // Every other answer leaves the set of fetchable envelopes unchanged.
-  case response {
-    protocol.Appended(receipt:) ->
-      notifier.notify(state.notifier, id.to_bytes(receipt.queue))
-
-    protocol.QueueCreated(..)
-    | protocol.Batch(..)
-    | protocol.Acked
-    | protocol.QueueDeleted
-    | protocol.BlobStored(..)
-    | protocol.SealedBlob(..)
-    | protocol.Refused(..) -> Nil
   }
 }

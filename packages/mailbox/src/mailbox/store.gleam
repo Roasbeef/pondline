@@ -56,10 +56,16 @@
 //// 2. `transaction` wraps one change, and `put_envelope` and
 ////    `remove_envelope` are the row-level steps `mailbox/service` calls
 ////    inside it, in the order the protocol needs.
-//// 3. `sweep` is the one maintenance change, a transaction of its own.
+//// 3. `purge_expired_rendezvous`, `put_rendezvous`, `claim_rendezvous` and
+////    `put_rendezvous_message` are the rendezvous slot's row-level steps
+////    (ADR-016), and `live_rendezvous` and `live_rendezvous_at` are the
+////    only ways a request reads a slot, both blind to an expired one.
+//// 4. `sweep` is the one maintenance change, a transaction of its own.
 
 import core/envelope.{type StoredEnvelope, StoredEnvelope}
-import core/id.{type Blob, type Envelope, type Id, type Queue}
+import core/id.{type Blob, type Envelope, type Id, type Queue, type Rendezvous}
+import core/mailbox/protocol.{type RendezvousMessage, RendezvousMessage}
+import core/nameplate.{type Nameplate}
 import core/time.{type Instant, Instant}
 import gleam/bit_array
 import gleam/dynamic/decode
@@ -176,9 +182,55 @@ pub type BlobRecord {
   )
 }
 
+/// Which party of a rendezvous (ADR-016) a capability belongs to. The
+/// mailbox learns it only from which stored hash a presented capability
+/// matches.
+pub type Side {
+  /// The inviter, which opened the slot.
+  Opener
+
+  /// The joiner, which claimed the slot by its nameplate.
+  Claimant
+}
+
+/// Whether a slot's second party has arrived. The two hashes arrive
+/// together, so a slot with one and not the other is damage.
+pub type Claim {
+  /// Nobody has claimed the slot yet.
+  Unclaimed
+
+  /// The claimant's read and append capabilities, as SHA-256 hashes.
+  Claimed(read_hash: BitArray, append_hash: BitArray)
+}
+
+/// A rendezvous slot's row (ADR-016). The four capabilities are held only as
+/// SHA-256 hashes; the bodies live in their own table.
+pub type RendezvousRecord {
+  RendezvousRecord(
+    rendezvous: Id(Rendezvous),
+    nameplate: Nameplate,
+    /// The hash of the provisioning capability whose grant the slot counts
+    /// against.
+    grant_hash: BitArray,
+    opener_read_hash: BitArray,
+    opener_append_hash: BitArray,
+    claim: Claim,
+    /// The lifetime the open asked for, after the mailbox clamped it; kept
+    /// so a repeated open can be told from a different one.
+    lifetime: Int,
+    expires_at: Instant,
+  )
+}
+
+/// How many live slots one grant holds and how many the mailbox holds, the
+/// two counts an open is refused on.
+pub type RendezvousCounts {
+  RendezvousCounts(held: Int, live: Int)
+}
+
 /// What a sweep removed.
 pub type SweepReport {
-  SweepReport(envelopes: Int, tombstones: Int, blobs: Int)
+  SweepReport(envelopes: Int, tombstones: Int, blobs: Int, rendezvous: Int)
 }
 
 /// Read-only aggregate counts and byte totals for operator inspection (`mailbox status`).
@@ -829,18 +881,395 @@ pub fn live_blob(
   |> Ok
 }
 
+// ------------------------------------------------------------- rendezvous
+
+/// The live slot stored under `rendezvous`, if any. A slot whose expiry is
+/// before `now` is not live, swept or not.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.live_rendezvous(store, rendezvous, now)
+/// // -> Ok(None)
+/// ```
+pub fn live_rendezvous(
+  store: Store,
+  rendezvous: Id(Rendezvous),
+  now: Instant,
+) -> Result(Option(RendezvousRecord), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.rendezvous_by_id(
+      rendezvous_id: id.to_bytes(rendezvous),
+      now: now.unix_seconds,
+    ),
+  ))
+
+  // The two generated row types hold the same columns; each is read through
+  // the one decoder of a stored slot.
+  rows
+  |> list.map(fn(row) {
+    rendezvous_record(
+      row.rendezvous_id,
+      row.nameplate,
+      row.grant_hash,
+      #(row.opener_read_hash, row.opener_append_hash),
+      #(row.claimant_read_hash, row.claimant_append_hash),
+      #(row.lifetime, row.expires_at),
+    )
+  })
+  |> first_record
+}
+
+/// The live slot a nameplate names, if any, under the same rule as
+/// `live_rendezvous`. At most one slot holds a nameplate, which the
+/// schema's unique index enforces.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.live_rendezvous_at(store, nameplate, now)
+/// // -> Ok(None)
+/// ```
+pub fn live_rendezvous_at(
+  store: Store,
+  nameplate: Nameplate,
+  now: Instant,
+) -> Result(Option(RendezvousRecord), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.rendezvous_by_nameplate(
+      nameplate: nameplate.to_int(nameplate),
+      now: now.unix_seconds,
+    ),
+  ))
+
+  rows
+  |> list.map(fn(row) {
+    rendezvous_record(
+      row.rendezvous_id,
+      row.nameplate,
+      row.grant_hash,
+      #(row.opener_read_hash, row.opener_append_hash),
+      #(row.claimant_read_hash, row.claimant_append_hash),
+      #(row.lifetime, row.expires_at),
+    )
+  })
+  |> first_record
+}
+
+/// How many live slots the grant under `grant_hash` holds, and how many the
+/// mailbox holds in all.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.rendezvous_counts(store, grant_hash, now)
+/// // -> Ok(RendezvousCounts(held: 0, live: 0))
+/// ```
+pub fn rendezvous_counts(
+  store: Store,
+  grant_hash: BitArray,
+  now: Instant,
+) -> Result(RendezvousCounts, Error) {
+  use held <- result.try(query(
+    store,
+    sql.live_rendezvous_of_grant(grant_hash:, now: now.unix_seconds),
+  ))
+  use live <- result.try(query(
+    store,
+    sql.live_rendezvous(now: now.unix_seconds),
+  ))
+
+  // A count always returns one row; anything else is a damaged file.
+  case held, live {
+    [held], [live] -> Ok(RendezvousCounts(held: held.held, live: live.live))
+    _, _ -> Error(Corrupt("a rendezvous count returned no row"))
+  }
+}
+
+/// Whether any stored slot, live or not, holds `nameplate`. The open that
+/// asks has purged the expired slots first, so in practice this is the
+/// question "does a live slot hold it".
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.nameplate_taken(store, nameplate)
+/// // -> Ok(False)
+/// ```
+pub fn nameplate_taken(
+  store: Store,
+  nameplate: Nameplate,
+) -> Result(Bool, Error) {
+  use rows <- result.try(query(
+    store,
+    sql.nameplate_taken(nameplate: nameplate.to_int(nameplate)),
+  ))
+
+  // A count always returns one row.
+  case rows {
+    [row] -> Ok(row.taken > 0)
+    _ -> Error(Corrupt("a nameplate count returned no row"))
+  }
+}
+
+/// Deletes every slot whose expiry is before `now`, with its messages
+/// through the cascade, and returns how many went. An open runs it first,
+/// so an expired slot can neither hold a nameplate nor block its own
+/// identifier.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.purge_expired_rendezvous(store, now)
+/// // -> Ok(0)
+/// ```
+pub fn purge_expired_rendezvous(
+  store: Store,
+  now: Instant,
+) -> Result(Int, Error) {
+  let cutoff = now.unix_seconds
+
+  use expired <- result.try(query(store, sql.expired_rendezvous(now: cutoff)))
+  use _ <- result.try(write(store, sql.delete_expired_rendezvous(now: cutoff)))
+
+  Ok(list.fold(expired, 0, fn(sum, row) { sum + row.expired }))
+}
+
+/// Inserts a new, unclaimed slot. The caller holds the transaction and has
+/// checked the grant, the quotas and that the nameplate is free.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.put_rendezvous(store, record)
+/// // -> Ok(Nil)
+/// ```
+pub fn put_rendezvous(
+  store: Store,
+  record: RendezvousRecord,
+) -> Result(Nil, Error) {
+  write(
+    store,
+    sql.insert_rendezvous(
+      rendezvous_id: id.to_bytes(record.rendezvous),
+      nameplate: nameplate.to_int(record.nameplate),
+      grant_hash: record.grant_hash,
+      opener_read_hash: record.opener_read_hash,
+      opener_append_hash: record.opener_append_hash,
+      lifetime: record.lifetime,
+      expires_at: record.expires_at.unix_seconds,
+    ),
+  )
+}
+
+/// Binds the claimant's two capability hashes to an unclaimed slot and sets
+/// its new expiry. The statement itself refuses a slot already claimed, so
+/// a second claim can never replace the first even if a caller forgot to
+/// look.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.claim_rendezvous(store, rendezvous, read_hash, append_hash, expiry)
+/// // -> Ok(Nil)
+/// ```
+pub fn claim_rendezvous(
+  store: Store,
+  rendezvous: Id(Rendezvous),
+  read_hash: BitArray,
+  append_hash: BitArray,
+  expires_at: Instant,
+) -> Result(Nil, Error) {
+  write(
+    store,
+    sql.claim_rendezvous(
+      read_hash: Some(read_hash),
+      append_hash: Some(append_hash),
+      expires_at: expires_at.unix_seconds,
+      rendezvous_id: id.to_bytes(rendezvous),
+    ),
+  )
+}
+
+/// Deletes a slot and, through the cascade, its messages.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.delete_rendezvous(store, rendezvous)
+/// // -> Ok(Nil)
+/// ```
+pub fn delete_rendezvous(
+  store: Store,
+  rendezvous: Id(Rendezvous),
+) -> Result(Nil, Error) {
+  write(store, sql.delete_rendezvous(rendezvous_id: id.to_bytes(rendezvous)))
+}
+
+/// The digest of the message `side` stored under `index`, if it stored one.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.rendezvous_message_digest(store, rendezvous, Opener, 0)
+/// // -> Ok(None)
+/// ```
+pub fn rendezvous_message_digest(
+  store: Store,
+  rendezvous: Id(Rendezvous),
+  side: Side,
+  index: Int,
+) -> Result(Option(BitArray), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.rendezvous_message_digest(
+      rendezvous_id: id.to_bytes(rendezvous),
+      side: side_code(side),
+      message_index: index,
+    ),
+  ))
+
+  rows
+  |> list.map(fn(row) { row.digest })
+  |> first
+  |> Ok
+}
+
+/// Stores one message of `side`. The caller holds the transaction and has
+/// checked the index and size bounds and that the index is free.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.put_rendezvous_message(store, rendezvous, Opener, 0, digest, body)
+/// // -> Ok(Nil)
+/// ```
+pub fn put_rendezvous_message(
+  store: Store,
+  rendezvous: Id(Rendezvous),
+  side: Side,
+  index: Int,
+  digest: BitArray,
+  body: BitArray,
+) -> Result(Nil, Error) {
+  write(
+    store,
+    sql.insert_rendezvous_message(
+      rendezvous_id: id.to_bytes(rendezvous),
+      side: side_code(side),
+      message_index: index,
+      digest:,
+      body:,
+    ),
+  )
+}
+
+/// The messages `side` stored with an index greater than `after`, in index
+/// order.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.rendezvous_messages(store, rendezvous, Claimant, -1)
+/// // -> Ok([])
+/// ```
+pub fn rendezvous_messages(
+  store: Store,
+  rendezvous: Id(Rendezvous),
+  side: Side,
+  after: Int,
+) -> Result(List(RendezvousMessage), Error) {
+  use rows <- result.try(query(
+    store,
+    sql.rendezvous_messages_after(
+      rendezvous_id: id.to_bytes(rendezvous),
+      side: side_code(side),
+      after:,
+    ),
+  ))
+
+  rows
+  |> list.map(fn(row) {
+    RendezvousMessage(index: row.message_index, body: row.body)
+  })
+  |> Ok
+}
+
+/// A slot's columns as a record, decoded as totally as wire bytes: an
+/// identifier, a nameplate or a half-written claim that does not decode is
+/// damage, never a slot.
+fn rendezvous_record(
+  rendezvous_id: BitArray,
+  stored_nameplate: Int,
+  grant_hash: BitArray,
+  opener: #(BitArray, BitArray),
+  claimant: #(Option(BitArray), Option(BitArray)),
+  timing: #(Int, Int),
+) -> Result(RendezvousRecord, Error) {
+  let damaged = Corrupt("a rendezvous row does not decode")
+
+  use rendezvous <- result.try(
+    id.from_bytes(rendezvous_id) |> result.replace_error(damaged),
+  )
+  use plate <- result.try(
+    nameplate.from_int(stored_nameplate) |> result.replace_error(damaged),
+  )
+
+  // The claimant's two hashes are written by one statement, so they are
+  // both present or both absent.
+  use claim <- result.try(case claimant {
+    #(None, None) -> Ok(Unclaimed)
+    #(Some(read_hash), Some(append_hash)) ->
+      Ok(Claimed(read_hash:, append_hash:))
+    #(Some(_), None) | #(None, Some(_)) -> Error(damaged)
+  })
+
+  Ok(RendezvousRecord(
+    rendezvous:,
+    nameplate: plate,
+    grant_hash:,
+    opener_read_hash: opener.0,
+    opener_append_hash: opener.1,
+    claim:,
+    lifetime: timing.0,
+    expires_at: Instant(timing.1),
+  ))
+}
+
+/// The first decoded slot, or the damage that stopped its decoding.
+fn first_record(
+  rows: List(Result(RendezvousRecord, Error)),
+) -> Result(Option(RendezvousRecord), Error) {
+  case rows {
+    [] -> Ok(None)
+    [Ok(record), ..] -> Ok(Some(record))
+    [Error(error), ..] -> Error(error)
+  }
+}
+
+/// The column value of a side: 0 for the opener, 1 for the claimant.
+fn side_code(side: Side) -> Int {
+  case side {
+    Opener -> 0
+    Claimant -> 1
+  }
+}
+
 // ------------------------------------------------------------ maintenance
 
 /// Deletes every envelope and every sealed blob whose deadline is before
-/// `now`, releasing each queue's bytes, and every tombstone past its
-/// deadline. Expired envelopes leave no tombstone: the tombstone would
-/// carry the same deadline, so it would already be worthless.
+/// `now`, releasing each queue's bytes, every tombstone past its deadline,
+/// and every rendezvous slot past its expiry with its messages. Expired
+/// envelopes leave no tombstone: the tombstone would carry the same
+/// deadline, so it would already be worthless.
 ///
 /// ## Examples
 ///
 /// ```gleam
 /// store.sweep(store, now)
-/// // -> Ok(SweepReport(envelopes: 0, tombstones: 0, blobs: 0))
+/// // -> Ok(SweepReport(envelopes: 0, tombstones: 0, blobs: 0, rendezvous: 0))
 /// ```
 pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
   let cutoff = now.unix_seconds
@@ -879,10 +1308,15 @@ pub fn sweep(store: Store, now: Instant) -> Result(SweepReport, Error) {
     )
     use _ <- result.try(write(store, sql.delete_expired_blobs(now: cutoff)))
 
+    // Rendezvous slots charge no queue, so they go without any accounting;
+    // their messages follow through the cascade (ADR-016).
+    use rendezvous <- result.try(purge_expired_rendezvous(store, now))
+
     Ok(SweepReport(
       envelopes: list.fold(expired, 0, fn(sum, entry) { sum + entry.envelopes }),
       tombstones: list.fold(stale, 0, fn(sum, row) { sum + row.stale }),
       blobs: list.fold(blobs, 0, fn(sum, entry) { sum + entry.blobs }),
+      rendezvous:,
     ))
   })
 }
