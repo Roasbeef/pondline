@@ -3,7 +3,22 @@
 **Status**: research note · **Date**: 2026-11-01 · **Tracks**: issue #1 ·
 **Depends on**: the short invitation ticket (`pl1…`), being built in parallel
 
-This note works out how Pondline could pair two daemons from a code an
+**Decided by ADR-016 (2026-11-14).** The decision is
+`docs/adr/016-spoken-pairing-codes.md`, which adopts this note's
+recommendation, CPaceOQUAKE of `draft-vos-cfrg-pqpake-03`, and is the
+ruling wherever the two differ. The survey below is left as written. The
+ADR departs from it here:
+
+| This note | ADR-016 | Why |
+| --- | --- | --- |
+| The inviter is CPace's initiator and speaks first (§5.2) | The joiner is the draft's client and speaks first | The inviter must see the joiner's proof of the words before it releases anything; here it did not, so a wrong guess was invisible to it |
+| Three words from a 256-word list, 24 bits (§5.3) | Three BIP-39 English words, 33 bits | The same spoken length, 512 times fewer successful guesses, and four letters identify a word |
+| Smallest free nameplate; a third claim burns it (§1.4, §5.3) | Six random digits, at most 1000 live slots per mailbox, and the first claim stands | Sequential nameplates let anyone burn every live code; a blind claim now hits at most once in a thousand, and a late stranger changes nothing |
+| Confirmation by `h` one way and `msg4`'s tag the other (§5.2) | Explicit two-way confirmation: `confirm_J` from the joiner, checked before the hand-off, and `m4`'s tag | The draft's Finish returns a random key on failure, so completion proves nothing |
+| `msg4` carries the invitation file, padded to 16 KiB (§5.2) | `m4` carries the ticket text; the ticket's flow follows | Rendezvous bodies stay under 2 KiB, and everything after `m4` is ADR-009's code and model |
+| The rendezvous mailbox learns nothing about the code and cannot impersonate a party (§1.3) | It gets two guesses per run, one against each side, about one chance in 2^32; failures are counted, three in 24 hours per endpoint | It alone can play both roles in one run |
+| A managed default rendezvous or a configured alias in the code (§1.3, §5.1) | No alias; the rendezvous is the inviter's mailbox, or one the joiner names | The alias was parser and configuration surface with no security value |
+ how Pondline could pair two daemons from a code an
 operator can read over the phone, in the magic-wormhole style
 (`7-guitarist-revenge`), without weakening the post-quantum posture of
 `docs/crypto-profile-v1.md`. It surveys the published constructions,

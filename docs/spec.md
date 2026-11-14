@@ -96,6 +96,8 @@ Arti exposes both client connections and onion-service hosting APIs, so both cli
 
 A mailbox is trusted for availability and resource accounting, **not** confidentiality or peer authenticity.
 
+*Amended by ADR-016.* A pairing by spoken code (§4.2) meets at a rendezvous slot at the inviter's mailbox, which makes that mailbox a party to the exchange. It can deny service, and it sees who opens and claims a rendezvous and when. It sees the PAKE's messages but never the code's words, and a passive observer learns nothing about them. It alone can play joiner to the inviter and inviter to the joiner in one run, so it gets two guesses at the words per run, one against each side, and a right guess pairs it as that party: about one chance in 2^32 per run. Otherwise nothing in this section changes, and nothing changes for the file or the ticket.
+
 A client daemon is trusted with plaintext and key material. Its host operating system is part of that trusted boundary.
 
 The model is not trusted with private keys, mailbox administration credentials, or unrestricted access to the daemon.
@@ -196,6 +198,8 @@ The human-readable description is informational, not independently verified iden
 
 *Added by ADR-009.* An invitation may also travel as a **ticket**: a checksummed `pl1` string of 130 characters (74 for a loopback mailbox) carrying only the inviter mailbox's endpoint and a fresh 32-byte secret `K`. The invitation itself is stored at that mailbox sealed under keys derived from `K` (ChaCha20-Poly1305 plus an HMAC commitment to the plaintext), named by a locator and fetched with a capability also derived from `K`; the mailbox sees only the locator, the capability's hash and ciphertext. The joiner MUST check the AEAD and the commitment, and that the invitation names the ticket's mailbox, before using it. A ticket is a bearer credential exactly as the file is, and MUST NOT appear in argv, logs or errors. `docs/adr/009-invitation-tickets.md` has the format and `docs/crypto-profile-v1.md` §11 the derivations.
 
+*Added by ADR-016.* An invitation may also travel by a **spoken pairing code**, such as `482719-cradle-noble-velvet`, for a pairing set up by voice. The six digits are the nameplate of a rendezvous slot at the inviter's mailbox, drawn at random by that mailbox, and are public. The three words come from the BIP-39 English list, eleven bits each, drawn by the inviter: 33 bits, which is secret. A code is neither a bearer of the invitation nor a key. Thirty-three bits fall to an offline search in seconds, so the words are only the password of a hybrid PAKE, CPaceOQUAKE (`draft-vos-cfrg-pqpake-03`), which gives a passive observer nothing and an active attacker one guess per run. What the PAKE delivers, once each side has proved it holds the words, is the inviter's ticket, and from there the ticket's rules apply. A code serves a single run: any failure ends it and the operator makes a new one. The decoder refuses locally anything that is not exactly a code (lowercase, single hyphens, six digits, three listed words), so a mistyped word never spends one. The file and the ticket stay supported and stay the default. `docs/adr/016-spoken-pairing-codes.md` has the decision and `docs/crypto-profile-v1.md` §12 the bytes.
+
 ## 4.3 Establishment flow
 
 ### Step 1: Inviter prepares
@@ -205,6 +209,8 @@ Daemon A creates its relationship-specific identity, private prekey material, an
 *Amended by ADR-013.* It records the invitation locally and exports the invitation file, which holds the public bundle. Nothing is uploaded to the mailbox for the bundle.
 
 *Added by ADR-009.* With a ticket, A also stores the sealed invitation at its own mailbox with `PutBlob`, under the invitation's deadline and charged to the inbound queue's quota, and exports the ticket only after the mailbox has stored it.
+
+*Added by ADR-016.* With a code, A first does everything the ticket requires, `PutBlob` included, so the ticket is minted and stored before any PAKE message is read. It then opens a rendezvous slot at its own mailbox with `OpenRendezvous` (§6.2), under its provisioning grant, with a fresh rendezvous identifier and its own read and append capabilities, is told the nameplate, prints the code and waits. Both daemons must be up inside the slot's lifetime (§11.3); nothing about the code path is asynchronous.
 
 A may include a narrowly scoped provisioning grant allowing B to create a return queue without establishing a separate service account.
 
@@ -217,6 +223,8 @@ It persists its own pairing attempt, identity material, and request identifiers 
 B then creates its return queue. *Amended by ADR-013:* the bundle comes from the invitation, and decoding verifies it under the inviter's identity key.
 
 *Added by ADR-009.* Given a ticket, B first fetches the sealed invitation with `GetBlob` and opens and checks it before anything is persisted; from there the flow is the file's. Fetching does not consume the blob, as fetching a bundle does not consume the invitation.
+
+*Added by ADR-016.* Given a code, B claims the slot by its nameplate with `ClaimRendezvous`, at its own mailbox's endpoint or one its operator names, and learns the rendezvous identifier. The two daemons then exchange four messages through the slot. B, the PAKE's client, sends its CPace share (`m1`). A answers with its CPace share and OQUAKE's first message (`m2`). B finishes both stages and sends OQUAKE's response and its confirmation tag `confirm_J` (`m3`). A finishes, checks `confirm_J` in constant time, and only on a match sends the ticket sealed under a key derived from the PAKE's session key (`m4`). B's proof that A held the words is that `m4` opens. B then redeems the ticket exactly as above, and everything after is the ticket's flow, unchanged. Apart from the failure count of §4.4, neither daemon writes the run to its store, so the words and the ephemeral secrets never reach disk; a daemon that restarts mid-run loses the run, and the operator makes a new code. The exchange (`core/rendezvous`) and the mailbox's slot are implemented and tested; the daemon side is in progress.
 
 
 ### Step 3: Joiner sends `Hello`
@@ -246,6 +254,8 @@ Only a valid authenticated `Hello` may consume the invitation.
 
 A mailbox can interfere with availability, but it cannot cause an invalid claimant to become an accepted contact.
 
+*Amended by ADR-016.* For a pairing by spoken code the rendezvous mailbox can: if it guesses the words it pairs as the party it played, with about one chance in 2^32 per run (§2.3). Operators pairing by voice should compare fingerprints when that matters (§4.4). For the file and the ticket the sentence above stands.
+
 The valid claim and resulting session state MUST commit atomically.
 
 ### Step 5: Local approval and acceptance
@@ -263,6 +273,8 @@ Prekey claims and queue provisioning MUST be idempotent for an identical request
 A competing claimant cannot replace a contact after a valid invitation consumption. Replayed valid handshakes must resolve to the existing outcome, not create additional relationships.
 
 A stolen invitation can be raced. The system cannot infer which bearer was the intended human. Sensitive deployments should require out-of-band fingerprint confirmation or an independently pinned peer identity.
+
+*Added by ADR-016.* A spoken code is good for one run, and there is no retry within a run. Each side MUST act only on the first message at each index and MUST end the run on any error, because a step run on a second message would give the peer a second guess. A stranger who claims the slot before the joiner spends the code, and the run fails closed. A run ends as paired, never claimed, claimed then stalled, or confirmation failed, and only the last is a spent guess; a joiner that sent `m3` and received no `m4` counts it as one, since an inviter whose check fails sends nothing. Each daemon keeps a durable count of confirmation failures per rendezvous endpoint, and after 3 within 24 hours refuses codes at that endpoint and points the operator to a ticket and a fingerprint comparison. A word misheard as another listed word passes the local check and counts as a failure. A code is weaker than a ticket by construction, one guess in 2^33 per attempt against a 256-bit bearer secret, so the fingerprint advice above applies to it with more force. The failure count is specified by ADR-016 and lands with the daemon change, which is in progress.
 
 ---
 
@@ -351,6 +363,22 @@ Unknown required features fail closed. Unknown optional fields must not grant au
 | `Ack` | Acknowledge specific envelopes after local durable processing. |
 | `UpdatePolicy` / `Revoke` | Change queue limits or credentials under administration authority. |
 | `PutBlob` / `GetBlob` | *Added by ADR-009.* Store a sealed invitation under a ticket's locator until a deadline, authorized by a queue's admin capability and charged to its quota; fetch it, without deleting it, with the ticket's retrieve capability. |
+| `OpenRendezvous` | *Added by ADR-016.* Open a short-lived rendezvous slot under a provisioning grant, with the opener's read and append capabilities; the mailbox draws its nameplate. |
+| `ClaimRendezvous` | *Added by ADR-016.* Bind a second side's read and append capabilities to the unclaimed live slot a nameplate names, and learn the slot's identifier. |
+| `RendezvousSend` / `RendezvousFetch` | *Added by ADR-016.* Store one numbered message for the other side; return the other side's messages past an index, optionally waiting for one. |
+| `CloseRendezvous` | *Added by ADR-016.* Delete the slot and its messages; either side may. |
+
+*Added by ADR-016.* A rendezvous is the one mailbox structure with two parties, and the mailbox tells them apart only by which stored capability hash a presented capability matches. It stores per slot the identifier, the nameplate, the expiry, the requested lifetime, the grant the slot is charged to, the SHA-256 of each of the four capabilities, and each message body with its digest; never the code's words, a key or an identity. A slot charges no queue's quota. A missing slot, an expired slot and a capability of neither side all answer the same `Unauthorized`, so the mailbox is no oracle for which slots or nameplates exist, and a slot is invisible from the instant it expires, whether or not it has been swept.
+
+`OpenRendezvous` is authorized by a provisioning grant and spends none of its queue allowance. The requested lifetime is clamped to between 1 second and the slot lifetime of §11.3. The nameplate is drawn uniformly among the six-digit values no live slot holds; a mailbox that cannot find one answers `Unavailable`. The identical open (same identifier, grant, capabilities and clamped lifetime) answers the same nameplate and the slot's current expiry; any other open under the identifier is a `Conflict`. An open is refused `QuotaExceeded` when its grant already holds the per-grant number of live slots or the mailbox the per-mailbox number (§11.3); the second cap is what keeps the nameplate space sparse.
+
+`ClaimRendezvous` carries no credential beyond the nameplate, because a joiner need not have an account at the rendezvous. It binds the claimant's pair to an unclaimed live slot and shortens the slot's life to the earlier of its expiry and the claim time plus the claimed lifetime of §11.3. The identical claim answers the same. The first claim stands: a different claim on a claimed slot, an unknown or expired nameplate, and a claim presenting either of the opener's own capabilities are all `Unauthorized`.
+
+`RendezvousSend` is authorized by either side's append capability and files the message under that side. The index runs from 0 to one less than the per-side message bound, and anything else is `QuotaExceeded`; a body over the size bound is `TooLarge`. The same bytes at an index are the same message and answer as before; different bytes at a filed index are a `Conflict` and never replace the first.
+
+`RendezvousFetch` is authorized by either side's read capability and returns only the other side's messages whose index is greater than `after` (`-1` for all), in index order. It may wait up to `wait_seconds`, clamped to the long-poll bound, for one to arrive, and answers an empty list if none does. The opener may fetch before the slot is claimed and gets an empty list.
+
+`CloseRendezvous` is authorized by either side's read capability, deletes the slot with its messages, and ends both sides' waiting fetches. A second close finds no slot and is `Unauthorized`.
 
 The network binding should translate into typed domain commands. Storage logic must not depend on HTTP objects.
 
@@ -615,6 +643,8 @@ Secrets should be passed through protected files, descriptors, or standard input
 
 *Added by ADR-009.* `pondline invite create ... --ticket` prints a ticket on standard output (and still writes the file with `--out`); `pondline invite accept --ticket (--file F | --stdin)` redeems one. `--ticket` is a flag and never takes the ticket as a value.
 
+*Added by ADR-016.* `pondline invite create --code` does what `--ticket` does, opens a rendezvous at the inviter's mailbox, prints a code such as `482719-cradle-noble-velvet` and waits for the joiner. `pondline invite accept --code` reads a code from `--stdin` or a prompt and pairs, at the joiner's own mailbox's endpoint unless `--rendezvous HOST:PORT` names another. This surface is specified by ADR-016 and lands with the daemon change, which is in progress; until then these flags do not exist.
+
 Machine-readable output and stable exit/error categories are required.
 
 MCP and Loom integrations should invoke this same local API rather than implementing independent protocol logic.
@@ -772,6 +802,11 @@ These are engineering starting points, not measured optimal values.
 | Ticket text | At most 192 bytes read; tickets are 130 (onion) or 74 (loopback) characters (ADR-009) |
 | Processing attempts before an envelope is quarantined | 5 (ADR-010) |
 | Send idempotency key | 1 to 128 bytes, remembered 7 days (ADR-011) |
+| Pairing code | A nameplate of 6 digits (`nameplate_digits`) and 3 words (`pairing_code_words`); at most 64 bytes read (`max_pairing_code_bytes`) (ADR-016) |
+| Rendezvous slot lifetime | 600 s from opening (`rendezvous_seconds`); after a claim, the earlier of that and 120 s from the claim (`rendezvous_claimed_seconds`) (ADR-016) |
+| Rendezvous message | At most 2048 bytes (`max_rendezvous_body_bytes`), at most 4 per side (`max_rendezvous_messages`) (ADR-016) |
+| Live rendezvous slots | At most 4 per provisioning grant (`max_grant_rendezvous`) and 1000 per mailbox (`max_live_rendezvous`) (ADR-016) |
+| Confirmation failures per rendezvous endpoint | 3 (`max_rendezvous_failures`) within 24 hours (`rendezvous_failure_window_seconds`), then codes are refused there; enforced by the daemon, in progress (ADR-016) |
 | Initial queue capacity | 64 MiB, with separate message/rate limits |
 | Ratchet work limits | Fixed by the crypto profile; never unbounded |
 
@@ -861,6 +896,8 @@ The implementation must demonstrate:
 | No authority escalation | Delivery permission cannot create execution or administration permission. |
 | No silent transport downgrade | Core mailbox traffic cannot fall back to a public transport. |
 | Bounded adversarial work | Input sizes, retries, skips, pending operations, and native buffers have hard limits. |
+
+*Amended by ADR-016.* "No mailbox-driven identity substitution" holds for the file and the ticket. For a pairing by spoken code, the rendezvous mailbox can substitute itself for either party if it guesses the words, with about one chance in 2^32 per run (§2.3), and the failure count of §4.4 bounds how many runs it gets.
 
 ## 13.2 Test strategy
 

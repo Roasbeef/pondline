@@ -14,5 +14,5 @@ should go to outside review.
 
 | Note | Tracks | Question | Recommendation in one line |
 | --- | --- | --- | --- |
-| [`hybrid-pake.md`](hybrid-pake.md) | issue #1 | A human-typable pairing code, bootstrapped by a hybrid PAKE over the mailbox | Adopt the sequential CPace-then-OQUAKE composition of `draft-vos-cfrg-pqpake`, not an in-house combination; concrete rendezvous flow in §5 |
+| [`hybrid-pake.md`](hybrid-pake.md) | issue #1 | A human-typable pairing code, bootstrapped by a hybrid PAKE over the mailbox | Adopt the sequential CPace-then-OQUAKE composition of `draft-vos-cfrg-pqpake`, not an in-house combination. Decided by [ADR-016](../adr/016-spoken-pairing-codes.md), which departs from the note's §5 flow; the note's status table lists where |
 | [`initiator-deniability.md`](initiator-deniability.md) | issue #2 | What the joiner's hybrid transcript signature gives up, and what a `CryptoProfileV2` would change to get it back | Not now; the V2 shape that restores it with no new primitives is a join-secret MAC plus KEM-based implicit authentication of the joiner, and the decision is cheapest before the profile freezes |
