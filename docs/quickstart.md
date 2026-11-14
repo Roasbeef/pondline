@@ -96,13 +96,14 @@ pondline-mailbox grant --db ~/.local/state/pondline-mb/mailbox.db \
 ### 1. One-time daemon setup (each machine)
 
 Each person initializes `~/.pondline` (`pondline` defaults `--state-dir` to
-`~/.pondline` or `$PONDLINE_STATE_DIR` when omitted), starts `pondline daemon`,
-and waits ~15-30 seconds until `pondline health` reports `tor=bootstrapped`:
+`~/.pondline` or `$PONDLINE_STATE_DIR` when omitted) and installs the user
+background service (`launchd` on macOS, `systemd --user` on Linux; or run
+`pondline daemon 2>>~/.pondline/daemon.log &` in a container). `invite create`
+and `invite accept` wait automatically while Tor finishes bootstrapping:
 
 ```bash
 pondline init --stdin               # paste your plg1... token, Enter, Ctrl-D
-pondline daemon 2>>~/.pondline/daemon.log &
-pondline health                     # wait for tor=bootstrapped
+pondline service install            # starts and supervises pondline daemon
 ```
 
 ### 2. Exchange one `pl1...` ticket to pair

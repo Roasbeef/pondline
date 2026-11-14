@@ -47,6 +47,27 @@ pub fn getenv(name: String) -> Result(String, Nil)
 @external(erlang, "daemon_local_ffi", "find_executable")
 pub fn find_executable(name: String) -> Result(String, Nil)
 
+/// Lowercase operating-system family name (`"darwin"` or `"linux"`).
+@external(erlang, "daemon_local_ffi", "host_os")
+pub fn host_os() -> Result(String, Nil)
+
+/// Expands `path` against the current working directory into an absolute path.
+@external(erlang, "daemon_local_ffi", "absolute_path")
+pub fn absolute_path(path: String) -> String
+
+/// Effective numeric user id of the current process.
+@external(erlang, "daemon_local_ffi", "current_uid")
+pub fn current_uid() -> Result(Int, String)
+
+/// Runs `executable` directly (`spawn_executable`, no shell) with `args` and a
+/// millisecond timeout, returning `#(exit_status, combined_output)`.
+@external(erlang, "daemon_local_ffi", "run_program")
+pub fn run_program(
+  executable: String,
+  args: List(String),
+  timeout_ms: Int,
+) -> Result(#(Int, String), String)
+
 /// Stops the VM with `code` after flushing output.
 @external(erlang, "erlang", "halt")
 pub fn halt(code: Int) -> Nil

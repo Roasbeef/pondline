@@ -3,7 +3,8 @@
     listen/1, accept/1, connect/2, recv_line/4, send/2, close/1,
     monotonic_ms/0, create_private_file/2, write_private_file/2,
     make_private_dir/1, file_mode/1, write_stdout/1, read_stdin/1,
-    getenv/1, find_executable/1, halt/1
+    getenv/1, find_executable/1, host_os/0, absolute_path/1,
+    current_uid/0, run_program/3, halt/1
 ]).
 
 %% Binds a Unix domain socket at `Path`. A stale socket file is removed
@@ -206,6 +207,58 @@ find_executable(Name) ->
     case os:find_executable(binary_to_list(Name)) of
         false -> {error, nil};
         Path -> {ok, unicode:characters_to_binary(Path)}
+    end.
+
+host_os() ->
+    case os:type() of
+        {unix, Name} -> {ok, atom_to_binary(Name, utf8)};
+        _ -> {error, nil}
+    end.
+
+absolute_path(Path) ->
+    unicode:characters_to_binary(filename:absname(unicode:characters_to_list(Path))).
+
+current_uid() ->
+    IdBin = case os:find_executable("id") of
+        false -> <<"/usr/bin/id">>;
+        Found -> unicode:characters_to_binary(Found)
+    end,
+    case run_program(IdBin, [<<"-u">>], 5000) of
+        {ok, {0, Out}} ->
+            Trimmed = string:trim(Out),
+            try binary_to_integer(Trimmed) of
+                Uid when Uid >= 0 -> {ok, Uid};
+                _ -> {error, <<"bad_uid">>}
+            catch
+                _:_ -> {error, <<"bad_uid">>}
+            end;
+        {ok, {_Code, _Out}} -> {error, <<"id_failed">>};
+        {error, Reason} -> {error, Reason}
+    end.
+
+run_program(Executable, Args, TimeoutMs) ->
+    ExeList = unicode:characters_to_list(Executable),
+    ArgLists = [unicode:characters_to_list(A) || A <- Args],
+    try open_port({spawn_executable, ExeList}, [exit_status, binary, stderr_to_stdout, {args, ArgLists}]) of
+        Port -> collect_port(Port, TimeoutMs, [])
+    catch
+        error:Reason -> reason(Reason)
+    end.
+
+collect_port(Port, TimeoutMs, Acc) ->
+    receive
+        {Port, {data, Chunk}} ->
+            collect_port(Port, TimeoutMs, [Chunk | Acc]);
+        {Port, {exit_status, Status}} ->
+            Raw = iolist_to_binary(lists:reverse(Acc)),
+            Text = case unicode:characters_to_binary(Raw) of
+                Bin when is_binary(Bin) -> Bin;
+                _ -> <<>>
+            end,
+            {ok, {Status, Text}}
+    after TimeoutMs ->
+        try port_close(Port) catch _:_ -> ok end,
+        {error, <<"timeout">>}
     end.
 
 halt(Code) -> erlang:halt(Code).

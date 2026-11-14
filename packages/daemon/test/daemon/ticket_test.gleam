@@ -17,9 +17,12 @@ import core/time
 import daemon/api
 import daemon/config
 import daemon/node
+import daemon/status
 import daemon/support
+import daemon/transport
 import gleam/bit_array
 import gleam/dynamic/decode
+import gleam/erlang/process
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
@@ -286,6 +289,83 @@ pub fn an_invitation_for_another_mailbox_is_refused_test() {
       "the invitation names a different mailbox than its ticket",
     ))
   assert api.contacts(b) == Ok([])
+
+  let _ = node.stop(a)
+  let _ = node.stop(b)
+}
+
+/// When a TorOnly daemon has just started (`TorStarting`), `invite_ticket`
+/// and `accept_ticket` wait for `TorBootstrapped` instead of burning their
+/// mailbox retry window early, and fail fast if Tor becomes `TorUnavailable`.
+pub fn onion_ticket_calls_wait_for_tor_bootstrap_and_fail_on_unavailable_test() {
+  let mailbox = support.start_mailbox()
+  let assert Ok(onion) =
+    endpoint.parse_onion(
+      "pg6mmjiyjmcrsslvykfwnntlaru7p5svn6y2ymmju6nubxndf4pscryd.onion",
+    )
+  let assert Ok(onion_port) = endpoint.port(80)
+  let assert Ok(loop_port) = endpoint.port(mailbox.port)
+  let onion_ep = endpoint.Onion(onion, onion_port)
+  let loop_dialer =
+    transport.new_dialer(endpoint.TorOrLoopback, fn(_, _, _, _) {
+      Error(transport.ConnectFailed)
+    })
+  let bridge_dialer =
+    transport.new_dialer(endpoint.TorOnly, fn(_, _, group, timeout_ms) {
+      transport.dial(
+        loop_dialer,
+        endpoint.Loopback(loop_port),
+        group,
+        timeout_ms,
+      )
+    })
+
+  let base_a =
+    config.new(
+      support.fresh("boot_a"),
+      config.Mailbox(
+        endpoint: onion_ep,
+        provisioning_file: mailbox.provisioning_file,
+      ),
+      endpoint.TorOnly,
+    )
+  let base_b =
+    config.new(
+      support.fresh("boot_b"),
+      config.Mailbox(
+        endpoint: onion_ep,
+        provisioning_file: mailbox.provisioning_file,
+      ),
+      endpoint.TorOnly,
+    )
+  let assert Ok(a) =
+    node.start(config.Config(..base_a, dialer: Some(bridge_dialer)))
+  let assert Ok(b) =
+    node.start(config.Config(..base_b, dialer: Some(bridge_dialer)))
+
+  // Simulate Tor still starting on A, becoming Bootstrapped 80 ms later.
+  status.set_tor(api.status_handle(a), status.TorStarting)
+  let _ =
+    process.spawn(fn() {
+      process.sleep(80)
+      status.set_tor(api.status_handle(a), status.TorBootstrapped)
+    })
+  let assert Ok(issued) = api.invite_ticket(a, "peer_b", offer.AutoApprove, 5)
+
+  // Simulate TorUnavailable on B: `accept_ticket` fails immediately.
+  status.set_tor(api.status_handle(b), status.TorUnavailable)
+  assert api.accept_ticket(b, issued.ticket, "peer_a") == Error(api.Unavailable)
+
+  // Now simulate TorStarting -> TorBootstrapped on B and redeem cleanly.
+  status.set_tor(api.status_handle(b), status.TorStarting)
+  let _ =
+    process.spawn(fn() {
+      process.sleep(80)
+      status.set_tor(api.status_handle(b), status.TorBootstrapped)
+    })
+  let assert Ok(_) = api.accept_ticket(b, issued.ticket, "peer_a")
+  let _ = active_contact(a)
+  let _ = active_contact(b)
 
   let _ = node.stop(a)
   let _ = node.stop(b)

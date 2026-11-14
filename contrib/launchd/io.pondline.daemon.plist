@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.pondline.daemon</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <!-- `pondline service install` renders and loads this file automatically -->
+    <string>/Users/YOU/.local/bin/pondline</string>
+    <string>daemon</string>
+    <string>--state-dir</string>
+    <string>/Users/YOU/.pondline</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PONDLINE_LOG_LEVEL</key>
+    <string>info</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>SoftResourceLimits</key>
+  <dict>
+    <key>NumberOfFiles</key>
+    <integer>16384</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/.pondline/daemon.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.pondline/daemon.log</string>
+</dict>
+</plist>

@@ -42,7 +42,7 @@ Options:
   --repo <owner/name>      GitHub repository (default: Roasbeef/pondline)
   --tarball <path>         Install from a pre-downloaded release tarball
   --sha256-file <path>     SHA-256 checksum file required with --tarball
-  --restart-user-service   Run `systemctl --user try-restart pondline-mailbox` after switch
+  --restart-user-service   Restart active user daemon/mailbox services (launchd / systemd)
   -h, --help               Show this help
 EOF
 }
@@ -319,10 +319,16 @@ acquire_lock
 PREFIX="$TARGET_PREFIX" "$FOUND_REL/install.sh" --from "$FOUND_REL"
 
 if [ "$RESTART_USER_SERVICE" -eq 1 ]; then
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl --user try-restart pondline-mailbox.service
-    echo "==> restarted pondline-mailbox.service"
+  if [ "$OS" = "darwin" ] && command -v launchctl >/dev/null 2>&1; then
+    if [ -f "$HOME/Library/LaunchAgents/io.pondline.daemon.plist" ]; then
+      launchctl kickstart -k "gui/$(id -u)/io.pondline.daemon" 2>/dev/null || true
+      echo "==> restarted io.pondline.daemon"
+    fi
+  elif command -v systemctl >/dev/null 2>&1; then
+    systemctl --user try-restart pondline-mailbox.service 2>/dev/null || true
+    systemctl --user try-restart pondline.service 2>/dev/null || true
+    echo "==> restarted active pondline user services"
   else
-    echo "pondline-update: systemctl not found; skipping --restart-user-service" >&2
+    echo "pondline-update: service manager not found; skipping --restart-user-service" >&2
   fi
 fi
