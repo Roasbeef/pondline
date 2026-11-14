@@ -16,6 +16,10 @@ pub fn random_bytes(count: Int) -> BitArray
 @external(erlang, "primitives_ffi", "sha256")
 pub fn sha256(data: BitArray) -> BitArray
 
+/// `crypto:hash(sha512, _)`.
+@external(erlang, "primitives_ffi", "sha512")
+pub fn sha512(data: BitArray) -> BitArray
+
 /// `crypto:mac(hmac, sha256, _, _)`.
 @external(erlang, "primitives_ffi", "hmac_sha256")
 pub fn hmac_sha256(key: BitArray, data: BitArray) -> BitArray

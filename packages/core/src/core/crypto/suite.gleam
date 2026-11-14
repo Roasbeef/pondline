@@ -14,11 +14,14 @@
 
 /// The primitive operations, as `primitives` defines them. Key pairs are
 /// returned secret first. The `mldsa_*` fields are ML-DSA-65, the
-/// post-quantum half of every hybrid signature.
+/// post-quantum half of every hybrid signature. `sha512` is CPace's hash
+/// (`core/crypto/cpace`), whose generator and session key are SHA-512
+/// digests; everything else in the profile hashes with SHA-256.
 pub type Suite {
   Suite(
     random: fn(Int) -> BitArray,
     sha256: fn(BitArray) -> BitArray,
+    sha512: fn(BitArray) -> BitArray,
     hmac_sha256: fn(BitArray, BitArray) -> BitArray,
     constant_time_equal: fn(BitArray, BitArray) -> Bool,
     x25519_keypair: fn() -> #(BitArray, BitArray),

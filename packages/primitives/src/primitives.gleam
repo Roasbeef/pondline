@@ -79,6 +79,19 @@ pub fn sha256(data: BitArray) -> BitArray {
   ffi_crypto.sha256(data)
 }
 
+/// SHA-512 (FIPS 180-4), the hash of the CPace suite
+/// `CPACE-X25519-SHA512`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// bit_array.byte_size(sha512(<<"abc">>))
+/// // -> 64
+/// ```
+pub fn sha512(data: BitArray) -> BitArray {
+  ffi_crypto.sha512(data)
+}
+
 /// HMAC-SHA-256 (RFC 2104 over FIPS 180-4).
 ///
 /// ## Examples

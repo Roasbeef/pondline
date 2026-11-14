@@ -5,8 +5,8 @@
 //// and the key generators), so two runs of one seed would mint different
 //// identities, ids and capabilities, and nothing after the first draw would
 //// replay. This suite keeps every real primitive that is already a pure
-//// function (SHA-256, HMAC, the AEAD, X25519 and Ed25519 from a given
-//// secret, Ed25519 signing, which is deterministic) and replaces only the
+//// function (SHA-256, SHA-512, HMAC, the AEAD, X25519 and Ed25519 from a
+//// given secret, Ed25519 signing, which is deterministic) and replaces only the
 //// entropy:
 ////
 //// - `random(n)` is SHA-256 of the seed, a label and the next value of a
@@ -58,6 +58,7 @@ pub fn new(seed: BitArray, label: String) -> Suite {
   Suite(
     random: draw,
     sha256: primitives.sha256,
+    sha512: primitives.sha512,
     hmac_sha256: primitives.hmac_sha256,
     constant_time_equal: primitives.constant_time_equal,
     x25519_keypair: fn() { curve_pair(draw(32), primitives.x25519_public) },

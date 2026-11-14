@@ -23,6 +23,7 @@ pub fn suite() -> Suite {
   Suite(
     random: primitives.random_bytes,
     sha256: primitives.sha256,
+    sha512: primitives.sha512,
     hmac_sha256: primitives.hmac_sha256,
     constant_time_equal: primitives.constant_time_equal,
     x25519_keypair: primitives.x25519_keypair,
