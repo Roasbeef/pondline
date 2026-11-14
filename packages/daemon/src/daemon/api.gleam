@@ -705,7 +705,12 @@ fn store_blob(
         | protocol.Batch(_)
         | protocol.Acked
         | protocol.QueueDeleted
-        | protocol.SealedBlob(_) ->
+        | protocol.SealedBlob(_)
+        | protocol.RendezvousOpened(..)
+        | protocol.RendezvousClaimed(..)
+        | protocol.RendezvousSent
+        | protocol.RendezvousMessages(_)
+        | protocol.RendezvousClosed ->
           poll.Fail(Refused("the mailbox did not store the invitation"))
       }
     },
@@ -744,7 +749,12 @@ fn fetch_blob(
         | protocol.Batch(_)
         | protocol.Acked
         | protocol.QueueDeleted
-        | protocol.BlobStored(_) ->
+        | protocol.BlobStored(_)
+        | protocol.RendezvousOpened(..)
+        | protocol.RendezvousClaimed(..)
+        | protocol.RendezvousSent
+        | protocol.RendezvousMessages(_)
+        | protocol.RendezvousClosed ->
           poll.Fail(Refused("the mailbox did not return the invitation"))
       }
     },

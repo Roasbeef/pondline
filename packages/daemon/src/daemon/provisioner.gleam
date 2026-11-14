@@ -259,7 +259,12 @@ fn create(data: Data, inbox: Inbox) -> Bool {
     | Ok(protocol.Acked)
     | Ok(protocol.QueueDeleted)
     | Ok(protocol.BlobStored(_))
-    | Ok(protocol.SealedBlob(_)) -> False
+    | Ok(protocol.SealedBlob(_))
+    | Ok(protocol.RendezvousOpened(..))
+    | Ok(protocol.RendezvousClaimed(..))
+    | Ok(protocol.RendezvousSent)
+    | Ok(protocol.RendezvousMessages(_))
+    | Ok(protocol.RendezvousClosed) -> False
 
     Error(_) -> {
       status.set_mailbox(data.config.status, status.MailboxUnreachable)

@@ -91,6 +91,18 @@ pub fn describe(request: Request) -> String {
     protocol.DeleteQueue(queue:, ..) -> "delete/" <> hex(queue)
     protocol.PutBlob(blob:, ..) -> "put_blob/" <> hex(blob)
     protocol.GetBlob(blob:, ..) -> "get_blob/" <> hex(blob)
+    protocol.OpenRendezvous(rendezvous:, ..) ->
+      "open_rendezvous/" <> hex(rendezvous)
+    protocol.ClaimRendezvous(..) -> "claim_rendezvous"
+    protocol.RendezvousSend(rendezvous:, index:, ..) ->
+      "rendezvous_send/" <> hex(rendezvous) <> "/" <> int.to_string(index)
+    protocol.RendezvousFetch(rendezvous:, wait_seconds:, ..) ->
+      "rendezvous_fetch/"
+      <> hex(rendezvous)
+      <> "/"
+      <> int.to_string(wait_seconds)
+    protocol.CloseRendezvous(rendezvous:, ..) ->
+      "close_rendezvous/" <> hex(rendezvous)
   }
 }
 
@@ -196,6 +208,11 @@ fn wrong_kind(response: Response) -> Response {
     | protocol.QueueDeleted
     | protocol.BlobStored(..)
     | protocol.SealedBlob(..)
+    | protocol.RendezvousOpened(..)
+    | protocol.RendezvousClaimed(..)
+    | protocol.RendezvousSent
+    | protocol.RendezvousMessages(..)
+    | protocol.RendezvousClosed
     | protocol.Refused(..) -> protocol.Acked
   }
 }

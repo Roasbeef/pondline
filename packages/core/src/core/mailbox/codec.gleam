@@ -33,6 +33,11 @@
 //// | 5    | `DeleteQueue` | 4 queue, 12 admin                              |
 //// | 6    | `PutBlob`     | 4 queue, 12 admin, 16 deadline, 34 blob, 36 retrieve, 38 sealed |
 //// | 7    | `GetBlob`     | 34 blob, 36 retrieve                           |
+//// | 8    | `OpenRendezvous`  | 6 provision, 8 read, 10 append, 40 rendezvous, 44 lifetime |
+//// | 9    | `ClaimRendezvous` | 8 read, 10 append, 42 nameplate            |
+//// | 10   | `RendezvousSend`  | 10 append, 40 rendezvous, 48 index, 50 body |
+//// | 11   | `RendezvousFetch` | 8 read, 20 wait, 40 rendezvous, 52 seen    |
+//// | 12   | `CloseRendezvous` | 8 read, 40 rendezvous                      |
 ////
 //// ### Responses (kind in type 2)
 ////
@@ -46,6 +51,11 @@
 //// | 6    | `Refused`      | 32 refusal code                               |
 //// | 7    | `BlobStored`   | 34 blob                                       |
 //// | 8    | `SealedBlob`   | 38 sealed                                     |
+//// | 9    | `RendezvousOpened`   | 42 nameplate, 46 expires at             |
+//// | 10   | `RendezvousClaimed`  | 40 rendezvous, 46 expires at            |
+//// | 11   | `RendezvousSent`     | none                                    |
+//// | 12   | `RendezvousMessages` | 54 rendezvous messages                  |
+//// | 13   | `RendezvousClosed`   | none                                    |
 ////
 //// ### Field types
 ////
@@ -71,10 +81,30 @@
 //// | 34   | blob locator        | 16 bytes                                  |
 //// | 36   | retrieve capability | 32 bytes                                  |
 //// | 38   | sealed blob         | bytes, at most `max_ticket_blob_bytes`    |
+//// | 40   | rendezvous id       | 16 bytes                                  |
+//// | 42   | nameplate           | u32, below 10 to the `nameplate_digits`   |
+//// | 44   | lifetime seconds    | u32                                       |
+//// | 46   | expires at          | u64 unix seconds                          |
+//// | 48   | message index       | u8                                        |
+//// | 50   | message body        | bytes, at most `max_rendezvous_body_bytes` |
+//// | 52   | messages seen       | u8, `after + 1`                           |
+//// | 54   | rendezvous messages | sequence of length-prefixed nested streams: 48, 50; at most `max_rendezvous_messages` |
 ////
 //// Kinds 6 and 7 and types 34 to 38 were added by ADR-009, for the sealed
 //// invitation a ticket names. A peer that predates them refuses either
 //// request kind as malformed, which is the fail-closed answer.
+////
+//// Request kinds 8 to 12, response kinds 9 to 13 and types 40 to 54 were
+//// added by ADR-016, for the rendezvous a spoken pairing code meets at, and
+//// an older peer refuses them the same way. Three choices are deliberate.
+//// Expiry is its own type (46) rather than the retention deadline (16),
+//// because a field type means one thing everywhere and a slot's expiry is
+//// not a retention offer. `RendezvousFetch.after` is `-1` before the
+//// reader holds anything, which an unsigned field cannot carry, so the
+//// wire holds `after + 1`, the count of leading indices already read. And
+//// the index and that count are not bounded here: an index past the
+//// per-side bound is the mailbox's `QuotaExceeded`, which a malformed
+//// refusal would hide.
 ////
 //// ### Refusal codes (type 32)
 ////
@@ -109,6 +139,7 @@ import core/field
 import core/id.{type Id}
 import core/limits
 import core/mailbox/protocol.{type Refusal, type Request, type Response}
+import core/nameplate.{type Nameplate}
 import core/time.{type Instant}
 import core/tlv
 import gleam/list
@@ -265,6 +296,50 @@ pub fn encode_request(request: Request) -> BitArray {
       |> put_id(blob_tag, blob)
       |> put_capability(retrieve_tag, retrieve)
       |> tlv.encode
+
+    protocol.OpenRendezvous(
+      provision:,
+      rendezvous:,
+      read:,
+      append:,
+      lifetime_seconds:,
+    ) ->
+      header(8)
+      |> put_capability(provision_tag, provision)
+      |> put_capability(read_tag, read)
+      |> put_capability(append_tag, append)
+      |> put_id(rendezvous_tag, rendezvous)
+      |> tlv.put(lifetime_tag, tlv.encode_u32(lifetime_seconds))
+      |> tlv.encode
+
+    protocol.ClaimRendezvous(nameplate:, read:, append:) ->
+      header(9)
+      |> put_capability(read_tag, read)
+      |> put_capability(append_tag, append)
+      |> put_nameplate(nameplate)
+      |> tlv.encode
+
+    protocol.RendezvousSend(rendezvous:, append:, index:, body:) ->
+      header(10)
+      |> put_capability(append_tag, append)
+      |> put_id(rendezvous_tag, rendezvous)
+      |> tlv.put(index_tag, tlv.encode_u8(index))
+      |> tlv.put(body_tag, body)
+      |> tlv.encode
+
+    protocol.RendezvousFetch(rendezvous:, read:, after:, wait_seconds:) ->
+      header(11)
+      |> put_capability(read_tag, read)
+      |> tlv.put(wait_tag, tlv.encode_u32(wait_seconds))
+      |> put_id(rendezvous_tag, rendezvous)
+      |> tlv.put(seen_tag, tlv.encode_u8(after + 1))
+      |> tlv.encode
+
+    protocol.CloseRendezvous(rendezvous:, read:) ->
+      header(12)
+      |> put_capability(read_tag, read)
+      |> put_id(rendezvous_tag, rendezvous)
+      |> tlv.encode
   }
 }
 
@@ -300,6 +375,11 @@ fn request_decoder() -> tlv.Decoder(Request) {
     5 -> delete_queue_decoder()
     6 -> put_blob_decoder()
     7 -> get_blob_decoder()
+    8 -> open_rendezvous_decoder()
+    9 -> claim_rendezvous_decoder()
+    10 -> rendezvous_send_decoder()
+    11 -> rendezvous_fetch_decoder()
+    12 -> close_rendezvous_decoder()
     _ -> tlv.fail(tlv.InvalidField(kind_tag))
   }
 }
@@ -386,6 +466,69 @@ fn get_blob_decoder() -> tlv.Decoder(Request) {
   tlv.success(protocol.GetBlob(blob:, retrieve:))
 }
 
+/// Reads an `OpenRendezvous`: the provisioning capability, the opener's
+/// read and append capabilities, the slot's identifier and its lifetime.
+fn open_rendezvous_decoder() -> tlv.Decoder(Request) {
+  use provision <- tlv.required(provision_tag, capability_field())
+  use read <- tlv.required(read_tag, capability_field())
+  use append <- tlv.required(append_tag, capability_field())
+  use rendezvous <- tlv.required(rendezvous_tag, id_field())
+  use lifetime_seconds <- tlv.required(lifetime_tag, tlv.u32)
+
+  tlv.success(protocol.OpenRendezvous(
+    provision:,
+    rendezvous:,
+    read:,
+    append:,
+    lifetime_seconds:,
+  ))
+}
+
+/// Reads a `ClaimRendezvous`: the claimant's two capabilities and the
+/// nameplate it was told.
+fn claim_rendezvous_decoder() -> tlv.Decoder(Request) {
+  use read <- tlv.required(read_tag, capability_field())
+  use append <- tlv.required(append_tag, capability_field())
+  use nameplate <- tlv.required(nameplate_tag, nameplate_field())
+
+  tlv.success(protocol.ClaimRendezvous(nameplate:, read:, append:))
+}
+
+/// Reads a `RendezvousSend`: the sender's append capability, the slot, the
+/// sender's message index and the bounded body.
+fn rendezvous_send_decoder() -> tlv.Decoder(Request) {
+  use append <- tlv.required(append_tag, capability_field())
+  use rendezvous <- tlv.required(rendezvous_tag, id_field())
+  use index <- tlv.required(index_tag, tlv.u8)
+  use body <- tlv.required(body_tag, body_field())
+
+  tlv.success(protocol.RendezvousSend(rendezvous:, append:, index:, body:))
+}
+
+/// Reads a `RendezvousFetch`: the reader's capability, the wait, the slot
+/// and how many of the other side's leading indices it already holds.
+fn rendezvous_fetch_decoder() -> tlv.Decoder(Request) {
+  use read <- tlv.required(read_tag, capability_field())
+  use wait_seconds <- tlv.required(wait_tag, tlv.u32)
+  use rendezvous <- tlv.required(rendezvous_tag, id_field())
+  use seen <- tlv.required(seen_tag, tlv.u8)
+
+  tlv.success(protocol.RendezvousFetch(
+    rendezvous:,
+    read:,
+    after: seen - 1,
+    wait_seconds:,
+  ))
+}
+
+/// Reads a `CloseRendezvous`: either side's read capability and the slot.
+fn close_rendezvous_decoder() -> tlv.Decoder(Request) {
+  use read <- tlv.required(read_tag, capability_field())
+  use rendezvous <- tlv.required(rendezvous_tag, id_field())
+
+  tlv.success(protocol.CloseRendezvous(rendezvous:, read:))
+}
+
 // ------------------------------------------------------------ responses
 
 /// The canonical bytes of a response.
@@ -433,6 +576,30 @@ pub fn encode_response(response: Response) -> BitArray {
       header(8)
       |> tlv.put(sealed_tag, sealed)
       |> tlv.encode
+
+    protocol.RendezvousOpened(nameplate:, expires_at:) ->
+      header(9)
+      |> put_nameplate(nameplate)
+      |> put_instant(expires_tag, expires_at)
+      |> tlv.encode
+
+    protocol.RendezvousClaimed(rendezvous:, expires_at:) ->
+      header(10)
+      |> put_id(rendezvous_tag, rendezvous)
+      |> put_instant(expires_tag, expires_at)
+      |> tlv.encode
+
+    protocol.RendezvousSent -> tlv.encode(header(11))
+
+    protocol.RendezvousMessages(messages:) ->
+      header(12)
+      |> tlv.put(
+        messages_tag,
+        tlv.encode_sequence(list.map(messages, encode_rendezvous_message)),
+      )
+      |> tlv.encode
+
+    protocol.RendezvousClosed -> tlv.encode(header(13))
   }
 }
 
@@ -493,6 +660,27 @@ fn response_decoder() -> tlv.Decoder(Response) {
       tlv.success(protocol.SealedBlob(sealed:))
     }
 
+    9 -> {
+      use nameplate <- tlv.required(nameplate_tag, nameplate_field())
+      use expires_at <- tlv.required(expires_tag, instant_field())
+      tlv.success(protocol.RendezvousOpened(nameplate:, expires_at:))
+    }
+
+    10 -> {
+      use rendezvous <- tlv.required(rendezvous_tag, id_field())
+      use expires_at <- tlv.required(expires_tag, instant_field())
+      tlv.success(protocol.RendezvousClaimed(rendezvous:, expires_at:))
+    }
+
+    11 -> tlv.success(protocol.RendezvousSent)
+
+    12 -> {
+      use messages <- tlv.required(messages_tag, rendezvous_messages_field())
+      tlv.success(protocol.RendezvousMessages(messages:))
+    }
+
+    13 -> tlv.success(protocol.RendezvousClosed)
+
     _ -> tlv.fail(tlv.InvalidField(kind_tag))
   }
 }
@@ -551,6 +739,31 @@ fn stored_list_field() -> tlv.Field(List(StoredEnvelope)) {
   tlv.sequence(
     tlv.nested(stored_decoder()),
     max_items: limits.fetch_batch_envelopes,
+  )
+}
+
+/// The nested stream for one rendezvous message: its index and body.
+fn encode_rendezvous_message(message: protocol.RendezvousMessage) -> BitArray {
+  tlv.new()
+  |> tlv.put(index_tag, tlv.encode_u8(message.index))
+  |> tlv.put(body_tag, message.body)
+  |> tlv.encode
+}
+
+/// Reads the nested stream `encode_rendezvous_message` writes.
+fn rendezvous_message_decoder() -> tlv.Decoder(protocol.RendezvousMessage) {
+  use index <- tlv.required(index_tag, tlv.u8)
+  use body <- tlv.required(body_tag, body_field())
+
+  tlv.success(protocol.RendezvousMessage(index:, body:))
+}
+
+/// One side's messages: never more than one side may store, which is the
+/// most a fetch can return.
+fn rendezvous_messages_field() -> tlv.Field(List(protocol.RendezvousMessage)) {
+  tlv.sequence(
+    tlv.nested(rendezvous_message_decoder()),
+    max_items: limits.max_rendezvous_messages,
   )
 }
 
@@ -627,6 +840,22 @@ const retrieve_tag = 36
 
 const sealed_tag = 38
 
+const rendezvous_tag = 40
+
+const nameplate_tag = 42
+
+const lifetime_tag = 44
+
+const expires_tag = 46
+
+const index_tag = 48
+
+const body_tag = 50
+
+const seen_tag = 52
+
+const messages_tag = 54
+
 fn header(kind: Int) -> tlv.Builder {
   tlv.new()
   |> tlv.put(version_tag, tlv.encode_u16(protocol.version))
@@ -667,6 +896,10 @@ fn put_capability(
   tlv.put(builder, tag, capability.expose(value))
 }
 
+fn put_nameplate(builder: tlv.Builder, value: Nameplate) -> tlv.Builder {
+  tlv.put(builder, nameplate_tag, tlv.encode_u32(nameplate.to_int(value)))
+}
+
 fn put_instant(builder: tlv.Builder, tag: Int, value: Instant) -> tlv.Builder {
   tlv.put(builder, tag, tlv.encode_u64(value.unix_seconds))
 }
@@ -690,6 +923,17 @@ fn instant_field() -> tlv.Field(Instant) {
 /// anything is stored or returned.
 fn sealed_field() -> tlv.Field(BitArray) {
   field.bounded_bytes(limits.max_ticket_blob_bytes)
+}
+
+/// A rendezvous message body, refused over
+/// `limits.max_rendezvous_body_bytes` before anything is stored or returned.
+fn body_field() -> tlv.Field(BitArray) {
+  field.bounded_bytes(limits.max_rendezvous_body_bytes)
+}
+
+/// A nameplate: a u32 inside the range its digits can spell.
+fn nameplate_field() -> tlv.Field(Nameplate) {
+  tlv.try_map(tlv.u32, nameplate.from_int)
 }
 
 fn ciphertext_field() -> tlv.Field(Padded) {
