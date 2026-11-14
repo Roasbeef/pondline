@@ -11,20 +11,17 @@ and says why.
 **A code.** `invite create --code` prints a string such as
 
 ```text
-4827-cradle-noble-velvet
-4827-cradle-noble-velvet@acme
+482719-cradle-noble-velvet
 ```
 
 and waits. `invite accept --code` reads one from `--stdin` or a prompt and
-pairs. The code is a nameplate, three words, and an optional rendezvous
-alias. The file and the ticket stay supported and stay the default; the
+pairs. The code is a nameplate and three words. The file and the ticket stay supported and stay the default; the
 code is the opt-in path for a pairing set up by voice.
 
 | Part | What it is | Secret |
 | --- | --- | --- |
-| Nameplate | Four to eight decimal digits, drawn at random by the rendezvous mailbox | no |
+| Nameplate | Six decimal digits, drawn at random by the rendezvous mailbox | no |
 | Words | Three words from the BIP-39 English list, eleven bits each, drawn by the inviter | yes, 33 bits |
-| Alias | A lowercase name the joiner's configuration maps to a rendezvous endpoint; absent means the configured default | no |
 
 `core/pairing_code` parses and prints it. The decoder is total and
 strict: lowercase, single hyphens, every word on the list, so a mistyped
@@ -40,7 +37,7 @@ functions and encodings exactly and is pinned by its vectors.
 ```text
 PRS            = word1 "-" word2 "-" word3
 sid            = the rendezvous identifier (16 random bytes, inviter-chosen)
-public_context = "Pondline_Rendezvous_v1" || nameplate (ASCII) ||
+public_context = lv("Pondline_Rendezvous_v1") || lv(nameplate, ASCII) ||
                  EncodePublicContext(sid, U = "joiner", S = "inviter")
 secret_context = empty
 ```
@@ -86,6 +83,18 @@ inviter first does everything `invite create --ticket` does, including
 `PutBlob` at its own mailbox, and `m4` carries the `pl1` ticket text.
 After `m4` the joiner's flow is the ticket's, unchanged.
 
+**`m4` is sealed once.** Its key and nonce are fixed by the session key,
+so two different plaintexts under them would break the AEAD. The ticket is
+minted and `BlobStored` before the inviter reads `m1`, `m4` is computed
+exactly once per run, and a resend sends the same bytes.
+
+**Failures are told apart and counted.** A run ends as paired, never
+claimed, claimed then stalled, or confirmation failed. Only the last is a
+spent guess. Each daemon keeps a durable count of confirmation failures
+per rendezvous endpoint, and after three in 24 hours it refuses `--code`
+at that endpoint and points the operator to a ticket and a fingerprint
+check. That count is the only rendezvous state a daemon stores.
+
 **The mailbox protocol gains a rendezvous**, a short-lived slot holding at
 most four small messages in each direction:
 
@@ -119,16 +128,18 @@ and the sweep deletes a slot at its expiry.
 | Message body | 2 048 bytes |
 | Messages per direction | 4 |
 | Live slots per provisioning grant | 4 |
-| Nameplate width | the narrowest of 4, 6, 8 digits whose space is under a tenth occupied |
+| Live slots per mailbox | 1 000; `OpenRendezvous` beyond that is refused |
+| Nameplate width | 6 digits |
+| Confirmation failures per rendezvous endpoint | 3 in 24 hours |
 
-**The rendezvous endpoint is configuration.** The inviter opens the slot
-at its own mailbox unless its configuration names a rendezvous. The
-joiner resolves the alias, or the default, from its own configuration, or
-takes `--rendezvous HOST:PORT`. No managed rendezvous ships with this
-change.
+**The rendezvous is the inviter's mailbox.** The inviter opens the slot
+at its own mailbox. The joiner uses its own mailbox's endpoint, which is
+right when both use one service, or takes `--rendezvous HOST:PORT`. No
+managed rendezvous and no alias scheme ship with this change.
 
-**The run is not durable.** Neither daemon writes rendezvous state to its
-store. A daemon that restarts mid-run loses the run and the operator makes
+**The run is not durable.** Apart from the failure count, neither daemon
+writes rendezvous state to its store, so the words and the ephemeral
+secrets never reach disk. A daemon that restarts mid-run loses the run and the operator makes
 a new code; the invitation and its ticket are durable exactly as before.
 
 **The cryptography is pure Gleam** over the existing `Suite`, which gains
@@ -174,8 +185,9 @@ words, not a seed.
 
 **Random nameplates, and the first claim stands.** A claim needs only the
 nameplate, which is not secret. Smallest-free-integer allocation lets
-anyone burn every live code by claiming 1, 2, 3; random nameplates in a
-sparse space make a blind claim miss. Refusing later claims rather than
+anyone burn every live code by claiming 1, 2, 3. With six random digits
+and at most a thousand live slots, a blind claim hits with probability at
+most one in a thousand. Refusing later claims rather than
 burning the slot means a stranger who claims after the real joiner changes
 nothing. A stranger who claims first still spends the code, and the
 inviter sees a failed confirmation. A claim carries no credential, because
@@ -200,12 +212,16 @@ key, and the timing argument.
 
 ## Consequences
 
-- The rendezvous mailbox is a new party. It can deny service, it sees who
-  opens rendezvous and when, and it alone can run the exchange against
-  both sides at once, so it gets one guess in 2^33 at a full
-  man-in-the-middle on each pairing. A retry after a failure is a fresh
-  guess; the daemons report every failure, and operators pairing by voice
-  should compare fingerprints when it matters (spec §4.4).
+- The rendezvous mailbox is a new party. It can deny service and it sees
+  who opens rendezvous and when. It alone can play joiner to the inviter
+  and inviter to the joiner in one run, so it gets two guesses per run,
+  one against each side, and a right guess on either pairs it as that
+  party: about one chance in 2^32. A retry after a failure is two more
+  guesses, which is what the failure count bounds. Spec §2.3 and §4.3 say
+  a mailbox cannot make an invalid claimant an accepted contact; for the
+  code path they are amended to say it can with that probability, and
+  operators pairing by voice should compare fingerprints when it matters
+  (spec §4.4).
 - A code is weaker than a ticket by construction: one guess in 2^33 per
   attempt against a 256-bit bearer secret.
 - Both daemons must be up inside the slot's lifetime. The inviter's
@@ -216,5 +232,27 @@ key, and the timing argument.
   the version; a later draft that changes the wire is a new profile.
 - New code that no outside cryptographer has read. This path should not be
   recommended in the quickstart until one has.
+- A word misheard as another word on the list passes the local check,
+  spends the code and counts as a confirmation failure. The BIP-39 list
+  was not built for speech the way the PGP list was.
 - Revisit on: review of the timing argument, CFRG adoption or abandonment
   of the draft, a managed rendezvous, or L402 admission for claims.
+
+## Addendum: 2026-11-14, review before implementation
+
+A read-only review of the first text of this record, made before any code
+depended on it, changed five things, and the text above now states them.
+The rendezvous was said to get one guess per pairing; it gets two per
+run, so failures are now counted durably and capped, and spec §2.3 and
+§4.3 are amended. The nameplate was four to eight digits with a width
+that adapted to occupancy, which held a blind claim's hit rate near one
+in ten at every width; it is six digits with a cap on live slots. `m4`
+was not required to be computed once. The nameplate was concatenated into
+the public context without a length prefix. And the `@alias` part of the
+code was cut: it was parser and configuration surface with no security
+value.
+
+The review confirmed the role assignment (it is the draft's own §7
+assignment, so its proof and vector apply unchanged), the confirmation
+schedule, leaving the endpoint out of the context, the BIP-39 words, the
+ticket hand-off and the non-durable run.
