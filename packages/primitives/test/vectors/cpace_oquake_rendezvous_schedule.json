@@ -1,0 +1,23 @@
+{
+  "source": {
+    "document": "ADR-016 (docs/adr/016-spoken-pairing-codes.md), the rendezvous key schedule and public context",
+    "inputs": "session_key and th are draft-vos-cfrg-pqpake-03 Appendix E.4's key and th (oquake_cpaceoquake_stage.json)",
+    "note": "computed by an independent script with Python hmac/hashlib and cryptography's ChaCha20Poly1305, kept outside the repository; no hex retyped"
+  },
+  "tests": [
+    {
+      "tcId": 1,
+      "session_key": "da7749513854187ccca337360cc9fe85bac2446fcd4560a186fadb14cdde6679",
+      "th": "d87c1f03732425d5e04b0435a8397f03d894d5f4b4391132982940fab0fb31f9",
+      "confirm_key": "0d2d9cef84fd18bb52cc581fad86c8eb11898b8ad304e6de0f9a975fe6a6f8be",
+      "confirm_J": "0465897caf04e2ddb1c32c09bc8cf992227c6d01026bb31cbd9eef420bd33c09",
+      "handoff_key": "6efe570ebc00916d165ab5db862abcdae71a3c341ae9a1f3e57a35cf2a4da120",
+      "handoff_nonce": "705b8662948b4521b87ceb0a",
+      "ticket": "706c3171707a7279397838676632747664773073336a6e35346b686365366d7561376c71707a7279397838676632747664773073336a6e35346b686365366d7561376c71707a72793978",
+      "m4": "068060e95663e6a5f6a6c14bf47b519e596579c3ffa567cbdd9a5895d4d3b839e5888e9c0fc6b3bdec59d8251eb8c526bd3504096951e0eaf16ec17ca0d780da0dfca0ed42eca99ccf2fc0185a9a42745649ab2a146aee9b0df5",
+      "nameplate": "482719",
+      "rendezvous": "000102030405060708090a0b0c0d0e0f",
+      "public_context": "0016506f6e646c696e655f52656e64657a766f75735f7631000634383237313900000010000102030405060708090a0b0c0d0e0f000000066a6f696e657200000007696e7669746572"
+    }
+  ]
+}
