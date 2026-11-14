@@ -135,7 +135,7 @@ None of these is unfinished work somebody forgot.
 - **Queue provisioning linkability.** Queues from one account link at the mailbox.
   Anonymous provisioning tokens are the likely shape if this becomes a priority.
 - **Release signing and `linux-aarch64`.** `darwin-arm64` and `linux-x86_64`
-  ship self-contained bundles on GitHub Releases (`v0.1.0`), without code
+  ship self-contained bundles on GitHub Releases (`v0.1.1`), without code
   signing, notarization, or `linux-aarch64` yet.
 - **Known operational gaps.** `raise_budget` is relative, so retrying it after a
   lost answer doubles the grant (ADR-011); `incidents` and `attempts` rows are never

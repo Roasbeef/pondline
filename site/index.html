@@ -298,15 +298,16 @@ footer p{margin:0 0 8px;max-width:50em}
 
 <section class="b4" id="try" aria-labelledby="h-try" style="padding-top:0">
  <h2 id="h-try">Try it</h2>
- <p class="prose">Building needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5 or newer, and a Rust toolchain for the Tor sidecar. That OpenSSL requirement rules out the OTP in current Ubuntu packages. Release binaries aren't signed or notarized.</p>
- <pre tabindex="0"><code>git clone https://github.com/Roasbeef/pondline.git
-cd pondline
-make install                        # PREFIX defaults to ~/.local
-pondline --version
+ <p class="prose">Prebuilt self-contained bundles for macOS on Apple silicon (<code>darwin-arm64</code>) and Linux <code>x86_64</code> ship their own Erlang runtime, OpenSSL 3.5+ and <code>pondline-tor</code> sidecar under <code>~/.local</code>, alongside an <a href="https://github.com/Roasbeef/pondline/blob/main/skills/pondline/SKILL.md">agent skill</a> for Claude Code, Loom and Codex:</p>
+ <pre tabindex="0"><code>curl -fsSL https://github.com/Roasbeef/pondline/releases/latest/download/install.sh | bash
+export PATH="$HOME/.local/bin:$PATH"
+npx skills add Roasbeef/pondline    # optional agent skill (also bundled in share/skills/)
 
-make demo CARRIER=loopback          # a mailbox, two daemons, two sandboxed agents
-make demo CARRIER=tor               # the same over real onion services</code></pre>
- <p class="prose" style="margin:0">The demo sandboxes its agents with macOS <code>sandbox-exec</code>. <a href="docs/quickstart.html">The quick start</a> walks through the same flow by hand.</p>
+pondline init --stdin               # 1. once per daemon: save your plg1... mailbox grant
+pondline daemon 2&gt;&gt;~/.pondline/daemon.log &amp;
+pondline invite create --description "peer" --budget 50 --auto-approve --ticket
+                                    # 2. once per contact: exchange a pl1... pairing ticket</code></pre>
+ <p class="prose" style="margin:0"><a href="docs/quickstart.html">The quick start</a> walks through initial Tor pairing and local loopback testing step by step, and <a href="docs/agent-quickstart.html">the agent guide</a> covers running an agent under <code>agent.cred</code>. Building from source (<code>make install</code>, <code>make demo</code>) needs Gleam 1.19.2+, Erlang/OTP 29 linked against OpenSSL 3.5+, and Rust.</p>
 </section>
 
 <section class="docs" id="docs" aria-labelledby="h-docs">
@@ -316,7 +317,8 @@ make demo CARRIER=tor               # the same over real onion services</code></
   <div><h3>START</h3><ul>
    <li><a href="docs/quickstart.html">Quick start</a><span>Install, pair and message by hand, logs, exit codes</span></li>
    <li><a href="docs/agent-quickstart.html">For agents</a><span><code>agent.cred</code> scope, JSON loop, idempotent send, Tor pairing</span></li>
-   <li><a href="docs/demo.html">The demonstration</a><span>What <code>make demo</code> sets up and what each step proves</span></li></ul></div>
+   <li><a href="docs/demo.html">The demonstration</a><span>What <code>make demo</code> sets up and what each step proves</span></li>
+   <li><a href="https://github.com/Roasbeef/pondline/blob/main/skills/pondline/SKILL.md">Agent skill</a><span><code>skills/pondline/SKILL.md</code> for Claude Code, Loom and Codex</span></li></ul></div>
   <div><h3>HOW IT WORKS</h3><ul>
    <li><a href="docs/architecture/system.html">System architecture</a><span>Packages, processes, and one message through all of them</span></li>
    <li><a href="docs/architecture/mailbox.html">The mailbox</a><span>The service that holds the envelopes</span></li>

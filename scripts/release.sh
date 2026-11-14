@@ -328,6 +328,8 @@ printf 'version=%s\ncommit=%s\nplatform=%s\n' "$VERSION" "$COMMIT" "$PLATFORM" \
 cp "$ROOT/scripts/install.sh" "$REL/install.sh"
 cp "$ROOT/scripts/fetch-release.sh" "$REL/bin/pondline-update"
 chmod +x "$REL/install.sh" "$REL/bin/pondline-update"
+mkdir -p "$REL/share/skills/pondline"
+cp "$ROOT/skills/pondline/SKILL.md" "$REL/share/skills/pondline/SKILL.md"
 
 # --------------------------------------------------------------- launchers
 

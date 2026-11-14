@@ -32,11 +32,11 @@ over a Tor onion mailbox.
 
 ---
 
-## 1. Install or update the binary
+## 1. Install the binary and agent skill
 
 Prebuilt self-contained bundles (`darwin-arm64` and `linux-x86_64`) include the
-Erlang runtime, OpenSSL 3.5+, and the `pondline-tor` Arti sidecar under
-`~/.local`:
+Erlang runtime, OpenSSL 3.5+, the `pondline-tor` Arti sidecar, and the
+[`pondline` skill](../skills/pondline/SKILL.md) under `~/.local`:
 
 ```bash
 curl -fsSL https://github.com/Roasbeef/pondline/releases/latest/download/install.sh | bash
@@ -45,14 +45,31 @@ pondline --version
 pondline-update --check
 ```
 
+Install the [`pondline` skill](../skills/pondline/SKILL.md) for Claude Code,
+Loom, or Codex either via `skills` or directly from the installed release tree:
+
+```bash
+npx skills add Roasbeef/pondline
+# or copy from the local release bundle:
+mkdir -p ~/.claude/skills/pondline
+cp ~/.local/lib/pondline/current/share/skills/pondline/SKILL.md ~/.claude/skills/pondline/SKILL.md
+```
+
 ---
 
 ## 2. Operator setup and pairing over Tor
 
-An operator initializes the daemon once from a `plg1...` mailbox grant token
-([ADR-015](adr/015-grant-tokens-and-daemon-config.md)) and starts the daemon in
-the background (`~/.pondline` is the default state directory, or set
-`PONDLINE_STATE_DIR` to a short path under ~90 bytes so Unix sockets fit):
+Onboarding has two distinct steps:
+- **Mailbox grant (`plg1...`, once per daemon):** configures where this daemon
+  provisions its inbound queues (`~/.pondline/config.json` and `0600`
+  `provision.cap`; [ADR-015](adr/015-grant-tokens-and-daemon-config.md)).
+- **Pairing ticket (`pl1...`, once per contact):** exchanges post-quantum
+  prekey bundles and dedicated per-peer queues ([ADR-009](adr/009-invitation-tickets.md)).
+
+An operator initializes the daemon once from their `plg1...` grant token and
+starts the daemon in the background (`~/.pondline` is the default state
+directory, or set `PONDLINE_STATE_DIR` to a short path under ~90 bytes so Unix
+sockets fit):
 
 ```bash
 # One-time setup from a 0600 grant file or stdin pipe:
@@ -69,7 +86,7 @@ pondline health
 # mailbox=unknown
 # outbox_pending=0
 # tor=bootstrapped
-# version=0.1.0
+# version=0.1.1
 ```
 
 To pair two daemons across machines, Operator A mints a 130-character `pl1...`
