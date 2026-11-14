@@ -25,6 +25,7 @@
 import core/crypto/bua_skem
 import core/crypto/kemeleon
 import core/crypto/oquake.{type Inputs, Established, Inputs, Response}
+import core/crypto/pake_common
 import core/crypto/suite as core_suite
 import core/secret
 import gleam/bit_array
@@ -247,14 +248,15 @@ pub fn e4_stage_finish_test() {
   check_finish(cpace_stage())
 }
 
-/// E.2's public context is `EncodePublicContext(sid, U, S)` of Appendix C.1.
+/// E.2's public context is `EncodePublicContext(sid, U, S)` of Appendix C.1,
+/// the one definition in `pake_common` that CPace's E.4 test also pins.
 pub fn e2_public_context_encoding_test() {
   let v = load("oquake_mlbuaskem1024")
 
-  assert oquake.public_context(
-      sid: vectors.hex(v, "sid"),
-      client: vectors.hex(v, "U"),
-      server: vectors.hex(v, "S"),
+  assert pake_common.encode_public_context(
+      vectors.hex(v, "sid"),
+      vectors.hex(v, "U"),
+      vectors.hex(v, "S"),
     )
     == Ok(vectors.hex(v, "public_context"))
 }

@@ -551,7 +551,7 @@ fn conclude(
   responder_share: BitArray,
 ) -> Result(Finished, CpaceError) {
   use transcript_hash <- result.try(
-    pake_common.transcript_hash(suite, transcript_label, [
+    pake_common.transcript_hash(suite, pake_common.dst, transcript_label, [
       public_context,
       initiator_share,
       responder_share,

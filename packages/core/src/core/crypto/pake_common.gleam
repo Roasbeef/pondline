@@ -24,9 +24,13 @@
 //// LEB128 framing, `lv_cat`, is a third; it lives in `core/crypto/cpace`
 //// because only CPace uses it.
 ////
-//// There is one configuration and no knob: `cpaceoquake-x25519-mlbuaskem1024`
+//// Pondline runs one configuration, `cpaceoquake-x25519-mlbuaskem1024`
 //// (§9.4.1), whose DST "applies throughout, including within the inner
 //// protocols", so CPace's transcript hash is keyed by the CPaceOQUAKE DST.
+//// `transcript_hash` still takes the DST as an argument, because OQUAKE's
+//// own vectors (Appendix E.2) are keyed by the `oquake-mlbuaskem1024` DST
+//// and pin the same function under another tag: one definition of `TH`
+//// serves CPace, OQUAKE and the combiner, and both vectors check it.
 
 import core/crypto/hkdf
 import core/crypto/suite.{type Suite}
@@ -36,7 +40,8 @@ import gleam/result
 
 /// The DST of `cpaceoquake-x25519-mlbuaskem1024`, `draft-vos-cfrg-pqpake-03`
 /// §9.4.1: 32 random bytes the draft fixed, which a later draft that
-/// changes the wire would replace. Every `TH` of the run is keyed by it.
+/// changes the wire would replace. Every `TH` of a Pondline run is keyed by
+/// it.
 pub const dst = <<
   0x44, 0x3e, 0x30, 0x89, 0x98, 0x5f, 0x0f, 0x8d, 0xdd, 0xfb, 0x20, 0xcc, 0x5e,
   0x86, 0x18, 0xf4, 0x47, 0xbd, 0xcf, 0xe6, 0xdd, 0x39, 0xab, 0xb2, 0x39, 0x11,
@@ -111,6 +116,8 @@ fn frame_context_part(part: BitArray) -> Result(BitArray, Nil) {
 /// || lv_encode(f_n))` under HKDF-SHA-256, so a 32-byte hash. Each field is
 /// framed, so moving a byte from one field to the next changes the hash. A
 /// field `lv_encode` cannot frame is refused before anything is hashed.
+/// The DST is the outermost configuration's: `dst` for every Pondline run,
+/// another only where a test replays OQUAKE's stand-alone vectors.
 ///
 /// The salt is the public part and the fields are the input keying
 /// material, which reads backwards but is the draft's choice: the
@@ -120,11 +127,14 @@ fn frame_context_part(part: BitArray) -> Result(BitArray, Nil) {
 /// ## Examples
 ///
 /// ```gleam
-/// pake_common.transcript_hash(suite, <<"CPace">>, [context, ya, yb])
+/// pake_common.transcript_hash(suite, pake_common.dst, <<"CPace">>, [
+///   context, ya, yb,
+/// ])
 /// // -> Ok(<<_:256>>)
 /// ```
 pub fn transcript_hash(
   suite: Suite,
+  dst: BitArray,
   label: BitArray,
   fields: List(BitArray),
 ) -> Result(BitArray, Nil) {

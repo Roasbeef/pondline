@@ -26,7 +26,10 @@
 ////
 //// `Extract(salt, ikm)` and `Expand(prk, info, L)` are HKDF-SHA-256
 //// (`core/crypto/hkdf`), `lv` a two-byte big-endian length prefix, and
-//// `||` concatenation. Fixed-length fields are not prefixed.
+//// `||` concatenation. Fixed-length fields are not prefixed. `lv` and `TH`
+//// are the draft's shared definitions in `core/crypto/pake_common`, which
+//// CPace and the combiner use too, and `EncodePublicContext` lives there
+//// alone.
 ////
 //// ```text
 //// effective_PRS = Expand(Extract(PRS, DST || "OQUAKE-context" ||
@@ -81,6 +84,7 @@
 
 import core/crypto/bua_skem.{type KeyPair, Encapsulation, SplitKey}
 import core/crypto/hkdf
+import core/crypto/pake_common
 import core/crypto/suite.{type Suite}
 import core/secret.{type Secret}
 import gleam/bit_array
@@ -106,11 +110,8 @@ pub const init_message_bytes = 1660
 /// The bytes of a responder message: Nct + Nkc.
 pub const response_message_bytes = 1600
 
-/// The longest field `lv` can prefix: its length is two bytes.
-const max_prefixed_bytes = 65_535
-
-/// The longest field `public_context` can prefix: its length is four bytes.
-const max_context_field_bytes = 4_294_967_295
+/// The label of OQUAKE's transcript hash, `TH("OQUAKE", ...)` (§6).
+const transcript_label = <<"OQUAKE":utf8>>
 
 /// The inputs both parties bring to a run: pqpake §5's common interface,
 /// with the configuration's DST.
@@ -178,9 +179,8 @@ pub type Refusal {
   /// The responder message was not `response_message_bytes` long.
   ResponseMessageLength(found: Int)
 
-  /// The public or secret context is longer than its length prefix can
-  /// say: 65 535 bytes for `Inputs`, 2^32 - 1 for a field of
-  /// `public_context`.
+  /// The public or secret context is longer than its two-byte length
+  /// prefix can say (`pake_common.max_field_bytes`).
   ContextTooLong
 
   /// `init_with` was given a key pair or an `r` of the wrong size.
@@ -425,40 +425,6 @@ pub fn finish_with(
   }
 }
 
-/// `EncodePublicContext` of pqpake Appendix C.1: the session identifier
-/// and the client and server identities, each with a four-byte big-endian
-/// length. Applications may add public information before or after it, as
-/// ADR-016 prepends its own label and the nameplate. A field too long for
-/// its prefix is refused.
-///
-/// ## Examples
-///
-/// ```gleam
-/// oquake.public_context(sid: <<1, 2>>, client: <<"c">>, server: <<>>)
-/// // -> Ok(<<0, 0, 0, 2, 1, 2, 0, 0, 0, 1, "c", 0, 0, 0, 0>>)
-/// ```
-pub fn public_context(
-  sid sid: BitArray,
-  client client: BitArray,
-  server server: BitArray,
-) -> Result(BitArray, Refusal) {
-  use <- bool.guard(
-    when: bit_array.byte_size(sid) > max_context_field_bytes
-      || bit_array.byte_size(client) > max_context_field_bytes
-      || bit_array.byte_size(server) > max_context_field_bytes,
-    return: Error(ContextTooLong),
-  )
-
-  Ok(<<
-    bit_array.byte_size(sid):size(32),
-    sid:bits,
-    bit_array.byte_size(client):size(32),
-    client:bits,
-    bit_array.byte_size(server):size(32),
-    server:bits,
-  >>)
-}
-
 /// Both sides' first step: the effective password, from the PRS keyed over
 /// the DST and both length-prefixed contexts, so that a run whose public
 /// or secret context differs is, to OQUAKE, a run with another password.
@@ -555,31 +521,25 @@ fn session_keys(
   #(tag, secret.new(key))
 }
 
-/// `TH("OQUAKE", public_context, s, T, rho, ct, h)` of pqpake §5: an
-/// HKDF extract salted with the DST and label, over every field
-/// length-prefixed. It covers only public values, so both sides compute it
-/// whatever happened to the keys.
+/// `TH("OQUAKE", public_context, s, T, rho, ct, h)` of pqpake §5, through
+/// the shared `pake_common.transcript_hash` under this run's DST. It covers
+/// only public values, so both sides compute it whatever happened to the
+/// keys.
 fn transcript(
   run: Run,
   sent: Sent,
   ciphertext: BitArray,
   tag: BitArray,
 ) -> Result(BitArray, Refusal) {
-  use public_context <- result.try(prefixed(run.public_context))
-  use s <- result.try(prefixed(sent.s))
-  use t <- result.try(prefixed(sent.t))
-  use rho <- result.try(prefixed(sent.rho))
-  use ciphertext <- result.try(prefixed(ciphertext))
-  use tag <- result.map(prefixed(tag))
-
-  hkdf.extract(run.suite, <<run.dst:bits, "TH-OQUAKE":utf8>>, <<
-    public_context:bits,
-    s:bits,
-    t:bits,
-    rho:bits,
-    ciphertext:bits,
-    tag:bits,
-  >>)
+  pake_common.transcript_hash(run.suite, run.dst, transcript_label, [
+    run.public_context,
+    sent.s,
+    sent.t,
+    sent.rho,
+    ciphertext,
+    tag,
+  ])
+  |> result.replace_error(ContextTooLong)
 }
 
 /// Appendix C.2's initiator message: `s`, `T` and `rho` at fixed offsets,
@@ -614,17 +574,11 @@ fn read_response_message(
   }
 }
 
-/// `lv_encode`: the bytes behind a two-byte big-endian length, refused
-/// past 65 535 bytes rather than wrapped.
+/// `lv_encode` of pqpake §3.1 with its refusal named: a field past
+/// `pake_common.max_field_bytes` is a context too long, never wrapped.
 fn prefixed(bytes: BitArray) -> Result(BitArray, Refusal) {
-  let size = bit_array.byte_size(bytes)
-
-  use <- bool.guard(
-    when: size > max_prefixed_bytes,
-    return: Error(ContextTooLong),
-  )
-
-  Ok(<<size:size(16), bytes:bits>>)
+  pake_common.lv_encode(bytes)
+  |> result.replace_error(ContextTooLong)
 }
 
 /// HKDF-Expand with the crypto layer's error mapped. Every length here is
