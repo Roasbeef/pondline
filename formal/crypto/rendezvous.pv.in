@@ -1,0 +1,395 @@
+(* Pondline spoken pairing codes (ADR-016): CPaceOQUAKE at a rendezvous
+ * mailbox, then the hand-off of a ticket under the PAKE's session key.
+ *
+ * The joiner J is the draft's client and the inviter I its server
+ * (draft-vos-cfrg-pqpake-03 section 7):
+ *
+ *   m1  J -> I  Ya                     CPace.Init
+ *   m2  I -> J  Yb, (T, rho)           CPace.Respond, OQUAKE.Init
+ *   m3  J -> I  ct, h, confirm_J       CPace.Finish, OQUAKE.Respond, ADR-016
+ *   m4  I -> J  AEAD(handoff, ticket)  only after I has checked confirm_J
+ *
+ * The algebra follows the draft, with one symbol per KDF call that the
+ * draft spells as an Extract and an Expand:
+ *
+ *   g        = gen(PRS, public_context)             (Appendix B, Elligator 2)
+ *   Ya, Yb   = exp(g, ya), exp(g, yb)
+ *   K        = exp(Yb, ya) = exp(Ya, yb)
+ *   key1     = ISK(public_context, K, Ya, Yb)       (B.2, B.3)
+ *   th1      = TH("CPace", public_context, Ya, Yb)
+ *   ePRS     = KDF(PRS, th1, key1)                  (6.1: OQUAKE's context
+ *                                                    is th1, its secret
+ *                                                    context key1; 7.2)
+ *   T        = Feistel(ePRS, rho, ut)               the ML-KEM key's ut part,
+ *                                                    Kemeleon-encoded, masked
+ *   pk       = Combine(ut, rho)
+ *   ct, k    = Encaps(pk)
+ *   prk      = KDF(ePRS, s, T, rho, pk, ct, k)      (6.2)
+ *   h, key2  = Expand(prk, "confirm"), Expand(prk, "key")
+ *   th       = TH("OQUAKE", th1, s, T, rho, ct, h)
+ *   session  = KDF(key2, th, key1)                  (7.3, 7.4)
+ *   PRK      = HKDF-Extract("Pondline_Rendezvous_v1", session)   (ADR-016)
+ *   confirm_J = HMAC(Expand(PRK, "...Confirm_v1"), th)
+ *   m4       = AEAD(Expand(PRK, "...Handoff_v1"), "...Handoff_v1" || th, ticket)
+ *
+ * The Feistel of section 6.1 is abstracted as a tweakable ideal cipher
+ * without redundancy (the EKE-style mask of ProVerif's own weak-secret
+ * examples): it is keyed by ePRS, tweaked by rho, and anything deciphers
+ * under any key to a value the attacker cannot tell from a real ut. The
+ * pair (s, T) is one ciphertext, written T; Kemeleon is what makes a
+ * deciphered value carry no structure, and NO_KEMELEON removes exactly that.
+ *
+ * The attacker is the network and the rendezvous mailbox: it chooses the
+ * nameplate, hands the joiner the rendezvous context, sees, drops, reorders
+ * and forges every message, and plays either role with passwords of its
+ * own. Honest parties run unboundedly many sessions: on one free password
+ * PW (the weak secret the first query is about) and on unboundedly many
+ * fresh passwords, each shared by an inviter and a joiner process. Reusing
+ * a password across runs only gives the attacker more than the ADR's one
+ * run per code.
+ *
+ * Scenario macros (adversary capabilities):
+ *   BREAK_DH     the attacker learns the CPace shared point of every honest
+ *                computation, which over-approximates computing it from the
+ *                public shares for any candidate generator (see the CPace
+ *                section for why, and for the oracle form, DH_ORACLE, that
+ *                ProVerif does not finish).
+ *   BREAK_KEM    the attacker decapsulates any ML-KEM ciphertext, and tells
+ *                a real ML-KEM ut (with its rho) from a random string: what
+ *                an MLWE break gives against the Kemeleon masking. These are
+ *                destructors; nothing about the honest parties changes.
+ *   REVEAL_PW    every password reaches the attacker after every run has
+ *                ended (phase 1): a recorded run, its code later known.
+ *   DH_ORACLE    the DH break as a CDH oracle under any candidate generator,
+ *                used without BREAK_DH; ProVerif finds attacks and proves
+ *                trace queries under it but does not finish a weak-secret
+ *                proof (see the CPace section).
+ *   NO_Q1        drop the weak-secret query, for the DH_ORACLE rows that
+ *                check the other properties.
+ *
+ * Mutation macros (one line of the key schedule each; check.sh pairs each
+ * with the weakest scenario in which it produces an attack, or, for
+ * H_VERDICT, NO_KEY1 and NO_TH, with the single breaks under which it
+ * does not, which is what shows that line to be redundant):
+ *   PARALLEL     OQUAKE runs on the raw password with the application's
+ *                public context and no secret context, not on ePRS: the
+ *                parallel composition the draft's section 11.1 rejects.
+ *   NO_KEMELEON  a deciphered ut is recognisable as an ML-KEM key or not
+ *                without any break (plain ML-KEM encoding, whose
+ *                coefficients are below q).
+ *   NO_CONFIRM   the inviter does not check confirm_J and reads OQUAKE's h
+ *                as the draft's Finish does: a mismatch yields a random key,
+ *                not a verdict, and m4 is released either way.
+ *   H_VERDICT    the inviter does not check confirm_J but aborts when h does
+ *                not match (reference: is confirm_J redundant with h?).
+ *   NO_KEY1      the session key omits CPace's key1.
+ *   NO_KEY2      the session key omits OQUAKE's key2.
+ *   NO_TH        the session key, confirm_J and m4's associated data omit th.
+ *   NO_CONTEXT   the public context (nameplate and sid) is not bound into the
+ *                CPace generator, its key or its transcript hash.
+ *)
+
+set attacker = active.
+set ignoreTypes = false.
+
+type password.
+type gbase.      (* a CPace generator *)
+type G.          (* a CPace share *)
+type exponent.   (* a CPace scalar *)
+type kemsk.      (* an ML-KEM-1024 decapsulation key *)
+type seed.       (* the public seed rho of an ML-KEM key *)
+type rand.       (* encapsulation randomness *)
+
+free c: channel.
+
+const lab_context: bitstring.   (* lv("Pondline_Rendezvous_v1") *)
+const lab_handoff: bitstring.   (* Pondline_RendezvousHandoff_v1 *)
+const empty: bitstring.
+
+(* ---------------------------------------------------------------- CPace *)
+
+(* calculate_generator: the Elligator 2 map of a hash of the password and
+ * the context. Public: the attacker computes it for any candidate. *)
+fun gen(password, bitstring): gbase.
+
+(* A share is exp(g, x). The textbook encoding, one exp with the equation
+ * exp(exp(b, x), y) = exp(exp(b, y), x) for a variable base b, does not get
+ * past ProVerif's completion of the equational theory (seven minutes at
+ * "Completing equations" with nothing else in the file), so the shared point
+ * is oriented as in pairing.pv.in: dhpt(X, Y) is the point of a joiner-side
+ * share X and an inviter-side share Y of one base, computed by dhl from X's
+ * exponent or by dhr from Y's. The joiner only ever computes as the left
+ * operand and the inviter as the right one. dhpt is private: the attacker
+ * reaches a point only through an exponent it holds, or through breakdh. *)
+fun exp(gbase, exponent): G.
+fun dhpt(G, G): bitstring [private].
+fun dhl(exponent, G): bitstring
+reduc forall b: gbase, x: exponent, y: exponent; dhl(x, exp(b, y)) = dhpt(exp(b, x), exp(b, y)).
+fun dhr(exponent, G): bitstring
+reduc forall b: gbase, x: exponent, y: exponent; dhr(y, exp(b, x)) = dhpt(exp(b, x), exp(b, y)).
+
+#ifdef DH_ORACLE
+(* DH_ORACLE: the DH break as the brief states it, a destructor, a CDH
+ * oracle under any base the attacker names. breakdh(b, X, Y) is the point
+ * log_b(X) * Y, oriented with X on the joiner side. Where the attacker
+ * could compute that point without the break (it made X or Y under base b
+ * itself), the oracle answers that same point, whatever base the other
+ * share has; otherwise, under a base the shares were not computed from, it
+ * answers a private point unrelated to the honest one. It never fails, and
+ * its wrong-base answer is not a term the attacker can build: either would
+ * be a password test no real discrete-log break gives (a first version with
+ * a public junk constructor produced exactly that false attack). Under it
+ * ProVerif finds every weak-secret attack and proves every trace query in
+ * seconds, but it does not finish a weak-secret proof: with this
+ * destructor, and with the same oracle written as a constructor with two
+ * rewrite equations, the run stops growing at about 15 000 clauses and goes
+ * past fifteen minutes, printing hundreds of termination warnings on the
+ * disequalities that the otherwise clauses and the guessed generator
+ * produce. check.sh therefore runs it only in rows that expect a weak-secret
+ * attack or that drop Q1 (NO_Q1), and BREAK_DH below is the encoding under
+ * which the weak-secret proofs are run. *)
+fun cdh_other(gbase, G, G): bitstring [private].
+fun breakdh(gbase, G, G): bitstring
+reduc forall b: gbase, b2: gbase, x: exponent, y: exponent;
+  breakdh(b, exp(b, x), exp(b2, y)) = dhpt(exp(b2, x), exp(b2, y))
+otherwise forall b: gbase, b2: gbase, x: exponent, y: exponent;
+  breakdh(b, exp(b2, x), exp(b, y)) = dhpt(exp(b2, x), exp(b2, y))
+otherwise forall b: gbase, u: G, v: G;
+  breakdh(b, u, v) = cdh_other(b, u, v).
+#endif
+
+(* BREAK_DH as it is run: every honest party publishes the CPace point it
+ * computes, the moment it computes it (DH_BREAK_POINT in the processes).
+ * This over-approximates the oracle above. For an honest pair of shares the
+ * oracle yields the point only under the right generator, that is for the
+ * right guess; publishing hands the attacker that same point without a
+ * guess. For a point an honest party computes against a share the attacker
+ * made, the oracle again needs the right generator; publishing gives it
+ * outright. What the oracle gives on top, its answers under wrong
+ * generators, are points unrelated to anything an honest party uses, which
+ * the oracle is required to keep that way (it must not be a test). And the
+ * published point is the same term whichever password the weak-secret
+ * query substitutes afterwards, so publishing is itself no password test.
+ * That a proof under this capability carries over to the oracle is an
+ * argument (docs/formal/crypto.md, "Spoken pairing codes"), not something
+ * ProVerif checks; an attack under it is checked against the oracle by
+ * reading its trace. *)
+#ifdef BREAK_DH
+#define DH_BREAK_POINT(K) out(c, K);
+#else
+#define DH_BREAK_POINT(K)
+#endif
+
+fun isk(bitstring, bitstring, G, G): bitstring.  (* ISK = H(DSI_ISK, ctx, K, Ya, Yb) *)
+fun th_cpace(bitstring, G, G): bitstring.    (* TH("CPace", ctx, Ya, Yb) *)
+
+(* --------------------------------------------------------------- ML-KEM *)
+
+(* An ML-KEM public key is Combine(ut, rho); ut is the part Kemeleon
+ * encodes and OQUAKE masks, rho the seed sent in the clear (Tempo). *)
+fun kemut(kemsk, seed): bitstring.
+fun combine(bitstring, seed): bitstring [data].
+fun encap(bitstring, rand): bitstring.
+fun kemss(bitstring, rand): bitstring.
+fun implicit_reject(kemsk, bitstring): bitstring.
+
+fun decap(kemsk, seed, bitstring): bitstring
+reduc forall s: kemsk, rho: seed, r: rand;
+  decap(s, rho, encap(combine(kemut(s, rho), rho), r)) = kemss(combine(kemut(s, rho), rho), r)
+otherwise forall s: kemsk, rho: seed, ct: bitstring;
+  decap(s, rho, ct) = implicit_reject(s, ct).
+
+#ifdef BREAK_KEM
+(* Decapsulation without the secret key, of any ciphertext made to a real
+ * ML-KEM key. A ciphertext made to a string that is no ML-KEM key (what a
+ * joiner encapsulates to when it unmasks T under the wrong ePRS) has no
+ * secret behind it for an MLWE break to recover, so it does not open; that
+ * this destructor fails there is the same test is_kem_key already gives. *)
+fun kembreak(bitstring): bitstring
+reduc forall s: kemsk, rho: seed, r: rand;
+  kembreak(encap(combine(kemut(s, rho), rho), r)) = kemss(combine(kemut(s, rho), rho), r).
+#endif
+
+#if defined(BREAK_KEM) || defined(NO_KEMELEON)
+(* The distinguisher: a real ut under its rho, or not. Partial on purpose:
+ * that it fails on anything else is the whole capability. *)
+fun is_kem_key(bitstring, seed): bool
+reduc forall s: kemsk, rho: seed; is_kem_key(kemut(s, rho), rho) = true.
+#endif
+
+(* -------------------------------------------------------------- OQUAKE *)
+
+(* The two-round Feistel of section 6.1, as an ideal tweakable cipher with
+ * no redundancy: decipherment never fails. *)
+fun menc(bitstring, seed, bitstring): bitstring.
+fun mdec(bitstring, seed, bitstring): bitstring.
+equation forall k: bitstring, t: seed, x: bitstring; mdec(k, t, menc(k, t, x)) = x.
+equation forall k: bitstring, t: seed, x: bitstring; menc(k, t, mdec(k, t, x)) = x.
+
+fun eprs(password, bitstring, bitstring): bitstring.  (* PRS, public, secret context *)
+fun oq_prk(bitstring, bitstring, seed, bitstring, bitstring, bitstring): bitstring.
+fun oq_confirm(bitstring): bitstring.
+fun oq_key(bitstring): bitstring.
+fun th_oquake(bitstring, bitstring, seed, bitstring, bitstring): bitstring.
+
+(* ----------------------------------------- combiner and ADR-016 schedule *)
+
+fun session_key(bitstring, bitstring, bitstring): bitstring.  (* key2, th, key1 *)
+fun confirm_key(bitstring): bitstring.     (* Expand(PRK, Confirm_v1) *)
+fun handoff_key(bitstring): bitstring.     (* Expand(PRK, Handoff_v1), key and nonce *)
+fun hmac(bitstring, bitstring): bitstring.
+fun aead(bitstring, bitstring, bitstring): bitstring.  (* key, aad, plaintext *)
+fun adec(bitstring, bitstring, bitstring): bitstring
+reduc forall k: bitstring, ad: bitstring, m: bitstring; adec(k, ad, aead(k, ad, m)) = m.
+
+#ifdef NO_CONTEXT
+#define BOUND_CTX(ctx) empty
+#else
+#define BOUND_CTX(ctx) ctx
+#endif
+
+#ifdef PARALLEL
+#define EPRS(p, ctx, th1, key1) eprs(p, ctx, empty)
+#else
+#define EPRS(p, ctx, th1, key1) eprs(p, th1, key1)
+#endif
+
+#if defined(NO_KEY1)
+#define SESSION(key2, th, key1) session_key(key2, th, empty)
+#elif defined(NO_KEY2)
+#define SESSION(key2, th, key1) session_key(empty, th, key1)
+#elif defined(NO_TH)
+#define SESSION(key2, th, key1) session_key(key2, empty, key1)
+#else
+#define SESSION(key2, th, key1) session_key(key2, th, key1)
+#endif
+
+#ifdef NO_TH
+#define BOUND_TH(th) empty
+#else
+#define BOUND_TH(th) th
+#endif
+
+(* ----------------------------------------------------------------- events *)
+
+(* password, context, transcript hash *)
+event JoinerConfirms(password, bitstring, bitstring).
+(* password, context, transcript hash, ticket *)
+event InviterReleases(password, bitstring, bitstring, bitstring).
+(* password, context, transcript hash, ticket *)
+event JoinerAccepts(password, bitstring, bitstring, bitstring).
+
+(* ---------------------------------------------------------------- queries *)
+
+free PW: password [private].
+
+(* Q1 the code resists offline guessing: after any number of runs the
+ * attacker cannot tell PW from a fresh password. *)
+#ifndef NO_Q1
+weaksecret PW.
+#endif
+
+(* Q2 the ticket an inviter releases is secret. *)
+query p: password, x: bitstring, th: bitstring, t: bitstring;
+  event(InviterReleases(p, x, th, t)) && attacker(t).
+
+(* Q3 the inviter releases a ticket only to a joiner that ran with the same
+ * password, the same context and the same transcript, injectively. *)
+query p: password, x: bitstring, th: bitstring, t: bitstring;
+  inj-event(InviterReleases(p, x, th, t)) ==> inj-event(JoinerConfirms(p, x, th)).
+
+(* Q4 the joiner accepts a ticket only if an inviter with the same password
+ * and context released that ticket in that transcript, injectively. *)
+query p: password, x: bitstring, th: bitstring, t: bitstring;
+  inj-event(JoinerAccepts(p, x, th, t)) ==> inj-event(InviterReleases(p, x, th, t)).
+
+(* R1, R2 sanity: an inviter releases and a joiner accepts on the code PW.
+ * ProVerif answers "false" when the event is reachable, so F is expected. *)
+query x: bitstring, th: bitstring, t: bitstring; event(InviterReleases(PW, x, th, t)).
+query x: bitstring, th: bitstring, t: bitstring; event(JoinerAccepts(PW, x, th, t)).
+
+(* -------------------------------------------------------------- inviter *)
+
+let inviter(p: password) =
+  (* The ticket is minted and stored before the run (ADR-016, "m4 is
+   * sealed once"); OpenRendezvous returns the nameplate the mailbox drew,
+   * and the inviter chooses sid. *)
+  new ticket: bitstring;
+  in(c, nameplate: bitstring);
+  new sid: bitstring;
+  out(c, sid);
+  let ctx = (lab_context, nameplate, sid) in
+  (* m1, then CPace.Respond and OQUAKE.Init (7.2). *)
+  in(c, Ya: G);
+  new yb: exponent;
+  let Yb = exp(gen(p, BOUND_CTX(ctx)), yb) in
+  let K = dhr(yb, Ya) in
+  DH_BREAK_POINT(K)
+  let key1 = isk(BOUND_CTX(ctx), K, Ya, Yb) in
+  let th1 = th_cpace(BOUND_CTX(ctx), Ya, Yb) in
+  let e = EPRS(p, BOUND_CTX(ctx), th1, key1) in
+  new skk: kemsk; new rho: seed;
+  let ut = kemut(skk, rho) in
+  let T = menc(e, rho, ut) in
+  out(c, (Yb, T, rho));
+  (* m3, then OQUAKE.Finish (6.3, 7.4): a wrong h gives a random key2. *)
+  in(c, (ct: bitstring, h: bitstring, cj: bitstring));
+  let pk = combine(ut, rho) in
+  let k = decap(skk, rho, ct) in
+  let prk = oq_prk(e, T, rho, pk, ct, k) in
+  let th = th_oquake(th1, T, rho, ct, h) in
+#ifdef H_VERDICT
+  if h = oq_confirm(prk) then
+  let key2 = oq_key(prk) in
+#else
+  new random_key: bitstring;
+  let key2 = if h = oq_confirm(prk) then oq_key(prk) else random_key in
+#endif
+  let sk = SESSION(key2, th, key1) in
+#if !defined(NO_CONFIRM) && !defined(H_VERDICT)
+  if cj = hmac(confirm_key(sk), BOUND_TH(th)) then
+#endif
+  event InviterReleases(p, ctx, th, ticket);
+  out(c, aead(handoff_key(sk), (lab_handoff, BOUND_TH(th)), ticket)).
+
+(* --------------------------------------------------------------- joiner *)
+
+let joiner(p: password) =
+  (* ClaimRendezvous: the mailbox answers the context. *)
+  in(c, (nameplate: bitstring, sid: bitstring));
+  let ctx = (lab_context, nameplate, sid) in
+  new ya: exponent;
+  let Ya = exp(gen(p, BOUND_CTX(ctx)), ya) in
+  out(c, Ya);
+  (* m2, then CPace.Finish and OQUAKE.Respond (7.3). *)
+  in(c, (Yb: G, T: bitstring, rho: seed));
+  let K = dhl(ya, Yb) in
+  DH_BREAK_POINT(K)
+  let key1 = isk(BOUND_CTX(ctx), K, Ya, Yb) in
+  let th1 = th_cpace(BOUND_CTX(ctx), Ya, Yb) in
+  let e = EPRS(p, BOUND_CTX(ctx), th1, key1) in
+  let pk = combine(mdec(e, rho, T), rho) in
+  new r: rand;
+  let ct = encap(pk, r) in
+  let k = kemss(pk, r) in
+  let prk = oq_prk(e, T, rho, pk, ct, k) in
+  let h = oq_confirm(prk) in
+  let key2 = oq_key(prk) in
+  let th = th_oquake(th1, T, rho, ct, h) in
+  let sk = SESSION(key2, th, key1) in
+  event JoinerConfirms(p, ctx, th);
+  out(c, (ct, h, hmac(confirm_key(sk), BOUND_TH(th))));
+  (* m4: the ticket is accepted only if it opens. *)
+  in(c, m4: bitstring);
+  let ticket = adec(handoff_key(sk), (lab_handoff, BOUND_TH(th)), m4) in
+  event JoinerAccepts(p, ctx, th, ticket).
+
+#ifdef REVEAL_PW
+#define REVEAL(p) | (phase 1; out(c, p))
+#else
+#define REVEAL(p)
+#endif
+
+process
+  (!inviter(PW)) | (!joiner(PW)) REVEAL(PW)
+  | !(new q: password; ((!inviter(q)) | (!joiner(q)) REVEAL(q)))

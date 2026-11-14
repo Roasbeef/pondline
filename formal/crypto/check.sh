@@ -9,7 +9,8 @@
 #   name   run only the named rows of the table
 #
 # A row names a model: a source file (pairing.pv.in for the handshake,
-# ticket.pv.in for the sealed invitation) and a set of cpp macros applied to
+# ticket.pv.in for the sealed invitation, rendezvous.pv.in for pairing by
+# spoken code) and a set of cpp macros applied to
 # it. Each macro is either an adversary scenario or a deliberate defect in
 # the protocol (the source lists both). The expectation is one letter per
 # query, in the order the queries appear in the source: T means ProVerif
@@ -55,6 +56,15 @@ command -v cpp >/dev/null || { echo "cpp not on PATH" >&2; exit 2; }
 # T1 invitation secret from the mailbox
 # T2 a joiner opens only what the inviter sealed for its ticket
 # T3 one blob opens to one invitation under every ticket
+#
+# rendezvous.pv.in, Q1..Q4 then R1, R2:
+# Q1 the code resists offline guessing (weaksecret)
+# Q2 the released ticket is secret
+# Q3 the inviter releases only to a joiner with the same code and context
+# Q4 the joiner accepts only a ticket an inviter with the same code released
+# R1 an inviter releases, R2 a joiner accepts: reachability, so F is the
+#    expected letter (ProVerif says "false" when it finds the event)
+# NO_Q1 drops Q1, so those rows have five letters, Q2 first.
 table=$(cat <<'EOF'
 pairing | base                 |                                             | TTTTTTTTT
 pairing | break_dh             | BREAK_DH                                    | TTTTTTTTT
@@ -86,6 +96,34 @@ ticket  | ticket_no_commitment        | NO_COMMITMENT                           
 ticket  | ticket_leak                 | LEAK_TICKET                                  | FFT
 ticket  | ticket_leak_noncommitting   | LEAK_TICKET NONCOMMITTING_AEAD               | FFT
 ticket  | ticket_leak_nc_no_commit    | LEAK_TICKET NONCOMMITTING_AEAD NO_COMMITMENT | FFF
+rendezvous | rv_base              |                                  | TTTTFF
+rendezvous | rv_break_dh          | BREAK_DH                         | TTTTFF
+rendezvous | rv_break_kem         | BREAK_KEM                        | TTTTFF
+rendezvous | rv_break_both        | BREAK_DH BREAK_KEM               | FTTTFF
+rendezvous | rv_reveal            | REVEAL_PW                        | FTTTFF
+rendezvous | rv_reveal_dh         | REVEAL_PW BREAK_DH               | FTTTFF
+rendezvous | rv_reveal_kem        | REVEAL_PW BREAK_KEM              | FTTTFF
+rendezvous | rv_reveal_both       | REVEAL_PW BREAK_DH BREAK_KEM     | FFTTFF
+rendezvous | rv_parallel_dh       | PARALLEL BREAK_DH                | TTTTFF
+rendezvous | rv_parallel_kem      | PARALLEL BREAK_KEM               | FTTTFF
+rendezvous | rv_no_kemeleon       | NO_KEMELEON                      | TTTTFF
+rendezvous | rv_no_kemeleon_dh    | NO_KEMELEON BREAK_DH             | FTTTFF
+rendezvous | rv_no_confirm        | NO_CONFIRM                       | TTFTFF
+rendezvous | rv_h_verdict         | H_VERDICT                        | TTTTFF
+rendezvous | rv_h_verdict_dh      | H_VERDICT BREAK_DH               | TTTTFF
+rendezvous | rv_h_verdict_kem     | H_VERDICT BREAK_KEM              | TTTTFF
+rendezvous | rv_no_key2           | NO_KEY2                          | TTTTFF
+rendezvous | rv_no_key2_dh        | NO_KEY2 BREAK_DH                 | TFFFFF
+rendezvous | rv_no_key1_dh        | NO_KEY1 BREAK_DH                 | TTTTFF
+rendezvous | rv_no_key1_kem       | NO_KEY1 BREAK_KEM                | TTTTFF
+rendezvous | rv_no_th_dh          | NO_TH BREAK_DH                   | TTTTFF
+rendezvous | rv_no_th_kem         | NO_TH BREAK_KEM                  | TTTTFF
+rendezvous | rv_no_context        | NO_CONTEXT                       | TTFFFF
+rendezvous | rv_oracle_dh         | DH_ORACLE NO_Q1                  | TTTFF
+rendezvous | rv_oracle_both       | DH_ORACLE BREAK_KEM              | FTTTFF
+rendezvous | rv_oracle_no_kemeleon | DH_ORACLE NO_KEMELEON           | FTTTFF
+rendezvous | rv_oracle_no_key2    | DH_ORACLE NO_KEY2                | FTTTFF
+rendezvous | rv_oracle_reveal_both | DH_ORACLE REVEAL_PW BREAK_KEM   | FFTTFF
 EOF
 )
 
