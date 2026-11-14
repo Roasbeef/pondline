@@ -3,8 +3,8 @@
 ## Purpose
 
 The cryptographic primitives Pondline's protocols are built from: X25519,
-Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256
-and the OS CSPRNG, all taken from OTP's `crypto` application over OpenSSL
+Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, SHA-512,
+HMAC-SHA-256 and the OS CSPRNG, all taken from OTP's `crypto` application over OpenSSL
 (3.5 or newer, for ML-KEM and ML-DSA). No Rust and no NIF of our own.
 
 The API is byte-level on purpose. The typed layer, where an X25519 key
@@ -20,15 +20,44 @@ the protocol logic stays pure.
   rule.
 - `src/primitives_ffi.erl`: the Erlang shim. Every fallible key or verification
   wrapper catches exceptions so key material cannot leak through crash reports;
-  total operations (`sha256`, `hmac_sha256`, `equal`, `random_bytes`, keypair
-  generation and `openssl_version`) stay direct calls.
+  total operations (`sha256`, `sha512`, `hmac_sha256`, `equal`,
+  `random_bytes`, keypair generation and `openssl_version`) stay direct
+  calls. `sha512` exists for CPace (ADR-016) and is the suite's only
+  SHA-512 field.
 - `primitives/suite`: `suite()`, the production `core/crypto/suite.Suite`
   built from the functions above. The only place the record is filled with
   real implementations; the fake lives in `core`'s `test/` only.
 - `test/primitives/vectors` (test only): the loader for the trimmed
   Wycheproof and NIST ACVP vector files under `test/vectors/`, which
   `test/vectors/trim.py` derives from the upstream repositories at the
-  commit and SHA-256 each file records.
+  commit and SHA-256 each file records. The same loader reads the
+  spoken-code PAKE's fixtures (ADR-016), which `trim.py` does not
+  produce: they were extracted from the draft text by a script that is
+  not in the repository, and are never edited by hand. Each file's
+  `source` names its sections; the three OQUAKE-stage files also record
+  the draft's SHA-256.
+  - `cpace_x25519_sha512.json`: `draft-irtf-cfrg-cpace-21` B.1.1 to B.1.5
+    as one run (generator string, generator, shares, `K`, the ISK under
+    cpace-21's own presentation with non-empty associated data) and the
+    twelve B.1.10 low-order cases with whether each must abort.
+  - `cpace_pqpake_wrapper.json`: the CPace part of
+    `draft-vos-cfrg-pqpake-03` E.4 (the Appendix B wrapper under the
+    CPaceOQUAKE DST: shares, key, transcript hash) and E.5.4's
+    neutral-element `msg1`.
+  - `bua_skem_mlbuaskem1024.json`: E.1.2, one ML-BUA-sKEM key generation
+    and encapsulation; only its Kemeleon part is checked.
+  - `oquake_mlbuaskem1024.json`: E.2, OQUAKE alone under the
+    `oquake-mlbuaskem1024` DST.
+  - `oquake_cpaceoquake_stage.json`: the whole of E.4 (inputs, every
+    random value, `msg1` to `msg3`, the key and `th`), read by both
+    `oquake_test` (the OQUAKE stage) and `cpace_oquake_test` (end to end,
+    both roles).
+  - `cpace_oquake_rendezvous_schedule.json` is not from the draft: an
+    independent Python script (`hmac`, `hashlib`, `cryptography`'s
+    ChaCha20-Poly1305, kept outside the repository) computed ADR-016's
+    `confirm_key`, `confirm_J`, hand-off key, nonce and `m4`, and the
+    public context for nameplate `482719` and identifier
+    `000102...0f`, from E.4's key and `th`.
 
 ## Relationships
 
@@ -75,6 +104,38 @@ None. Pure function calls into OpenSSL; no processes, no messages.
   and verify through the binding, NIST signatures with an empty context
   verify and ones under another context do not). `docs/formal/crypto.md`
   records the sources, counts and what each suite cannot reach.
+- SHA-512 matches FIPS 180-4's `abc` digest
+  (`sha512_fips_180_4_abc_test` in `test/primitives/cpace_test.gleam`).
+- The spoken-code PAKE (`core/crypto/cpace`, `kemeleon`, `bua_skem`,
+  `oquake`, `cpace_oquake`, ADR-016) is tested over these primitives
+  only here; `core`'s own tests use a fake suite and a stand-in ML-KEM.
+  `cpace_test` reproduces cpace-21 B.1 and the CPace values of pqpake-03
+  E.4 exactly and aborts on every B.1.10 case marked `abort` and on
+  E.5.4. `bua_skem_test` re-encodes E.1.2's key byte for byte under its
+  four multiples, which pins Kemeleon's base-3329 reading, the multiple
+  of 3329^256, the 391-byte little-endian width and the seed's place, and
+  checks that every string of the encoded length is a key OpenSSL
+  accepts. `oquake_test` reproduces E.2 and E.4's OQUAKE stage, and
+  `cpace_oquake_test` reproduces E.4 end to end for both roles; running
+  both DSTs is what shows the DST is a parameter. `rendezvous_test` pins
+  `core/rendezvous`'s key schedule and public context against the
+  independent vector, then runs whole exchanges with fresh randomness: an
+  honest run, a wrong word at either end, another context, a changed bit
+  in each of `m1` to `m4`, wrong lengths and length prefixes, a zero
+  share, and a ticket out of bounds.
+- The ML-KEM steps inside those vectors are not reproduced. The draft
+  fixes ML-KEM's randomness (`keygen_seed`, `encaps_m`), OTP exposes
+  neither seeded key generation nor seeded encapsulation, and the vectors
+  list no decapsulation key. So `oquake_test` and `cpace_oquake_test`
+  replace the suite's three ML-KEM fields, by record update of the real
+  suite, with ones that answer exactly the vector's `oquake_k` and
+  ciphertext, and only for the key the vector's `oquake_upk` decodes to
+  and the ciphertext it names; a run in the wrong roles or with the wrong
+  contexts unmasks another key and finds no answer. Everything OQUAKE and
+  the combiner compute runs for real, and the honest and wrong-password
+  runs use the real ML-KEM throughout. Seeded ML-KEM key generation and
+  seeded encapsulation in the suite would close this gap; OTP's `crypto`
+  does not offer them today.
 - `test/primitives/hybrid_auth_test.gleam` holds the tests that fail if any
   hybrid signature check verifies only its classical half: identity
   binding, both prekey signatures and the joiner's transcript, each with
@@ -87,3 +148,5 @@ None. Pure function calls into OpenSSL; no processes, no messages.
 - `docs/spec.md` §5 (the crypto contract).
 - `docs/formal/crypto.md` (the symbolic proof of the handshake and the
   vector results, with what each abstracts).
+- `docs/adr/016-spoken-pairing-codes.md` and `docs/crypto-profile-v1.md`
+  §12 (the spoken-code PAKE the new fixtures pin).
