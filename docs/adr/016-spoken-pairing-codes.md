@@ -256,3 +256,46 @@ The review confirmed the role assignment (it is the draft's own §7
 assignment, so its proof and vector apply unchanged), the confirmation
 schedule, leaving the endpoint out of the context, the BIP-39 words, the
 ticket hand-off and the non-durable run.
+
+## Addendum: 2026-11-14, what implementation and the formal model established
+
+The decision above is unchanged. Writing `core/rendezvous` and the
+ProVerif model of `docs/formal/crypto.md` made three things explicit that
+the record did not state. The first two are rules for the daemon, whose
+side of this change is still in progress; `core` cannot enforce them.
+
+**Each step runs on the first message at its index only.** The run's
+states are opaque and each step takes the state the previous one
+returned, so the steps can only be taken in order, but a Gleam value can
+be used twice, and nothing stops a caller from running one step on two
+different messages at the same index. A second message is a second
+guess: each answer a side computes from a message the peer chose is
+something the peer can check a candidate code against, so a joiner that
+answered a second `m2`, or an inviter that answered a second `m1`,
+would give the peer two tries in one run. The
+mailbox's `Conflict` on different bytes at a filed index is no defence,
+because the mailbox may be the attacker, and it alone stores and serves
+those messages. So each daemon acts on the first message at each index,
+ignores any other, and ends the run on any error.
+
+**A joiner that sent `m3` and received no `m4` counts a possible spent
+guess.** An inviter whose check of `confirm_J` fails sends nothing:
+`inviter_release` returns `ConfirmationFailed` and no `m4` exists for
+the run. From the joiner's side that looks like a stall, which the
+failure classification above does not count. But a mailbox playing
+inviter to the joiner has used its guess against the joiner by then, and
+if the joiner did not count it, that guess would be free of the cap. So
+the joiner counts a run in which it sent `m3` and received no `m4` as a
+confirmation failure.
+
+**Kemeleon is load-bearing for the hybrid claim specifically.** The
+model's mutation without Kemeleon, where an unmasked `ut` is
+recognisable as an ML-KEM key with nothing broken, does not lose the code
+with nothing broken, because OQUAKE's effective password is keyed by
+CPace's session key and the attacker has nothing to unmask. It loses the
+code to an X25519 break alone (`docs/formal/crypto.md`, "Spoken pairing
+codes", finding 2 and rows `rv_no_kemeleon_dh` and
+`rv_oracle_no_kemeleon`). Kemeleon is what stops a discrete-log break
+with ML-KEM intact from testing the code offline, which is the case the
+hybrid claim exists for; a change that weakened the encoding would leave
+the classical case standing and quietly lose the post-quantum one.
