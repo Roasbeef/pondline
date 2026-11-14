@@ -77,7 +77,13 @@
 //// Each step takes the state the previous step returned and returns the
 //// next, so the steps can only be taken in order. Gleam values can be
 //// reused, so taking a step twice from one state is the caller's to avoid;
-//// `inviter_release` says why it matters there. The states are opaque and
+//// `inviter_release` says why it matters there. It matters at every step
+//// for a second reason (ADR-016, second addendum): each answer a side
+//// computes from a message the peer chose is something the peer can test
+//// a candidate code against, so a step run on a second message at the same
+//// index gives the peer, or the mailbox that serves the messages, a second
+//// guess in one run. The caller acts on the first message at each index
+//// and ends the run on any error. The states are opaque and
 //// keep every key, the password and the ticket as `Secret`s, and no
 //// `RunError` carries bytes, so nothing here prints a secret.
 ////
