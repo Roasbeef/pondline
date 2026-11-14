@@ -3,7 +3,7 @@
 //// truth; run `make gen-sql` after changing one.
 
 /// The schema version the migrations reach.
-pub const version = 5
+pub const version = 6
 
 /// The migrations in order: entry `n` (from zero) is `sql/` file number
 /// `n + 1` and moves a database from version `n` to version `n + 1`.
@@ -144,5 +144,14 @@ CREATE TABLE send_keys (
 ) STRICT, WITHOUT ROWID;
 
 CREATE INDEX send_keys_by_expiry ON send_keys (expires_at);
+",
+  "CREATE TABLE rendezvous_failures (
+  seq INTEGER PRIMARY KEY,
+  endpoint TEXT NOT NULL,
+  at INTEGER NOT NULL
+) STRICT;
+
+CREATE INDEX rendezvous_failures_by_endpoint
+  ON rendezvous_failures (endpoint, at);
 ",
 ]
