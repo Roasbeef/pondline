@@ -11,16 +11,21 @@
 //// a parameter and not a constant.
 ////
 //// The draft's vectors fix ML-KEM's randomness (`keygen_seed`,
-//// `encaps_m`), which OTP cannot take, and list no decapsulation key. So
-//// the ML-KEM operations are replaced, by record update of the real suite,
-//// with ones that answer exactly what the vector says ML-KEM answered: the
-//// encapsulation returns the vector's `oquake_k` and ciphertext, but only
-//// for the encapsulation key the vector's `oquake_upk` decodes to, and the
-//// decapsulation returns `oquake_k` for the vector's ciphertext. Everything
-//// OQUAKE itself computes (Kemeleon, the Feistel pads, the effective
-//// password, the tag, the key, the transcript hash, the encodings) runs for
-//// real. The honest and wrong-password runs at the end use the real ML-KEM
-//// throughout.
+//// `encaps_m`), which OTP cannot take, and list no decapsulation key. The
+//// test-only FIPS 203 reference (`primitives/mlkem_reference`, held to
+//// NIST ACVP and to OpenSSL in `mlkem_reference_test`) derives both from
+//// the seeds: the key pair from `keygen_seed`, and the ciphertext and
+//// shared secret from `encaps_m`. `e2_ml_kem_follows_from_the_seeds_test`
+//// and its E.4 twin assert that what it derives is exactly the vector's
+//// `oquake_upk` (under `kemeleon_m`), ciphertext and `oquake_k`. The
+//// suite's encapsulation alone is replaced, by record update of the real
+//// suite, with the reference's seeded `Encaps_internal`, and it answers
+//// only for the key the seed derives, so a responder that unmasked
+//// anything else fails. Decapsulation is OpenSSL's, with the derived
+//// decapsulation key. Everything OQUAKE itself computes (Kemeleon, the
+//// Feistel pads, the effective password, the tag, the key, the transcript
+//// hash, the encodings) runs for real. The honest and wrong-password runs
+//// at the end use OpenSSL's ML-KEM throughout.
 
 import core/crypto/bua_skem
 import core/crypto/kemeleon
@@ -32,6 +37,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/string
+import primitives/mlkem_reference
 import primitives/suite
 import primitives/vectors
 
@@ -57,6 +63,8 @@ type Stage {
     upk: BitArray,
     multiples: kemeleon.Randomness,
     r: BitArray,
+    keygen_seed: BitArray,
+    encaps_m: BitArray,
     shared_secret: BitArray,
     init_message: BitArray,
     response_message: BitArray,
@@ -95,6 +103,8 @@ fn oquake_alone() -> Stage {
     upk: vectors.hex(v, "oquake_upk"),
     multiples: multiples(v),
     r: vectors.hex(v, "oquake_r"),
+    keygen_seed: vectors.hex(v, "keygen_seed"),
+    encaps_m: vectors.hex(v, "encaps_m"),
     shared_secret: vectors.hex(v, "oquake_k"),
     init_message: vectors.hex(v, "init_msg"),
     response_message: vectors.hex(v, "resp_msg"),
@@ -122,6 +132,8 @@ fn cpace_stage() -> Stage {
     upk: vectors.hex(v, "oquake_upk"),
     multiples: multiples(v),
     r: vectors.hex(v, "oquake_r"),
+    keygen_seed: vectors.hex(v, "keygen_seed"),
+    encaps_m: vectors.hex(v, "encaps_m"),
     shared_secret: vectors.hex(v, "oquake_k"),
     init_message:,
     response_message: vectors.hex(v, "msg3"),
@@ -139,40 +151,53 @@ fn ciphertext(stage: Stage) -> BitArray {
   ciphertext
 }
 
-/// The real suite with ML-KEM's answers replaced by the vector's: the
-/// encapsulation answers only for the key the vector's `oquake_upk`
-/// decodes to, so a responder that unmasked anything else fails here.
-fn replaying(stage: Stage) -> core_suite.Suite {
-  let assert Ok(encapsulation_key) = kemeleon.decode(stage.upk)
-    as "the vector's upk decodes"
-  let ciphertext = ciphertext(stage)
-
-  core_suite.Suite(
-    ..suite.suite(),
-    kem_encapsulate: fn(key) {
-      case key == encapsulation_key {
-        True -> Ok(#(stage.shared_secret, ciphertext))
-        False -> Error(Nil)
-      }
-    },
-    kem_decapsulate: fn(_key, received) {
-      case received == ciphertext {
-        True -> Ok(stage.shared_secret)
-        False -> Error(Nil)
-      }
-    },
+/// What ML-KEM does in the vector, derived from its seeds by the FIPS 203
+/// reference rather than read from it: the key pair `keygen_seed` gives,
+/// and the shared secret and ciphertext `encaps_m` gives under that key.
+type Derived {
+  Derived(
+    encapsulation_key: BitArray,
+    decapsulation_key: BitArray,
+    shared_secret: BitArray,
+    ciphertext: BitArray,
   )
 }
 
+/// Runs the reference's `KeyGen_internal` and `Encaps_internal` on the
+/// stage's seeds.
+fn seeded(stage: Stage) -> Derived {
+  let #(encapsulation_key, decapsulation_key) =
+    mlkem_reference.derive_key_pair(stage.keygen_seed)
+  let #(shared_secret, ciphertext) =
+    mlkem_reference.encaps_internal(encapsulation_key, stage.encaps_m)
+
+  Derived(encapsulation_key:, decapsulation_key:, shared_secret:, ciphertext:)
+}
+
+/// The real suite with ML-KEM's encapsulation made the seeded one the
+/// vector used: it answers only for the key `keygen_seed` derives, so a
+/// responder that unmasked anything else fails here. Decapsulation stays
+/// OpenSSL's.
+fn replaying(stage: Stage) -> core_suite.Suite {
+  let derived = seeded(stage)
+
+  core_suite.Suite(..suite.suite(), kem_encapsulate: fn(key) {
+    case key == derived.encapsulation_key {
+      True -> Ok(#(derived.shared_secret, derived.ciphertext))
+      False -> Error(Nil)
+    }
+  })
+}
+
 /// The initiator's state and message for the vector: its key pair rebuilt
-/// from `oquake_upk` and `kemeleon_m` (with a placeholder decapsulation
-/// key, which `replaying` never reads), and its `r`.
+/// from `oquake_upk` and `kemeleon_m`, with the decapsulation key
+/// `keygen_seed` derives, and its `r`.
 fn initiate(stage: Stage) -> #(oquake.InitiatorState, BitArray) {
   let assert Ok(encapsulation_key) = kemeleon.decode(stage.upk)
     as "the vector's upk decodes"
   let assert Ok(key_pair) =
     bua_skem.key_pair_from(
-      secret.new(<<0:size(25_344)>>),
+      secret.new(seeded(stage).decapsulation_key),
       encapsulation_key,
       stage.multiples,
     )
@@ -222,6 +247,33 @@ fn check_finish(stage: Stage) -> Nil {
 
   assert secret.expose(key) == stage.key
   assert transcript_hash == stage.transcript_hash
+}
+
+/// The ML-KEM values the vector pins follow from its seeds: the key
+/// `keygen_seed` derives is the one `oquake_upk` encodes under
+/// `kemeleon_m`, and `encaps_m` gives the ciphertext the response carries
+/// and `oquake_k`. OpenSSL opens that ciphertext with the derived
+/// decapsulation key to `oquake_k` as well.
+fn check_ml_kem(stage: Stage) -> Nil {
+  let derived = seeded(stage)
+
+  assert kemeleon.encode(derived.encapsulation_key, stage.multiples)
+    == Ok(stage.upk)
+  assert derived.ciphertext == ciphertext(stage)
+  assert derived.shared_secret == stage.shared_secret
+  assert suite.suite().kem_decapsulate(
+      derived.decapsulation_key,
+      ciphertext(stage),
+    )
+    == Ok(stage.shared_secret)
+}
+
+pub fn e2_ml_kem_follows_from_the_seeds_test() {
+  check_ml_kem(oquake_alone())
+}
+
+pub fn e4_stage_ml_kem_follows_from_the_seeds_test() {
+  check_ml_kem(cpace_stage())
 }
 
 pub fn e2_init_message_test() {

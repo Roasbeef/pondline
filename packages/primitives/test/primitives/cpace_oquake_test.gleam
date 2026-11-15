@@ -11,11 +11,17 @@
 //// `init_with` and `respond_with`; OQUAKE's key pair, rebuilt from the
 //// vector's `oquake_upk` and `kemeleon_m`, and its `r` through
 //// `respond_with`. ML-KEM's own randomness (`keygen_seed`, `encaps_m`)
-//// cannot be given to OTP, so, as `oquake_test` does, the suite's ML-KEM is
-//// replaced by one that answers exactly what the vector says ML-KEM
-//// answered, and only for the key and ciphertext the vector names. A run
-//// that put the stages in the wrong roles, or fed OQUAKE the wrong
-//// contexts, would unmask another key and find no answer.
+//// cannot be given to OTP, so, as `oquake_test` does, the test-only FIPS
+//// 203 reference (`primitives/mlkem_reference`, held to NIST ACVP and to
+//// OpenSSL in `mlkem_reference_test`) derives the key pair from
+//// `keygen_seed`, and the suite's encapsulation is replaced by the
+//// reference's seeded `Encaps_internal` under `encaps_m`, answering only
+//// for the key the seed derives. Decapsulation is OpenSSL's, with the
+//// derived decapsulation key. Nothing ML-KEM produces is read from the
+//// vector, so `msg3` and the key matching it is the check that the
+//// vector's ciphertext and `oquake_k` follow from its seeds. A run that
+//// put the stages in the wrong roles, or fed OQUAKE the wrong contexts,
+//// would unmask another key and find no answer.
 
 import core/crypto/bua_skem
 import core/crypto/cpace
@@ -30,6 +36,7 @@ import gleam/bit_array
 import gleam/int
 import gleam/list
 import gleam/string
+import primitives/mlkem_reference
 import primitives/suite
 import primitives/vectors
 
@@ -56,42 +63,34 @@ fn scalar(v: vectors.Vector, key: String) -> cpace.Scalar {
   scalar
 }
 
-/// The ciphertext the vector's client sent: the first Nct bytes of `msg3`.
-fn ciphertext(v: vectors.Vector) -> BitArray {
-  let assert Ok(ciphertext) =
-    bit_array.slice(vectors.hex(v, "msg3"), 0, bua_skem.ciphertext_bytes)
-    as "msg3 holds a ciphertext"
-  ciphertext
+/// The ML-KEM key pair the vector's `keygen_seed` derives, encapsulation
+/// key first.
+fn seeded_key_pair(v: vectors.Vector) -> #(BitArray, BitArray) {
+  mlkem_reference.derive_key_pair(vectors.hex(v, "keygen_seed"))
 }
 
-/// The real suite with ML-KEM's answers replaced by the vector's.
+/// The real suite with ML-KEM's encapsulation made the seeded one the
+/// vector used: `Encaps_internal` under `encaps_m`, for the key
+/// `keygen_seed` derives and no other. Decapsulation stays OpenSSL's.
 fn replaying(v: vectors.Vector) -> core_suite.Suite {
-  let assert Ok(encapsulation_key) =
-    kemeleon.decode(vectors.hex(v, "oquake_upk"))
-    as "the vector's upk decodes"
-  let ciphertext = ciphertext(v)
-  let shared_secret = vectors.hex(v, "oquake_k")
+  let #(encapsulation_key, _decapsulation_key) = seeded_key_pair(v)
+  let answer =
+    mlkem_reference.encaps_internal(
+      encapsulation_key,
+      vectors.hex(v, "encaps_m"),
+    )
 
-  core_suite.Suite(
-    ..suite.suite(),
-    kem_encapsulate: fn(key) {
-      case key == encapsulation_key {
-        True -> Ok(#(shared_secret, ciphertext))
-        False -> Error(Nil)
-      }
-    },
-    kem_decapsulate: fn(_key, received) {
-      case received == ciphertext {
-        True -> Ok(shared_secret)
-        False -> Error(Nil)
-      }
-    },
-  )
+  core_suite.Suite(..suite.suite(), kem_encapsulate: fn(key) {
+    case key == encapsulation_key {
+      True -> Ok(answer)
+      False -> Error(Nil)
+    }
+  })
 }
 
 /// The server's ML-BUA-sKEM key pair: the vector's public key re-encoded
-/// under its `kemeleon_m`, with a placeholder decapsulation key that
-/// `replaying` never reads.
+/// under its `kemeleon_m`, with the decapsulation key `keygen_seed`
+/// derives.
 fn key_pair(v: vectors.Vector) -> bua_skem.KeyPair {
   let assert Ok(numbers) =
     vectors.text(v, "kemeleon_m")
@@ -103,9 +102,10 @@ fn key_pair(v: vectors.Vector) -> bua_skem.KeyPair {
   let assert Ok(encapsulation_key) =
     kemeleon.decode(vectors.hex(v, "oquake_upk"))
     as "the vector's upk decodes"
+  let #(_encapsulation_key, decapsulation_key) = seeded_key_pair(v)
   let assert Ok(pair) =
     bua_skem.key_pair_from(
-      secret.new(<<0:size(25_344)>>),
+      secret.new(decapsulation_key),
       encapsulation_key,
       randomness,
     )

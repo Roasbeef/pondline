@@ -5,23 +5,32 @@
 //// encapsulation (`keygen_seed`, `kemeleon_m`, `encaps_m`) and their outputs
 //// (`upk`, `ct`, `k`). OTP has no seeded ML-KEM key generation or
 //// encapsulation, and the vector lists no decapsulation key, so the ML-KEM
-//// steps cannot be replayed. What can be checked is all of Kemeleon:
-//// decoding the vector's `upk` and re-encoding it under the vector's four
-//// multiples must give `upk` back byte for byte, which pins the base-3329
-//// reading, the multiple of 3329^256, the 391-byte little-endian width and
-//// the seed's place, all at once. The same holds for the `oquake_upk` of
-//// E.2 and E.4, checked in `oquake_test`. The rest is checked by round
-//// trip and by the binary property: every string of the right length is a
-//// key OpenSSL accepts.
+//// steps come from the test-only FIPS 203 reference
+//// (`primitives/mlkem_reference`, held to NIST ACVP and to OpenSSL in
+//// `mlkem_reference_test`): `vector_reproduced_from_its_seeds_test` runs
+//// `bua_skem`'s own key-pair, encapsulation and decapsulation over the
+//// key pair `keygen_seed` derives and an encapsulation seeded with
+//// `encaps_m`, and gets `upk`, `ct` and `k` byte for byte, with OpenSSL
+//// decapsulating. Kemeleon is also checked on its own: decoding the
+//// vector's `upk` and re-encoding it under the vector's four multiples
+//// must give `upk` back byte for byte, which pins the base-3329 reading,
+//// the multiple of 3329^256, the 391-byte little-endian width and the
+//// seed's place, all at once. The same holds for the `oquake_upk` of E.2
+//// and E.4, checked in `oquake_test`. The rest is checked by round trip
+//// and by the binary property: every string of the right length is a key
+//// OpenSSL accepts.
 
 import core/crypto/bua_skem.{Encapsulation, KeyPair, SplitKey}
 import core/crypto/error.{Malformed}
 import core/crypto/kemeleon
+import core/crypto/suite as core_suite
 import core/secret
 import gleam/bit_array
 import gleam/int
 import gleam/list
+import gleam/result
 import gleam/string
+import primitives/mlkem_reference
 import primitives/suite
 import primitives/vectors
 
@@ -61,9 +70,10 @@ pub fn vector_public_key_reencodes_exactly_test() {
   assert public_key == upk
 }
 
-/// E.1.2: the decoded key is one OpenSSL accepts, and encapsulating to it
-/// gives a ciphertext and secret of the sizes the vector's `ct` and `k`
-/// have. (The values themselves need the seeded encapsulation OTP lacks.)
+/// E.1.2: the decoded key is one OpenSSL accepts, and OpenSSL's own
+/// (unseeded) encapsulation to it gives a ciphertext and secret of the
+/// sizes the vector's `ct` and `k` have. The values themselves are
+/// reproduced from the seeds in `vector_reproduced_from_its_seeds_test`.
 pub fn vector_public_key_is_an_ml_kem_key_test() {
   let vector = vector()
   let assert Ok(Encapsulation(shared_secret:, ciphertext:)) =
@@ -73,6 +83,52 @@ pub fn vector_public_key_is_an_ml_kem_key_test() {
     == bit_array.byte_size(vectors.hex(vector, "ct"))
   assert secret.byte_size(shared_secret)
     == bit_array.byte_size(vectors.hex(vector, "k"))
+}
+
+/// E.1.2 from its seeds: the key pair `keygen_seed` derives, encoded by
+/// `bua_skem.key_pair_from` under `kemeleon_m`, is `upk`; `bua_skem`'s
+/// encapsulation to `upk`, with the suite's ML-KEM encapsulation seeded by
+/// `encaps_m` through the reference, gives `ct` and `k`; and
+/// `bua_skem.decapsulate` over OpenSSL, with the derived decapsulation
+/// key, opens `ct` to `k`.
+pub fn vector_reproduced_from_its_seeds_test() {
+  let vector = vector()
+  let #(encapsulation_key, decapsulation_key) =
+    mlkem_reference.derive_key_pair(vectors.hex(vector, "keygen_seed"))
+  let assert Ok(KeyPair(public_key:, ..)) =
+    bua_skem.key_pair_from(
+      secret.new(decapsulation_key),
+      encapsulation_key,
+      multiples(vector),
+    )
+
+  assert public_key == vectors.hex(vector, "upk")
+
+  // Only the encapsulation is seeded, and only for the derived key; the
+  // decapsulation below is the production binding's.
+  let seeded =
+    core_suite.Suite(..suite.suite(), kem_encapsulate: fn(key) {
+      case key == encapsulation_key {
+        True ->
+          Ok(mlkem_reference.encaps_internal(
+            key,
+            vectors.hex(vector, "encaps_m"),
+          ))
+        False -> Error(Nil)
+      }
+    })
+  let assert Ok(Encapsulation(shared_secret:, ciphertext:)) =
+    bua_skem.encapsulate(seeded, public_key)
+
+  assert ciphertext == vectors.hex(vector, "ct")
+  assert secret.expose(shared_secret) == vectors.hex(vector, "k")
+  assert bua_skem.decapsulate(
+      suite.suite(),
+      secret.new(decapsulation_key),
+      vectors.hex(vector, "ct"),
+    )
+    |> result.map(secret.expose)
+    == Ok(vectors.hex(vector, "k"))
 }
 
 /// A multiple is part of the encoding: re-encoding the vector's key under
