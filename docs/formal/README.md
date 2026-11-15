@@ -11,7 +11,9 @@ all. They need tools `make check` does not, so they are not part of that gate.
 | [`tla.md`](tla.md) | PlusCal, TLC | The scheduler's per-run claims and `Held` pacing, and the fetcher's acknowledgement rule | about 25 minutes |
 | [`crypto.md`](crypto.md) | ProVerif | The pairing handshake, the sealed ticket, and pairing by spoken code (CPaceOQUAKE and the ticket hand-off), under broken-primitive and leaked-secret adversaries; also the Wycheproof and ACVP vectors run through `primitives` | about 24 minutes |
 
-Every model is judged the same way: its checker must pass on the design, and
+The P model does not include the spoken-code rendezvous; there is no P model
+of it, and the P and TLA+ checks were not rerun when spoken pairing codes
+landed. Every model is judged the same way: its checker must pass on the design, and
 each property must fail on a broken variant, so a property that cannot fail
 does not count. All of these results hold within each document's stated model
 and bounds, which that document lists. They do not prove the implementation

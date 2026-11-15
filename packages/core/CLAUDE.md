@@ -259,15 +259,27 @@ None. `core` sends no messages and owns no processes.
   `core@swarm:replay("<hex>")`.
 - `core/tlv`, `limits.padded_size`, `envelope.pad`/`unpad`/`from_wire`,
   `retention.offers` and `retransmit.due_at` are transcribed into Lean and
-  proved (`formal/lean`, `docs/formal/lean.md`). The proofs hold for Gleam
-  only while `test/core/formal_vectors_test.gleam` passes: it replays the
-  11 201 generated vectors in `test/core/formal_vectors.txt` against the real
-  functions. Changing one of these functions means changing its Lean
+  proved (`formal/lean`, `docs/formal/lean.md`), and so is the arithmetic
+  of spoken pairing codes (ADR-016): `kemeleon.encode` and `decode`,
+  `nameplate.from_int`, `parse` and `to_string`, the index slicing inside
+  `pairing_code.generate`, `pake_common.lv_encode` and
+  `encode_public_context`, `rendezvous.public_context`, and
+  `elligator2.map_to_curve`, `decode_u_coordinate` and
+  `encode_u_coordinate` (`formal/lean/Pondline/Kemeleon.lean`,
+  `Nameplate.lean`, `PairingCode.lean`, `PakeCommon.lean`,
+  `Elligator2.lean`). The proofs hold for Gleam only while
+  `test/core/formal_vectors_test.gleam` passes: it replays the 12 995
+  generated vectors in `test/core/formal_vectors.txt` against the real
+  functions. Changing any of these functions means changing its Lean
   definition and rerunning `formal/lean/check.sh --write`; never edit the
-  vectors by hand. Mutation-checked: a non-minimal BigSize, a repeated type,
+  vectors by hand. For Elligator 2 only the output range and two
+  symmetries are proved; that its output lies on the curve is tested,
+  not proved. Mutation-checked: a non-minimal BigSize, a repeated type,
   ignored unknown even types, an off-by-one halving, a dropped slack, `<`
-  for `<=` on the retransmit deadline or on a bucket, and a miscounted
-  length prefix each fail it.
+  for `<=` on the retransmit deadline or on a bucket, a miscounted
+  length prefix, a big-endian or draft-bound `vector_encode`, ten-bit
+  index fields and an unreduced Elligator 2 `x2` each fail it
+  (`docs/formal/lean.md` has the table, and the Lean-side mutants).
 - `fake_suite.seeded(n)` draws identifiers from a seeded counter, so a
   simulation run depends only on its seed; `fake_suite.suite()` keeps a
   process-wide counter for tests that build several suites. Its `sha512`
@@ -278,6 +290,19 @@ assumed, per the ADR, are that the draft's argument carries over to a
 store-and-forward rendezvous, that the confirmation and hand-off
 derivations are sound uses of the session key, and the timing argument.
 
+- Kemeleon's encoding differs from `draft-irtf-cfrg-kemeleon-02` §4.1 at
+  exactly one point. `vector_encode` reduces the draw into
+  `(2^3128 - 1 - value) / 3329^256 + 1` multiples, one fewer than the
+  draft's inclusive bound for the single polynomial value
+  `2^3128 mod 3329^256`, whose largest draft multiple sums to exactly
+  2^3128 and so cannot be written in 391 bytes (it came out as zeros and
+  decoded to another key). Every other value has the draft's range, so no
+  draft vector moves, and the encoding is a bijection onto 391-byte
+  strings (proved in Lean; found by writing the round trip as a theorem;
+  tracked upstream as Roasbeef/pondline#10). Pinned by
+  `kemeleon_test.the_drafts_overflow_point_round_trips_test` and by the
+  two `kem.enc` vectors at that value and their `kem.dec` lines in
+  `formal_vectors.txt`; reverting to the draft's bound fails both.
 - Kemeleon's `decode` is total: every string of `encoded_key_bytes`
   decodes to a well-formed ML-KEM-1024 encapsulation key, so a wrong
   password at OQUAKE unmasks to something indistinguishable from a key.
@@ -342,18 +367,24 @@ derivations are sound uses of the session key, and the timing argument.
   (generator, shares, shared point, key) and B.1.10 its low-order aborts;
   pqpake-03 E.4 the CPace wrapper, the OQUAKE stage and CPaceOQUAKE end
   to end for both roles, and E.5.4 the neutral-element abort; E.2 OQUAKE
-  alone under its own DST; E.1.2 Kemeleon alone (the vector key
-  re-encodes byte for byte). The run's key schedule and public context
+  alone under its own DST; E.1.2 ML-BUA-sKEM (the vector key re-encodes
+  byte for byte, and its key, ciphertext and secret follow from its
+  seeds). The run's key schedule and public context
   are pinned by a vector from an independent script, not from the draft.
   Elligator 2 is also checked against cpace-21 A.5's reference map, run
   in Python on inputs that take both branches.
-- Not reproduced: ML-KEM's own steps inside the vectors. They fix
-  ML-KEM's randomness (`keygen_seed`, `encaps_m`), which OTP cannot take,
-  and list no decapsulation key. In the vector tests the suite's ML-KEM
-  fields are overridden to answer exactly what the vector says ML-KEM
-  answered, and only for the key and ciphertext the vector names;
-  everything OQUAKE computes runs for real. Honest and wrong-password runs
-  over the real ML-KEM are separate tests.
+- ML-KEM's own steps inside the vectors are reproduced from their seeds,
+  in `primitives`' tests only. The vectors fix ML-KEM's randomness
+  (`keygen_seed`, `encaps_m`), which OTP cannot take, so a test-only FIPS
+  203 reference (`packages/primitives/test/primitives/mlkem_reference.gleam`,
+  held to NIST ACVP and to OpenSSL first) derives the key pair, ciphertext
+  and shared secret, which must equal the vector's. The vector tests
+  replace only the suite's encapsulation with the reference's seeded one,
+  for the derived key alone; decapsulation is OpenSSL's with the derived
+  key, and everything OQUAKE computes runs for real. The draft's values
+  cannot pin `z`, the second half of `keygen_seed` (it enters only the
+  implicit-rejection key; ACVP pins it). The reference is under `test/`
+  and cannot reach a release.
 - In `core`'s own tests ML-KEM is a stand-in: `kem_suite` in
   `test/core/crypto/oquake_test.gleam` and, made public for
   `rendezvous_test`, in `test/core/crypto/cpace_oquake_test.gleam`. The
@@ -367,7 +398,8 @@ derivations are sound uses of the session key, and the timing argument.
   `pairing_code_test` (uppercase admitted, a fourth word accepted,
   ten-bit fields, a four-byte draw, a wrong slot width, a skipped first
   bit; `search` was not mutated). The PAKE and run tests record no
-  mutation runs.
+  mutation runs; the arithmetic under them is mutated through the Lean
+  conformance vectors instead (above).
 - `elligator2` and `kemeleon` compute over Gleam's `Int`, which is a
   float on the JavaScript target; they are correct on the BEAM only.
 

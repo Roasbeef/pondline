@@ -522,6 +522,31 @@ runs the two rounds backwards (`s_pad` first, recovering `r`, then
 `T_pad`, recovering `ut`) under its own PRS, so a wrong PRS gives another
 `ut` that Kemeleon still decodes to a valid key.
 
+**Kemeleon** at `t = 132`, as `core/crypto/kemeleon` implements it, for
+each polynomial `t_i` of the encapsulation key (256 coefficients below
+3329, read as FIPS 203's `ByteDecode_12`):
+
+```text
+x_i   = sum_j t_i[j] * 3329^j                          0 <= x_i < 3329^256
+range = floor((2^3128 - 1 - x_i) / 3329^256) + 1       multiples allowed for x_i
+m_i   = draw_i mod range                               draw_i: 48 fresh bytes per polynomial
+r_i   = x_i + m_i * 3329^256                           391 bytes, little-endian
+encoded key = r_1 || r_2 || r_3 || r_4 || rho          1596 bytes
+Decode(r_i) = r_i mod 3329^256, written back as 256 coefficients
+```
+
+The range differs from `draft-irtf-cfrg-kemeleon-02` §4.1, whose
+`VectorEncode` draws `m_i` from `[0, floor((2^3128 - x_i) / 3329^256)]`
+inclusive. For the single value `x* = 2^3128 mod 3329^256` the draft's
+largest multiple makes `r_i` exactly `2^3128`, which 391 bytes cannot
+hold; written in 3128 bits it becomes zero and decodes to a different
+key. This profile excludes that one multiple. For every other value the
+two ranges are equal, so every multiple the draft allows elsewhere is
+used unchanged and no draft vector is affected. With the change the
+encoding is a bijection between pairs `(x_i, m_i)` and 391-byte strings
+(`docs/formal/lean.md`, Kemeleon). Reported upstream as
+Roasbeef/pondline#10.
+
 **The combiner**:
 
 ```text
@@ -617,14 +642,24 @@ a code is used once. That argument is assumed, not shown.
 Implemented in `core/crypto/elligator2`, `pake_common`, `cpace`,
 `kemeleon`, `bua_skem`, `oquake`, `cpace_oquake` and `core/rendezvous`,
 and tested against cpace-21 Appendix B.1 (including the low-order points
-that must abort), pqpake-03 Appendices E.1.2 (Kemeleon only), E.2, E.4
-end to end for both roles and E.5.4, and the independent schedule vector
-(`packages/primitives/test/primitives/`). ML-KEM's own steps inside the
-draft's vectors are not reproduced, because OTP's `crypto` takes neither
-a key-generation seed nor an encapsulation seed; those tests answer
-ML-KEM's part from the vector, and separate runs use the real ML-KEM. The
+that must abort), pqpake-03 Appendices E.1.2, E.2, E.4 end to end for
+both roles and E.5.4, and the independent schedule vector
+(`packages/primitives/test/primitives/`). OTP's `crypto` takes neither a
+key-generation seed nor an encapsulation seed, so ML-KEM's own steps
+inside the draft's vectors are reproduced by a test-only FIPS 203
+reference (`mlkem_reference.gleam`, held first to NIST ACVP keyGen and
+encapsulation cases and to OpenSSL): the key pair from `keygen_seed` and
+the ciphertext and `k` from `encaps_m` equal the vector's. The vector
+tests seed only encapsulation through it; decapsulation is OpenSSL's,
+with the derived key. The draft's values do not pin the second half of
+`keygen_seed` (`z`, which enters only the implicit-rejection key); ACVP
+does. The reference lives under `test/` and is not in a release. The
 ProVerif model of the exchange is in `docs/formal/crypto.md`, "Spoken
-pairing codes". The daemon's run, `daemon/pairing`, holds the two rules
+pairing codes"; Kemeleon, the nameplate, the word indices, the context
+framing and the Elligator 2 map's range are proved in Lean against
+transcriptions tied to the Gleam by conformance vectors
+(`docs/formal/lean.md`). That the Elligator 2 output lies on the curve is
+tested, not proved. The daemon's run, `daemon/pairing`, holds the two rules
 above that `core` cannot, acting only on the first message at each index
 and sealing `m4` once and resending those bytes; both are tested against a
 scripted mailbox in `packages/daemon/test/daemon/pairing_test.gleam`, and

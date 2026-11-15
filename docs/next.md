@@ -97,12 +97,6 @@ commands and does not recommend them.
 release-smoke`, and anything over a real Tor network. The Lean and ProVerif
 checks were run in full.
 
-**Stale after the formal work, not yet corrected.** `packages/primitives/CLAUDE.md`,
-`packages/core/CLAUDE.md` and `docs/crypto-profile-v1.md` §12 still say the
-vectors' ML-KEM steps are pinned by overriding the suite, and none of them,
-nor ADR-016, records the one-point Kemeleon deviation or the new Lean
-vectors' keep-in-step rule (`docs/formal/lean.md` has both).
-
 **Follow-ups, none started.**
 
 - An outside review of ADR-016, the key schedule and the timing argument.

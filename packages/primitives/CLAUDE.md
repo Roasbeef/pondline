@@ -45,7 +45,7 @@ the protocol logic stays pure.
     CPaceOQUAKE DST: shares, key, transcript hash) and E.5.4's
     neutral-element `msg1`.
   - `bua_skem_mlbuaskem1024.json`: E.1.2, one ML-BUA-sKEM key generation
-    and encapsulation; only its Kemeleon part is checked.
+    and encapsulation, reproduced from its seeds.
   - `oquake_mlbuaskem1024.json`: E.2, OQUAKE alone under the
     `oquake-mlbuaskem1024` DST.
   - `oquake_cpaceoquake_stage.json`: the whole of E.4 (inputs, every
@@ -58,6 +58,20 @@ the protocol logic stays pure.
     `confirm_key`, `confirm_J`, hand-off key, nonce and `m4`, and the
     public context for nameplate `482719` and identifier
     `000102...0f`, from E.4's key and `th`.
+- `test/primitives/mlkem_reference` (test only): a FIPS 203 reference for
+  ML-KEM-1024's two deterministic algorithms, `keygen_internal(d, z)`
+  (Algorithm 16) and `encaps_internal(ek, m)` (Algorithm 17), in pure
+  Gleam, with `derive_key_pair` cutting the draft's 64-byte `keygen_seed`
+  into `d || z`. It exists because OTP's `crypto` takes neither a key
+  generation seed nor encapsulation randomness, and the pqpake-03 vectors
+  fix both. It is not constant time and is written for clarity. Its hash
+  steps (SHA3-256, SHA3-512, SHAKE128, SHAKE256) come from
+  `test/primitives/internal/ffi_sha3`, direct `@external`s to
+  `crypto:hash/2` and `crypto:hash_xof/3` named as an `internal/ffi_*`
+  module so they stay in one place; the production API has no SHA-3 and
+  gains none for a test. Both modules live under `test/`, which a release
+  never compiles, so the reference can no more reach a production build
+  than `core`'s fake suite can (`docs/spec.md` §13.3).
 
 ## Relationships
 
@@ -80,7 +94,8 @@ None. Pure function calls into OpenSSL; no processes, no messages.
 - Every primitive matches its standard's published vectors
   (`test/primitives/known_answer_test.gleam`: RFC 7748, 8032, 8439, 4231,
   FIPS 180-4). ML-KEM, which has no deterministic key generation through
-  OTP, is checked by round trip, size and implicit rejection. ML-DSA-65
+  OTP, is checked through the binding by round trip, size and implicit
+  rejection, and byte for byte through the test-only reference below. ML-DSA-65
   has neither seeded key generation through OTP 29 nor deterministic
   signing (OpenSSL hedges), so `test/primitives/mldsa_test.gleam` checks
   sizes, round trips and every rejection a verifier owes instead.
@@ -123,19 +138,34 @@ None. Pure function calls into OpenSSL; no processes, no messages.
   honest run, a wrong word at either end, another context, a changed bit
   in each of `m1` to `m4`, wrong lengths and length prefixes, a zero
   share, and a ticket out of bounds.
-- The ML-KEM steps inside those vectors are not reproduced. The draft
-  fixes ML-KEM's randomness (`keygen_seed`, `encaps_m`), OTP exposes
-  neither seeded key generation nor seeded encapsulation, and the vectors
-  list no decapsulation key. So `oquake_test` and `cpace_oquake_test`
-  replace the suite's three ML-KEM fields, by record update of the real
-  suite, with ones that answer exactly the vector's `oquake_k` and
-  ciphertext, and only for the key the vector's `oquake_upk` decodes to
-  and the ciphertext it names; a run in the wrong roles or with the wrong
-  contexts unmasks another key and finds no answer. Everything OQUAKE and
-  the combiner compute runs for real, and the honest and wrong-password
-  runs use the real ML-KEM throughout. Seeded ML-KEM key generation and
-  seeded encapsulation in the suite would close this gap; OTP's `crypto`
-  does not offer them today.
+- The ML-KEM steps inside those vectors are reproduced from their seeds.
+  `mlkem_reference` is trusted only after `mlkem_reference_test` holds it
+  to every trimmed NIST ACVP ML-KEM-1024 keyGen case (`d`, `z` to `ek`,
+  `dk`) and encapsulation case (`ek`, `m` to `c`, `k`) byte for byte, and
+  to OpenSSL on ten fresh seed sets (OpenSSL accepts the reference's
+  `ek`, and with the reference's `dk` opens both its own ciphertext and
+  the reference's). Then, for E.1.2, E.2 and E.4, the key pair derived
+  from `keygen_seed` must Kemeleon-encode under `kemeleon_m` to the
+  vector's `upk` or `oquake_upk`, `encaps_m` must give its ciphertext and
+  shared secret, and OpenSSL with the derived `dk` must open that
+  ciphertext to that secret. `oquake_test`, `cpace_oquake_test` and
+  `bua_skem_test` seed only encapsulation through the reference, by
+  record update of the real suite's `kem_encapsulate`, answering only for
+  the key `keygen_seed` derives, so a run in the wrong roles or with the
+  wrong contexts unmasks another key and finds no answer. Decapsulation
+  is OpenSSL's, with the derived key; everything OQUAKE and the combiner
+  compute runs for real, and the honest and wrong-password runs use
+  OpenSSL's ML-KEM throughout.
+- Two things the draft's values cannot pin. The second half of
+  `keygen_seed`, `z`, enters only the implicit-rejection key inside
+  `dk`, and no draft value exercises implicit rejection, so a reference
+  that mishandled `z` would still pass E.1.2, E.2 and E.4; the ACVP keyGen
+  cases, which list the whole `dk`, are what pin it. And ML-KEM-1024's
+  two CBD parameters are both 2 (`eta1`, `eta2` in the reference), so a
+  reference that drew the encryption errors with eta1 or the secret with
+  eta2 would compute identical bytes: no vector, ACVP's included, can
+  detect that swap for this parameter set, and it would matter only for
+  ML-KEM-512, which Pondline does not use.
 - `test/primitives/hybrid_auth_test.gleam` holds the tests that fail if any
   hybrid signature check verifies only its classical half: identity
   binding, both prekey signatures and the joiner's transcript, each with

@@ -762,8 +762,13 @@ NIST ACVP, `usnistgov/ACVP-Server` at
 
 What the ACVP suites cannot reach through this binding: ML-KEM key
 generation from `(d, z)` and encapsulation from `m` (OTP exposes neither
-seed), so the keyGen `ek`/`dk` pair and the encapsulation `c`/`k` pair are
-checked by using them rather than by regenerating them; ML-DSA key
+seed), so through the binding the keyGen `ek`/`dk` pair and the
+encapsulation `c`/`k` pair are checked by using them rather than by
+regenerating them. A test-only FIPS 203 reference
+(`packages/primitives/test/primitives/mlkem_reference.gleam`) does
+regenerate both byte for byte (`mlkem_reference_test`), which is what
+lets the pqpake-03 vectors' ML-KEM steps be reproduced from their seeds;
+it is not the production implementation and is not in a release; ML-DSA key
 generation from a seed and deterministic signing (OTP 29 raises on a seed
 and OpenSSL signs hedged), so no NIST signature is reproduced byte for
 byte; ML-DSA with a non-empty context, the pre-hash interface and the
