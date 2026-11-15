@@ -429,6 +429,21 @@ receiver commits each distinct envelope once. The formal models that check
 these interleavings are in [../formal/README.md](../formal/README.md), and
 the deterministic simulation of the same code is in [sim.md](sim.md).
 
+Pairing by spoken code is verified differently, and less. Its exchange is
+a ProVerif model ([../formal/crypto.md](../formal/crypto.md), "Spoken
+pairing codes"), a symbolic model of the design rather than of the code.
+Its arithmetic (Kemeleon, the nameplate's spelling, the word indices, the
+context framing, and the range of the Elligator 2 map) is proved in Lean
+of transcriptions that conformance vectors tie to the Gleam
+([../formal/lean.md](../formal/lean.md)); that the Elligator 2 output lies
+on the curve is tested, not proved. The PAKE is pinned by the drafts'
+vectors in `packages/primitives`, with ML-KEM's steps reproduced from
+their seeds by a test-only reference. There is no P or TLA+ model of the
+rendezvous, the P and TLA+ checks were not rerun for this work, and the
+simulation does not drive a rendezvous; the daemon's runs are tested
+against a scripted mailbox and end to end over loopback. No outside
+cryptographer has reviewed the design or the code.
+
 ## Concurrency summary
 
 | Process | Owns | Reached by |
@@ -442,7 +457,7 @@ the deterministic simulation of the same code is in [sim.md](sim.md).
 | `pairing` | the inviters' spoken-code runs and their recent outcomes, in memory | `Begin`, `Await`, run outcomes |
 | `lock`, `status`, `events` | the lock connection, the reachability cell, the subscriber list | their own messages |
 | `coordinator` (mailbox) | the mailbox `Store` | `mail.ask`, 30_000 ms timeout |
-| `notifier` (mailbox) | waiters by queue | `Wait`, `Notify`, `Forget` |
+| `notifier` (mailbox) | waiters by wake key: a queue, or a rendezvous reader | `Wait`, `Notify`, `Forget` |
 | connection process (mist, local API) | one request or one client connection | the socket |
 
 A timeout on an ask does not mean the callee left its state unchanged. The

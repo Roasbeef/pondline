@@ -7,7 +7,8 @@ retransmission. Every state machine is a function from the current value and
 its inputs to a result, with time and randomness passed as arguments. This
 document describes the modules, each state machine with its transitions, and
 how the shell (`packages/daemon`) drives them. It reflects the code at
-commit `49a51b3`.
+commit `49a51b3`, except the section on spoken pairing codes, which
+reflects commit `a2aadc2`.
 
 For the purity rule see `docs/spec.md` §10.1 and `docs/gleam-style.md`
 Part IV §5. For the byte-level cryptography see
@@ -94,6 +95,7 @@ each group, what it owns, and what it leaves to other code.
 | `snapshot` | The durable encoding of a `Relationship` and an `Offer`. | The SQLite schema and transactions. |
 | `mailbox/protocol`, `mailbox/codec`, `http1` | The typed mailbox commands, their TLV bytes, and HTTP/1.1 framing. | Sockets, handling a request, or the mailbox store. |
 | `crypto/*` | Typed keys, hybrid identity, HKDF, PQXDH and the Double Ratchet. | The primitive implementations, which `packages/primitives` supplies through `Suite`. |
+| `nameplate`, `pairing_code`, `rendezvous`, and `crypto/elligator2`, `pake_common`, `cpace`, `kemeleon`, `bua_skem`, `oquake`, `cpace_oquake` | The spoken pairing code ([ADR-016](../../docs/adr/016-spoken-pairing-codes.md)): the code's text, the hybrid PAKE over the `Suite`, and the run's four-message step functions with their confirmation and ticket hand-off. | The rendezvous slot, the clock, the failure count, and acting only on the first message at each index (the mailbox and `daemon/pairing`). See [Spoken pairing codes](#spoken-pairing-codes). |
 | `id`, `capability`, `secret`, `endpoint`, `time`, `field`, `limits`, `tlv` | The domain types (`endpoint.parse` and `endpoint.to_string` included) and the single place each bound (`limits.max_grant_token_bytes` included) or encoding is defined. | Any I/O. |
 
 ## The transition contract
@@ -529,7 +531,8 @@ flowchart LR
   row that could not have been written is not trusted
   (`packages/core/src/core/snapshot.gleam:111`).
 - **Mailbox.** `mailbox/codec` checks the version in TLV type 0 before any
-  other field and has seven request kinds and eight response kinds. The type
+  other field and has twelve request kinds and thirteen response kinds,
+  the last five of each the rendezvous commands of ADR-016. The type
   tables are in its module doc.
 
 ## Cryptography
@@ -545,6 +548,177 @@ in [crypto-profile-v1.md](../../docs/crypto-profile-v1.md), and the decisions
 behind them are `docs/adr/002-pq-crypto-over-otp.md` and
 `docs/adr/005-hybrid-authentication.md`. The invitation ticket derivations
 are in section 11 of the profile.
+
+## Spoken pairing codes
+
+A spoken code such as `482719-cradle-noble-velvet` pairs two daemons
+without a file or a `pl1` ticket changing hands
+([ADR-016](../../docs/adr/016-spoken-pairing-codes.md)). The three words
+carry 33 bits, far too few to key anything, so they are the password of
+CPaceOQUAKE (`draft-vos-cfrg-pqpake-03`, configuration
+`cpaceoquake-x25519-mlbuaskem1024`), and what the run delivers, once each
+side has proved it holds the words, is the inviter's ticket text. From there
+the joiner's flow is a ticket's. The byte-level definitions are in
+[crypto-profile-v1.md](../../docs/crypto-profile-v1.md) §12. No outside
+cryptographer has reviewed this code.
+
+### Layers
+
+The modules form a stack in which each layer is one function of the draft
+or of Pondline's run, and everything below `rendezvous` takes the `Suite`
+as its only route to a primitive. The X25519 multiplications, ML-KEM-1024,
+SHA-512, HKDF, HMAC and the AEAD run in OpenSSL through it; Elligator 2 and
+Kemeleon are big-integer arithmetic on the BEAM, which is not constant time
+(ADR-016 accepts that on an argument it records as assumed).
+
+```mermaid
+flowchart TB
+    subgraph CODE["The code's text"]
+        direction LR
+        pc["pairing_code.gleam<br/>PairingCode, generate,<br/>decode, password"]
+        np["nameplate.gleam<br/>Nameplate, parse, to_string"]
+        words["pairing_code/words.gleam<br/>BIP-39 list, index_of"]
+    end
+
+    rv["rendezvous.gleam<br/>invite, join, inviter_answer,<br/>joiner_confirm, inviter_release,<br/>joiner_receive, public_context"]
+
+    subgraph PAKE["crypto/: CPaceOQUAKE"]
+        direction TB
+        co["cpace_oquake.gleam<br/>sequential combiner"]
+        cp["cpace.gleam<br/>CPace, X25519, SHA-512"]
+        oq["oquake.gleam<br/>OQUAKE"]
+        bua["bua_skem.gleam<br/>ML-BUA-sKEM-1024"]
+        kem["kemeleon.gleam<br/>key encoding, t = 132"]
+        ell["elligator2.gleam<br/>map to Curve25519"]
+        common["pake_common.gleam<br/>dst, lv_encode,<br/>encode_public_context,<br/>transcript_hash"]
+    end
+
+    suite["suite.gleam<br/>Suite (from packages/primitives)"]
+
+    rv --> pc
+    rv --> np
+    pc --> np
+    pc --> words
+    rv --> co
+    rv --> common
+    co --> cp
+    co --> oq
+    cp --> ell
+    cp --> common
+    oq --> bua
+    oq --> common
+    bua --> kem
+    rv --> suite
+    cp --> suite
+    oq --> suite
+    bua --> suite
+```
+
+| Module | Owns |
+| --- | --- |
+| `nameplate` | The public half of the code: an integer below 10^6 with exactly one spelling, its six zero-padded digits. The mailbox draws it; it finds a slot and carries no secret. |
+| `pairing_code` | The text `NNNNNN-word-word-word` and its strict, total decoder, and `generate`, which reads three eleven-bit indices from the first 33 bits of a five-byte `suite.random` draw. `password` is the words joined by hyphens. |
+| `elligator2` | RFC 9380's map onto Curve25519, used by CPace to turn its hashed generator string into a point. |
+| `pake_common` | The configuration's DST and the framing every stage shares: `lv_encode`, `encode_public_context` and the transcript hash. |
+| `cpace` | Stage 1, CPace over X25519 and SHA-512 inside the draft's Appendix B wrapper, including the abort on a low-order shared point. |
+| `kemeleon`, `bua_skem` | The encoding that makes an ML-KEM-1024 encapsulation key indistinguishable from random bytes, and the KEM built on it, split into the masked part `ut` and the seed `rho`. |
+| `oquake` | Stage 2, OQUAKE: the two-round Feistel mask of the key under the password, the encapsulation, the tag. Its `finish` never reports a wrong password; it returns a fresh random key instead. |
+| `cpace_oquake` | The combiner: CPace's key and transcript hash become OQUAKE's secret and public contexts, and the session key is derived from both stages. |
+| `rendezvous` | Pondline's run: the public context (label, nameplate, rendezvous identifier), the four messages and their exact lengths, explicit confirmation in both directions, and the sealed ticket hand-off. |
+
+### The four messages
+
+The joiner is the draft's client and the inviter its server, so the
+inviter holds the joiner's proof of the words before it releases
+anything. Each step takes the opaque state the previous one returned, so
+the steps can only be taken in order.
+
+```mermaid
+sequenceDiagram
+    participant J as Joiner
+    participant I as Inviter
+    Note over I: invite(code, rendezvous, ticket)<br/>-> InviterWaiting
+    Note over J: join(suite, code, rendezvous)<br/>-> JoinerSent
+    J->>I: m1 = lv(Ya), 34 bytes
+    Note over I: inviter_answer -> InviterAnswered<br/>(CPace respond, OQUAKE init)
+    I->>J: m2 = lv(Yb) || s || T || rho, 1694 bytes
+    Note over J: joiner_confirm -> JoinerConfirmed<br/>(CPace finish, OQUAKE respond,<br/>session key, confirm_J)
+    J->>I: m3 = ct || h || confirm_J, 1632 bytes
+    Note over I: inviter_release -> Released<br/>(OQUAKE finish, check confirm_J<br/>in constant time, then seal)
+    I->>J: m4 = AEAD(ticket text), at most 208 bytes
+    Note over J: joiner_receive -> ticket text (Secret)
+```
+
+Every message's length, and the 32-byte share behind each length prefix,
+is checked before anything else, so a message of the wrong shape is
+`MalformedMessage` and never a counted guess. CPaceOQUAKE's completion
+proves nothing about the password (the draft's §6.3), which is why
+`rendezvous` adds `confirm_J` in one direction and the AEAD tag of `m4`
+in the other. Of the `RunError` variants only `ConfirmationFailed` may be
+a spent guess; `MalformedMessage` and `LowOrderShare` are interference,
+`TicketLength` a caller error before any message, and `PrimitiveFailed` a
+suite that broke its contract.
+
+### Secrets
+
+The password, CPace's generator and scalars, the shared points, the
+ML-BUA-sKEM decapsulation key, Kemeleon's randomness, every stage key,
+the session key, the confirmation key, the hand-off key and nonce, and
+the ticket are `Secret`s or live inside the opaque states
+(`InviterWaiting`, `InviterAnswered`, `JoinerSent`, `JoinerConfirmed`).
+No `CodeError`, `CpaceError`, `CombinerError` or `RunError` carries a
+byte of the code, a message or a key; `UnknownWord` carries only a
+position. What is public is the nameplate, the rendezvous identifier, the
+messages and the transcript hash `Released` returns.
+
+### What the pure layer leaves to the shell
+
+The type-state fixes the order of the steps but not single use: a Gleam
+value can be stepped twice. Each answer a side computes from a message the
+peer chose lets the peer test a candidate code, so a step run on a second
+message at the same index is a second guess in one run. The shell must
+act only on the first message at each index and drop the run on any
+error. Likewise `m4`'s key and nonce are fixed by the session key, so the
+shell must keep the bytes `inviter_release` returned and resend those,
+never seal again. `core` cannot enforce either rule; `daemon/pairing`
+does, and its tests check both against a scripted mailbox. The slot
+itself, the timeouts, and the durable count of failed confirmations per
+endpoint that caps guessing are the mailbox's and the daemon's.
+
+### What is proved, pinned and tested
+
+Proved in Lean (`docs/formal/lean.md`), of transcriptions tied to the
+Gleam by 12 995 conformance vectors that `test/core/formal_vectors_test.gleam`
+replays: Kemeleon's round trip for every key and draw, the totality of its
+decoding (every 1596-byte string is a valid key, which is what makes a
+wrong password unmask to a plausible one) and its bijection onto byte
+strings; one spelling per nameplate; no modulo bias in the word draw; one
+parse of the framed public context; and, for Elligator 2, only the
+output's range and two symmetries. That the Elligator 2 output lies on the
+curve is tested, not proved. Writing Kemeleon's round trip as a theorem
+found the one place this code departs from `draft-irtf-cfrg-kemeleon-02`:
+`vector_encode` allows one fewer multiple at the single value
+`2^3128 mod 3329^256`, whose largest draft multiple would not fit in 391
+bytes, and no draft vector is affected.
+
+Pinned by the drafts' vectors, over the real primitives in
+`packages/primitives/test/primitives/`: cpace-21 B.1 and its low-order
+aborts, and pqpake-03 E.1.2, E.2, E.4 end to end for both roles and E.5.4,
+with ML-KEM's own steps inside them reproduced from their seeds by a
+test-only FIPS 203 reference. The run's key schedule and public context
+are pinned by a vector from an independent script, not from the draft.
+
+Tested only: the run as a whole (honest runs, a wrong word at either end,
+another context, a changed bit in each message, wrong lengths, a zero
+share), the decoder's strictness, and that no value prints a secret.
+`core`'s own tests run the PAKE over the fake suite with a stand-in KEM
+that is no KEM against an attacker; the real ML-KEM is exercised only in
+`primitives`. The ProVerif model of the exchange
+(`docs/formal/crypto.md`, "Spoken pairing codes") is a symbolic model of
+the design, not of this code. Assumed, per ADR-016: that the draft's
+argument carries over to a store-and-forward rendezvous, that the
+confirmation and hand-off derivations are sound uses of the session key,
+and the timing argument.
 
 ## What purity gives and how the shell uses it
 
@@ -592,8 +766,10 @@ plan atomically or discards it on a `Crash`. It offers nine fault classes
 run (a mode byte, a two-byte fault mask, then three-byte ops, at most
 `max_ops` = 160 ops), and a heal phase turns faults off and lets time pass
 before the audits run. The replay command is in `CLAUDE.md`. The Lean proofs
-of `core/tlv`, `limits.padded_size`, `envelope.pad`, `retention.offers` and
-`retransmit.due_at` are in `docs/formal/lean.md`.
+of `core/tlv`, `limits.padded_size`, `envelope.pad`, `retention.offers`,
+`retransmit.due_at` and the spoken-code arithmetic are in
+`docs/formal/lean.md`. The simulation does not drive a spoken-code
+rendezvous.
 
 ## Known gaps
 

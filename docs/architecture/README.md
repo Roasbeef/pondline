@@ -25,4 +25,9 @@ Other places to look, so this directory does not repeat them:
   [../weft.md](../weft.md).
 - One package: `packages/<name>/README.md` for `core`, `primitives`,
   `telemetry`, `tor`, `daemon`, `mailbox`, `lint` and `sim`, and the
-  package's invariants file beside it.
+  package's invariants file beside it. Pairing by spoken code
+  ([ADR-016](../adr/016-spoken-pairing-codes.md)) spans four of them:
+  `core` (the code, the PAKE layers and the run's steps), `primitives`
+  (SHA-512, the draft-vector tests and the test-only ML-KEM reference),
+  `mailbox` (the rendezvous slot) and `daemon` (the run drivers, the
+  registry and the guess cap); `system.md` says what of it is verified.

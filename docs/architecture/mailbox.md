@@ -304,10 +304,11 @@ churn against one grant.
 
 ## Storage
 
-The store is one SQLite file. The migrations are `sql/001_initial.sql` and
-`sql/002_blobs.sql`, embedded into `mailbox/schema` by
-`dev/embed_schema.gleam`, and every other statement is a named query in
-`src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`, `blobs`, `status`) that
+The store is one SQLite file. The migrations are `sql/001_initial.sql`,
+`sql/002_blobs.sql` and `sql/003_rendezvous.sql`, embedded into
+`mailbox/schema` by `dev/embed_schema.gleam`, and every other statement is
+a named query in `src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`,
+`blobs`, `rendezvous`) that
 parrot generates into `mailbox/sql` ([ADR-007](../adr/007-parrot-sql-codegen.md)).
 Neither generated module is edited by hand. `store.open` sets
 `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`,
@@ -356,13 +357,36 @@ erDiagram
         INTEGER size
         BLOB sealed
     }
+    rendezvous {
+        BLOB rendezvous_id PK "chosen by the opener"
+        INTEGER nameplate UK "drawn by the mailbox"
+        BLOB grant_hash FK "the opening Provision grant"
+        BLOB opener_read_hash
+        BLOB opener_append_hash
+        BLOB claimant_read_hash "NULL until claimed"
+        BLOB claimant_append_hash "NULL until claimed"
+        INTEGER lifetime
+        INTEGER expires_at
+    }
+    rendezvous_messages {
+        BLOB rendezvous_id PK "and FK, ON DELETE CASCADE"
+        INTEGER side PK "0 opener, 1 claimant"
+        INTEGER message_index PK
+        BLOB digest
+        BLOB body
+    }
     queues ||--o{ envelopes : holds
     queues ||--o{ blobs : "pays for"
     queues ||--o{ tombstones : remembers
+    grants ||--o{ rendezvous : "pays for"
+    rendezvous ||--o{ rendezvous_messages : files
 ```
 
 All seven tables, the two rendezvous tables of ADR-016 among them, are
-`STRICT`. A `blobs` row is charged to the storing
+`STRICT`. A `rendezvous` row references the grant that opened it, which
+is how the per-grant cap counts live slots, and has indexes on
+`expires_at` and `grant_hash`; its messages go with it through the
+cascade, and `rendezvous_messages` is `WITHOUT ROWID`. A `blobs` row is charged to the storing
 queue's `bytes_used`, goes with the queue through the same cascade, and has
 an index on `deadline`, as `envelopes` and `tombstones` do. There is no
 foreign key from `queues` to `grants`: the grant that created a queue is not recorded, because nothing
@@ -376,7 +400,7 @@ Every write command runs in `store.transaction`, which issues
 an `Ok` value and commits an empty transaction. Migrations are an
 append-only list applied by `migrate` through `PRAGMA user_version`, each
 in its own transaction together with its version bump. A file whose
-`user_version` is above `schema_version` (2, from the generated
+`user_version` is above `schema_version` (3, from the generated
 `mailbox/schema`) is refused with
 `FutureSchema`.
 

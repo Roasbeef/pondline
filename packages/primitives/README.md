@@ -1,6 +1,6 @@
 # Primitives Architecture
 
-The `primitives` package is the only place Pondline calls OTP's `crypto` application. It exposes X25519, Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, HMAC-SHA-256, constant-time comparison and the OS random source as byte-level functions, and it packages them as the `Suite` record that the pure `core/crypto` modules take as input. This document describes the binding boundary, why every fallible shim catches exceptions, and how the vector tests exercise the binding. It reflects the code at `632db2f`.
+The `primitives` package is the only place Pondline calls OTP's `crypto` application. It exposes X25519, Ed25519, ML-KEM-1024, ML-DSA-65, ChaCha20-Poly1305, SHA-256, SHA-512, HMAC-SHA-256, constant-time comparison and the OS random source as byte-level functions, and it packages them as the `Suite` record that the pure `core/crypto` modules take as input. This document describes the binding boundary, why every fallible shim catches exceptions, and how the vector tests exercise the binding. It reflects the code at `632db2f`, except the sections on SHA-512, the spoken-code PAKE vectors and the ML-KEM reference, which reflect `a2aadc2`.
 
 The algorithms, byte layouts and guarantees are fixed in [crypto-profile-v1.md](../../docs/crypto-profile-v1.md); this package implements none of them beyond calling the library. The choice of OTP over OpenSSL, and not a Rust crate, is [ADR-002](../../docs/adr/002-pq-crypto-over-otp.md). The symbolic proof and the account of each vector suite are in [formal/crypto.md](../../docs/formal/crypto.md). The package's short reference is [CLAUDE.md](CLAUDE.md).
 
@@ -83,7 +83,7 @@ Not every function is wrapped, and the reason is stated in the source. These fun
 
 | Function | Reason in the source |
 | --- | --- |
-| `sha256`, `hmac_sha256` (`src/primitives_ffi.erl:30`, `32`) | They raise only for a non-binary or non-byte-aligned bitstring, which no caller passes, and an HMAC key of any length is valid. The comment at line 24 gives the reason: the Gleam API stays a plain `BitArray`. |
+| `sha256`, `sha512`, `hmac_sha256` | They raise only for a non-binary or non-byte-aligned bitstring, which no caller passes, and an HMAC key of any length is valid. The comment above `sha256` gives the reason: the Gleam API stays a plain `BitArray`. |
 | `random_bytes`, `equal`, `openssl_version` | Total over their guarded inputs, or no secret in a raised error. `equal` returns `false` on a length mismatch instead of calling `crypto:hash_equals` (`src/primitives_ffi.erl:36`). |
 | `x25519_keypair`, `ed25519_keypair`, `mlkem1024_keypair`, `mldsa65_keypair` | They take no input, and a raised error would carry no caller-supplied key. |
 
@@ -93,6 +93,7 @@ Not every function is wrapped, and the reason is stated in the source. These fun
 - **ML-DSA signing is hedged.** OpenSSL mixes fresh randomness into every signature, so two signatures of one message differ and both verify (`src/primitives.gleam:265`). Signing uses an empty context string. The secret key is OpenSSL's 4032-byte expanded form, because OTP 29 cannot rebuild a key from a seed through `generate_key/3` (`src/primitives_ffi.erl:92`).
 - **X25519 refuses a zero shared secret.** OpenSSL rejects the all-zero output of a low-order public key, and the guard turns the rejection into `Error(Nil)` (`src/primitives_ffi.erl:49`).
 - **Ed25519 is pure Ed25519.** `crypto:sign(eddsa, none, ...)` with a 32-byte secret (`src/primitives_ffi.erl:65`).
+- **SHA-512 is in the suite for CPace alone.** `sha512` is `crypto:hash(sha512, _)`, unwrapped like `sha256` because it raises only on input no caller passes. It is the `Suite`'s only SHA-512 field, added for the spoken-code PAKE's CPace stage ([ADR-016](../../docs/adr/016-spoken-pairing-codes.md)), which hashes its generator string and its key with it; nothing else in the profile uses SHA-512. It is checked against FIPS 180-4's `abc` digest (`sha512_fips_180_4_abc_test` in `test/primitives/cpace_test.gleam`).
 - **The OpenSSL version.** ML-KEM needs OpenSSL 3.5 or newer. Release launchers enforce that floor directly via `crypto:info_lib/0` before Gleam runs (ADR-003), while `openssl_version` returns the human-readable banner (`src/primitives_ffi.erl:136`) and `openssl_supports_mlkem_test` asserts `>= 3.5` (`test/primitives/known_answer_test.gleam:182`).
 
 ## Vector tests
@@ -125,6 +126,40 @@ Each suite asserts the case count it loaded before asserting outcomes, so a rege
 | ACVP ML-DSA-65 | 10 | 3 key pairs sign and verify through the binding; NIST signatures verify under an empty context and not under another. |
 
 Three further groups complement the vectors. `known_answer_test.gleam` checks the RFC examples (4231, 7748, 8032, 8439, FIPS 180-4) and the size and low-order refusals. `mldsa_test.gleam` covers what ML-DSA-65 cannot be checked against without seeded key generation: sizes, round trips, hedging, and every rejection a verifier owes, including that garbage keys never raise. `protocol_test.gleam` and `hybrid_auth_test.gleam` run the handshake and ratchet over real primitives, and the second fails if any hybrid signature check verifies only its classical half. The two Ed25519 and X25519 acceptable-case behaviours are pinned so a change in OpenSSL is noticed (`docs/formal/crypto.md` records the sources, hashes and what each suite cannot reach).
+
+## The spoken-code PAKE over real primitives
+
+`core` runs CPaceOQUAKE ([ADR-016](../../docs/adr/016-spoken-pairing-codes.md)) only over its fake suite and a stand-in KEM, so this package's tests are the only place the PAKE and the run meet OpenSSL. Their fixtures are read by the same loader. They are not produced by `trim.py`: they were extracted from the draft text by a script kept outside the repository and are never edited by hand, and each records the sections it came from. `CLAUDE.md` lists them one by one.
+
+| Test | Fixture | What it pins |
+| --- | --- | --- |
+| `cpace_test` | `cpace_x25519_sha512.json`, `cpace_pqpake_wrapper.json` | cpace-21 B.1 (generator, shares, shared point, key) and every B.1.10 low-order case that must abort; the CPace part of pqpake-03 E.4 and E.5.4's neutral-element abort. |
+| `bua_skem_test` | `bua_skem_mlbuaskem1024.json` | E.1.2: Kemeleon re-encodes the vector key byte for byte under its four multiples, every string of the encoded length is a key OpenSSL accepts, and the key, ciphertext and secret follow from the vector's seeds. |
+| `oquake_test` | `oquake_mlbuaskem1024.json`, `oquake_cpaceoquake_stage.json` | E.2 (OQUAKE alone under its own DST) and E.4's OQUAKE stage; running both DSTs shows the DST is a parameter. |
+| `cpace_oquake_test` | `oquake_cpaceoquake_stage.json` | E.4 end to end, for both roles. |
+| `rendezvous_test` | `cpace_oquake_rendezvous_schedule.json` | `core/rendezvous`'s key schedule and public context against a vector computed by an independent script from E.4's key and `th`; then whole runs with fresh randomness: honest, a wrong word at either end, another context, a changed bit in each of `m1` to `m4`, wrong lengths and prefixes, a zero share, a ticket out of bounds, and that nothing prints a secret. |
+
+### Why there is a test-only ML-KEM reference
+
+The draft's vectors fix ML-KEM's randomness: a 64-byte `keygen_seed` (FIPS 203's `d || z`) and an encapsulation message `encaps_m`. OTP's `crypto` accepts neither, so through the binding alone the vectors' ML-KEM key, ciphertext and shared secret could only be taken as given, and nothing would check that they follow from the seeds. `test/primitives/mlkem_reference.gleam` closes that: a FIPS 203 reference for `KeyGen_internal` (Algorithm 16) and `Encaps_internal` (Algorithm 17) in plain Gleam, written for clarity, not speed, and not constant time. Its SHA3-256, SHA3-512, SHAKE128 and SHAKE256 are direct calls to `crypto:hash/2` and `crypto:hash_xof/3` in `test/primitives/internal/ffi_sha3.gleam`, kept out of `src/` because the production API needs no SHA-3.
+
+```mermaid
+flowchart LR
+    acvp["ACVP keyGen and<br/>encapsulation cases"]
+    ossl["OpenSSL via primitives<br/>on fresh seeds"]
+    ref["mlkem_reference<br/>keygen_internal, encaps_internal"]
+    draft["pqpake-03 E.1.2, E.2, E.4<br/>keygen_seed, encaps_m"]
+    tests["bua_skem_test, oquake_test,<br/>cpace_oquake_test"]
+
+    acvp -- "byte for byte" --> ref
+    ossl -- "accepts its keys, opens<br/>its ciphertexts" --> ref
+    ref -- "derived ek, dk, ct, k<br/>equal the vector's" --> draft
+    ref -- "seeded kem_encapsulate,<br/>for the derived key only" --> tests
+```
+
+The order is the order of trust. `mlkem_reference_test` first requires every trimmed ACVP keyGen case (`d`, `z` to `ek`, `dk`) and encapsulation case (`ek`, `m` to `c`, `k`) byte for byte, then that OpenSSL accepts the reference's keys and, with the reference's decapsulation key, opens both its own ciphertext and the reference's. Only then are the draft's values compared. The PAKE tests replace the real suite's `kem_encapsulate`, by record update, with the reference's seeded encapsulation, answering only for the key `keygen_seed` derives, so a run in the wrong roles or with the wrong contexts unmasks another key and finds no answer. Decapsulation stays OpenSSL's, with the derived key.
+
+Two things the draft cannot pin. `z`, the second half of `keygen_seed`, enters only the implicit-rejection key and no draft value exercises it; the ACVP keyGen cases, which list the whole `dk`, pin it. And ML-KEM-1024's two CBD parameters are both 2, so drawing the secret with `eta2` or the errors with `eta1` would give identical bytes; no vector for this parameter set can detect the swap. The reference and its SHA-3 helper live under `test/`, which a release never compiles, so like `core`'s fake suite they cannot be selected in a production build (spec §13.3).
 
 ## Concurrency
 
