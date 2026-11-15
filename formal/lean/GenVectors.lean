@@ -18,6 +18,16 @@ One vector per line, fields separated by single spaces:
   unwire  <rle> <rle | wire-refused | unpad-refused>
   offers  <expires_at> <now> <first> <shorter>
   due     <window> <kind> <stored_at> <retransmits> <deadline> <due | none>
+  kem.enc <key hex> <draws> <encoded hex | err>
+  kem.dec <encoded hex> <key hex | err>
+  np.str  <int> <text | none>             from_int, then to_string
+  np.parse <text hex> <int | none>
+  code.idx <drawn hex> <indices>          the word indices generate picks
+  lv      <rle> <rle | none>
+  epc     <sid hex> <client hex> <server hex> <hex | none>
+  pctx    <nameplate> <rendezvous hex> <hex>
+  ell2    <int> <int>                     map_to_curve
+  ell2.u  <hex> <hex | none>              decode_u_coordinate, map_to_curve, encode_u_coordinate
 
 `-` is the empty byte string or the empty list. Records are `tag:hex`,
 comma-separated; a decoder spec is `r<tag>:<b|u8>` (required) or
@@ -376,11 +386,212 @@ def dueVectors : List String := Id.run do
     out := out ++ [renderDue w (kinds.getD ki .application) t ((k : Int) - 1) ((t : Int) + d)]
   return out
 
+/-! ## Kemeleon -/
+
+/-- ByteEncode_12 of a coefficient list (pairs, three bytes each); used only
+to build inputs, never to compute an expected value. -/
+def byteEncode12 : List Nat → Bytes
+  | a :: b :: rest => [a % 256, a / 256 % 16 + 16 * (b % 16), b / 16 % 256] ++ byteEncode12 rest
+  | _ => []
+
+/-- A uniformly distributed number of `48 * k` bits. -/
+def Rng.big (g : Rng) : Nat → Nat × Rng
+  | 0 => (0, g)
+  | k + 1 =>
+    let (x, g) := g.next
+    let (rest, g) := g.big k
+    (rest * 2 ^ 48 + x, g)
+
+def Rng.coefficients (g : Rng) (n bound : Nat) : List Nat × Rng := Id.run do
+  let mut g := g
+  let mut out : List Nat := []
+  for _ in [0:n] do
+    let (c, g') := g.below bound
+    g := g'
+    out := out ++ [c]
+  return (out, g)
+
+def renderEncode (key : Bytes) (draws : List Nat) : String :=
+  let result := match Kemeleon.encode key draws with | some e => hex e | none => "err"
+  s!"kem.enc {hex key} {commas (draws.map toString)} {result}"
+
+def renderDecode (encoded : Bytes) : String :=
+  let result := match Kemeleon.decode encoded with | some k => hex k | none => "err"
+  s!"kem.dec {hex encoded} {result}"
+
+def kemeleonVectors : List String := Id.run do
+  let zeroPoly := List.replicate 384 0
+  let maxPoly := byteEncode12 (List.replicate 256 3328)
+  -- The polynomial whose value is 2^3128 mod 3329^256, the one point where
+  -- the draft's range (`draftRange`) admits one multiple more than fits: its
+  -- top multiple is now out of range and reduces, and the code's own top
+  -- multiple round-trips.
+  let star := Kemeleon.ceiling % Kemeleon.span
+  let starPoly := Kemeleon.vectorDecode star
+  let starTop := Kemeleon.draftRange star - 1
+  let starTopInRange := Kemeleon.range star - 1
+  let seedA := List.replicate 32 0xab
+  let mut g : Rng := ⟨8⟩
+  let mut cases : List (Bytes × List Nat) := [
+    (zeroPoly ++ zeroPoly ++ zeroPoly ++ zeroPoly ++ List.replicate 32 0, [0, 0, 0, 0]),
+    (zeroPoly ++ zeroPoly ++ zeroPoly ++ zeroPoly ++ seedA,
+      [Kemeleon.range 0 - 1, Kemeleon.range 0, 2 ^ 384 - 1, 1]),
+    (maxPoly ++ maxPoly ++ maxPoly ++ maxPoly ++ List.replicate 32 0xff,
+      [0, Kemeleon.range (Kemeleon.span - 1) - 1, Kemeleon.range (Kemeleon.span - 1), 2 ^ 384 - 1]),
+    (starPoly ++ zeroPoly ++ maxPoly ++ starPoly ++ seedA, [starTop, 0, 0, starTopInRange]),
+    (zeroPoly ++ starPoly ++ starPoly ++ zeroPoly ++ seedA, [0, starTop + Kemeleon.range star, starTop - 1, 7])
+  ]
+  -- Random keys with every coefficient in range, under random 384-bit draws.
+  for _ in [0:6] do
+    let (cs, g1) := g.coefficients 1024 3329
+    let (seed, g2) := g1.bytes 32
+    let (d1, g3) := g2.big 8
+    let (d2, g4) := g3.big 8
+    let (d3, g5) := g4.big 3
+    let (d4, g6) := g5.big 8
+    g := g6
+    cases := cases ++ [(byteEncode12 cs ++ seed, [d1, d2, d3, d4])]
+  -- Keys a coefficient of 3329 or more makes invalid, at both positions of
+  -- a pair, and keys of the wrong length.
+  let (cs, g1) := g.coefficients 1024 3329
+  g := g1
+  let valid := byteEncode12 cs ++ seedA
+  let bad (i v : Nat) : Bytes := byteEncode12 (cs.set i v) ++ seedA
+  cases := cases ++ [(valid, [1, 2, 3, 4]), (bad 256 3329, [1, 2, 3, 4]), (bad 1023 3329, [1, 2, 3, 4]),
+    (bad 512 3328, [1, 2, 3, 4]), (bad 5 4095, [1, 2, 3, 4]), (valid.take 1567, [1, 2, 3, 4]),
+    (valid ++ [0], [1, 2, 3, 4])]
+  let mut out : List String := []
+  let mut encoded : List Bytes := []
+  for (key, draws) in cases do
+    out := out ++ [renderEncode key draws]
+    match Kemeleon.encode key draws with
+    | some e => encoded := encoded ++ [e]
+    | none => pure ()
+  -- Every encoding decodes; so do arbitrary strings of the right length.
+  let mut inputs : List Bytes := encoded ++ [List.replicate 1596 0, List.replicate 1596 0xff]
+  for _ in [0:4] do
+    let (e, g') := g.bytes 1596
+    g := g'
+    inputs := inputs ++ [e]
+  inputs := inputs ++ [[], List.replicate 1595 0, List.replicate 1597 0]
+  return out ++ inputs.map renderDecode
+
+/-! ## Nameplates, word indices and framing -/
+
+def ascii (s : String) : Bytes := s.toUTF8.toList.map (·.toNat)
+
+def text (l : Bytes) : String := String.ofList (l.map Char.ofNat)
+
+def nameplateVectors : List String := Id.run do
+  let mut values : List Int := (List.range 125).map (fun (n : Nat) => (n : Int) - 3)
+  values := values ++ [999, 1000, 1001, 99999, 100000, 999998, 999999, 1000000, 1000001, 10 ^ 12, -10 ^ 12]
+  let mut g : Rng := ⟨9⟩
+  for _ in [0:150] do
+    let (v, g') := g.below 1000000
+    g := g'
+    values := values ++ [(v : Int)]
+  let mut out : List String := []
+  let mut texts : List Bytes := []
+  for v in values do
+    match Nameplate.fromInt v with
+    | some n =>
+      out := out ++ [s!"np.str {v} {text (Nameplate.toString n)}"]
+      texts := texts ++ [Nameplate.toString n]
+    | none => out := out ++ [s!"np.str {v} none"]
+  -- Every printable ASCII byte at every position of a valid spelling, and
+  -- shapes that are near one: a sign, a space, a short or long spelling,
+  -- multi-byte characters whose byte count is six.
+  for i in List.range 6 do
+    for b in (List.range 95).map (· + 0x20) do
+      texts := texts ++ [(ascii "048271").set i b]
+  texts := texts ++ ["", "0", "42", "00042", "0000042", "+00042", "-00042", " 00042", "00042 ",
+    "00042\n", "4827190", "١٢٣", "é4827", "000000", "999999"].map ascii
+  for t in texts do
+    let result := match Nameplate.parse t with | some n => toString n | none => "none"
+    out := out ++ [s!"np.parse {hex t} {result}"]
+  return out
+
+def indexVectors : List String := Id.run do
+  let mut inputs : List Bytes := [List.replicate 5 0, List.replicate 5 0xff,
+    [], [0x80], [0xff, 0xff], [0xff, 0xff, 0xff, 0xff], [0xff, 0xff, 0xff, 0xff, 0x7f, 0x12]]
+  for bit in List.range 40 do
+    inputs := inputs ++ [writeBE 5 (2 ^ bit)]
+  let mut g : Rng := ⟨10⟩
+  for _ in [0:150] do
+    let (b, g') := g.bytes 5
+    g := g'
+    inputs := inputs ++ [b]
+  return inputs.map fun b => s!"code.idx {hex b} {commas ((PairingCode.indices b).map toString)}"
+
+def framingVectors : List String := Id.run do
+  let mut out : List String := []
+  for n in [0, 1, 2, 3, 255, 256, 65534, 65535, 65536, 70000] do
+    let field := List.replicate (n / 2) 0x5a ++ List.replicate (n - n / 2) 0xc3
+    let result := match PakeCommon.lvEncode field with | some x => rle x | none => "none"
+    out := out ++ [s!"lv {rle field} {result}"]
+  let mut g : Rng := ⟨11⟩
+  for _ in [0:60] do
+    let (a, g1) := g.below 4
+    let (b, g2) := g1.below 4
+    let (c, g3) := g2.below 20
+    let (s, g4) := g3.bytes (a * 5)
+    let (u, g5) := g4.bytes b
+    let (v, g6) := g5.bytes c
+    g := g6
+    let result := match PakeCommon.encodePublicContext s u v with | some x => hex x | none => "none"
+    out := out ++ [s!"epc {hex s} {hex u} {hex v} {result}"]
+  for n in [0, 1, 42, 99999, 482719, 999999] do
+    for _ in [0:4] do
+      let (sid, g') := g.bytes 16
+      g := g'
+      let result := match PakeCommon.rendezvousContext n sid with | some x => hex x | none => "none"
+      out := out ++ [s!"pctx {n} {hex sid} {result}"]
+  return out
+
+/-! ## Elligator 2 -/
+
+def hexBytes (s : String) : Bytes :=
+  let digit (c : Char) : Nat := if c.isDigit then c.toNat - 48 else c.toLower.toNat - 87
+  let rec go : List Char → Bytes
+    | a :: b :: rest => (digit a * 16 + digit b) :: go rest
+    | _ => []
+  go s.toList
+
+def elligatorVectors : List String := Id.run do
+  let p := Elligator2.p
+  let mut values : List Int := [0, 1, 2, 3, 4, 5, p - 1, p - 2, p, p + 1, p + 18, 2 * p, -1, -2, -p,
+    -p - 1, 2 ^ 255 - 1, 2 ^ 255, 2 ^ 256, -2 ^ 256, (p - 1) / 2, (p + 1) / 2,
+    0x1234567890ABCDEF * 2 ^ 100, Elligator2.curveA, -Elligator2.curveA]
+  let mut g : Rng := ⟨12⟩
+  for _ in [0:120] do
+    let (r, g') := g.big 6
+    g := g'
+    let r : Int := ((r % 2 ^ 255 : Nat) : Int)
+    values := values ++ [r, p - r]
+  let mut out := values.map fun r => s!"ell2 {r} {Elligator2.mapToCurve r}"
+  -- cpace-21 B.1.1's hash and its field element, then arbitrary strings.
+  let mut inputs : List Bytes := [
+    hexBytes "03998087BDB1A2617BBE25EF5A7C18CD4F84F902328701790958755EE4AED1D3",
+    hexBytes "03998087BDB1A2617BBE25EF5A7C18CD4F84F902328701790958755EE4AED153",
+    List.replicate 32 0, List.replicate 32 0xff, [9] ++ List.replicate 31 0,
+    List.replicate 31 0, List.replicate 33 0, []]
+  for _ in [0:40] do
+    let (b, g') := g.bytes 32
+    g := g'
+    inputs := inputs ++ [b]
+  for b in inputs do
+    let result := match Elligator2.decodeU b with
+      | some r => hex (Elligator2.encodeU (Elligator2.mapToCurve r))
+      | none => "none"
+    out := out ++ [s!"ell2.u {hex b} {result}"]
+  return out
+
 def main : IO Unit := do
   IO.println "# Conformance vectors generated by formal/lean (lake exe gen-vectors)."
   IO.println "# DO NOT EDIT. Regenerate with formal/lean/check.sh --write."
   let groups := [bigSizeEncode, bigSizeDecode, parseVectors, decodeVectors, buildVectors,
-    paddedSizeVectors, padVectors, unwireVectors, offersVectors, dueVectors]
+    paddedSizeVectors, padVectors, unwireVectors, offersVectors, dueVectors, kemeleonVectors,
+    nameplateVectors, indexVectors, framingVectors, elligatorVectors]
   for group in groups do
     for line in group do
       IO.println line
