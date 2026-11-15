@@ -301,3 +301,49 @@ codes", finding 2 and rows `rv_no_kemeleon_dh` and
 with ML-KEM intact from testing the code offline, which is the case the
 hybrid claim exists for; a change that weakened the encoding would leave
 the classical case standing and quietly lose the post-quantum one.
+
+## Addendum: 2026-11-15, one deviation from the Kemeleon draft, and the ML-KEM steps reproduced
+
+The decision says the implementation follows the draft's functions and
+encodings exactly. There is one exception, in Kemeleon, and it is
+deliberate.
+
+**Kemeleon's range for the random multiple stops one short of the
+draft's at a single value.** `draft-irtf-cfrg-kemeleon-02` §4.1 draws
+the multiple of `3329^256` added to a polynomial's integer `x` from the
+inclusive range `[0, floor((2^3128 - x) / 3329^256)]`. For the one value
+`x* = 2^3128 mod 3329^256` the largest multiple in that range makes the
+sum exactly `2^3128`, which the 391 bytes it is written to cannot hold:
+it is written as zero and decodes to a different key. Writing Kemeleon's
+round trip as a Lean theorem (`docs/formal/lean.md`, Kemeleon finding 1)
+is what found it; the tests had not, because a uniform draw reaches that
+multiple with a probability near `2^-3127`. `core/crypto/kemeleon` now
+reduces the draw into `floor((2^3128 - 1 - x) / 3329^256) + 1`
+multiples. For every value but `x*` that is exactly the draft's range,
+so every multiple the draft allows elsewhere is used unchanged, every
+draft vector still passes byte for byte, and nothing on the wire, in the
+DST or in any other function changes. With the change the encoding is
+proved a bijection onto 391-byte strings, so the round trip holds with
+no exception. It is pinned by
+`kemeleon_test.the_drafts_overflow_point_round_trips_test` and by the
+Lean conformance vectors at `x*`, and `docs/crypto-profile-v1.md` §12
+states the range as implemented. The question is raised upstream as
+Roasbeef/pondline#10; if the draft's next revision settles the bound
+differently, that is a profile question for the version that adopts it.
+
+**The vectors' ML-KEM steps are now reproduced from their seeds.** OTP's
+`crypto` takes neither a key-generation seed nor encapsulation
+randomness, so the vector tests had taken the draft's ML-KEM key,
+ciphertext and shared secret as given. A FIPS 203 reference for
+`KeyGen_internal` and `Encaps_internal`
+(`packages/primitives/test/primitives/mlkem_reference.gleam`) now
+derives them from `keygen_seed` and `encaps_m` for E.1.2, E.2 and E.4.
+It is trusted only because it first reproduces NIST's ACVP keyGen and
+encapsulation cases byte for byte and agrees with OpenSSL on fresh
+seeds. The vector tests seed only encapsulation through it;
+decapsulation is OpenSSL's, with the derived key. The draft's values do
+not pin `z`, the second half of `keygen_seed`, which enters only the
+implicit-rejection key; ACVP does. The reference is test code under
+`test/`, which a release never compiles, so it cannot be selected in a
+production build. None of this has been reviewed by an outside
+cryptographer.
