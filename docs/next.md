@@ -60,14 +60,29 @@ five mailbox operations and their store (`packages/mailbox`, migration 003),
 and the daemon (`daemon/pairing`, migration 006, the local API and CLI).
 
 **Tested.** The drafts' vectors: cpace-21 B.1 with the low-order points, and
-pqpake-03 E.2 and E.4 end to end for both roles. ML-KEM's own key generation
-and encapsulation inside those vectors are pinned by overriding the suite,
-not reproduced, because OTP cannot take the seeds. Properties on fixed seeds,
+pqpake-03 E.1.2, E.2 and E.4 end to end for both roles. OTP cannot seed
+ML-KEM, so a FIPS 203 reference in test code only
+(`primitives/test/primitives/mlkem_reference.gleam`), itself checked against
+ACVP and against OpenSSL, derives the vectors' ML-KEM key, ciphertext and
+shared secret from their seeds; the PAKE tests seed encapsulation through it
+and decapsulate with OpenSSL. The draft's values do not pin the second half
+of its key seed; ACVP does. Properties on fixed seeds,
 a model-based test of the mailbox slot, end-to-end pairing over a loopback
 mailbox, and one mutant per invariant family in each slice, each rerun by
 hand at merge. The ProVerif model: the code resists offline guessing unless
 X25519 and ML-KEM are both broken, and the broken variants each yield their
-attack (`docs/formal/crypto.md`).
+attack (`docs/formal/crypto.md`); all 58 rows of the suite were rerun and
+match. In Lean (`docs/formal/lean.md`): Kemeleon's round trip for every key
+and draw, that decoding any 1596 bytes yields a valid key, and that the
+encoding is a bijection onto its byte strings; one spelling per nameplate; no
+modulo bias in the word draw; one parse for the framed public context. The
+transcriptions are tied to the Gleam by 12 995 conformance vectors.
+
+**Found by the proofs.** The Kemeleon draft's inclusive range for the random
+multiple lets one polynomial value sum to exactly 2^3128, which 391 bytes
+cannot hold. `core/crypto/kemeleon` now stops one short, which differs from
+the draft at that single value and moves no vector. Reporting it upstream is
+Roasbeef/pondline#10.
 
 **Assumed.** That the draft's argument carries over to a store-and-forward
 rendezvous; that the confirmation and hand-off derivations are sound uses of
@@ -78,21 +93,29 @@ than a Diffie-Hellman oracle, which ProVerif does not terminate on. **No
 outside cryptographer has read any of it.** The quickstart mentions the
 commands and does not recommend them.
 
-**Not run on this branch.** `make formal` in full (only the 28 new ProVerif
-rows and two old ones), `make release release-smoke`, and anything over a
-real Tor network.
+**Not run on this branch.** The P and TLA+ checks, `make release
+release-smoke`, and anything over a real Tor network. The Lean and ProVerif
+checks were run in full.
+
+**Stale after the formal work, not yet corrected.** `packages/primitives/CLAUDE.md`,
+`packages/core/CLAUDE.md` and `docs/crypto-profile-v1.md` §12 still say the
+vectors' ML-KEM steps are pinned by overriding the suite, and none of them,
+nor ADR-016, records the one-point Kemeleon deviation or the new Lean
+vectors' keep-in-step rule (`docs/formal/lean.md` has both).
 
 **Follow-ups, none started.**
 
 - An outside review of ADR-016, the key schedule and the timing argument.
   This gates recommending the feature.
-- A P model of the slot lifecycle (claims, expiry, the first-message rule)
-  and Lean proofs for Kemeleon's round trip and the Elligator 2 map.
+- A P model of the slot lifecycle (claims, expiry, the first-message rule,
+  the guess budget, the failure cap). One was started and stopped unfinished
+  and unverified; nothing of it is on the branch.
+- That Elligator 2's output lies on the curve is tested, not proved. The
+  Lean project has no dependencies, and the proof needs finite-field theory
+  at the level of Mathlib.
 - Simulation coverage: `node.Config` does not carry the nameplate
   randomness, `seed.job_kinds` lacks the two new engine jobs, and no seed
   opens a rendezvous.
-- Seeded ML-KEM key generation and encapsulation in the suite, which would
-  let the vectors run without the override.
 - The prompt for a code echoes what is typed and has no test. A pairing
   registry restart loses its runs and leaves their slots to expire.
 - A claim carries no credential, so a stranger who guesses a live nameplate
