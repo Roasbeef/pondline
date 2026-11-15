@@ -15,14 +15,14 @@ depends on it, so its fake crypto can never reach a release (spec §13.3).
 
 | Component | Real | Simulated |
 | --- | --- | --- |
-| Daemon trees (`daemon/node`: engine, store, scheduler, fetchers, fetch manager, provisioner, carrier, status, events, lock) | all of it, started with `node.start` | nothing |
+| Daemon trees (`daemon/node`: engine, store, scheduler, fetchers, fetch manager, provisioner, carrier, status, events, lock, the pairing registry) | all of it, started with `node.start` | nothing |
 | Mailbox tree (`mailbox/node`: coordinator, notifier, sweeper, `service`, the long poll) | all of it | nothing |
 | Operator and agent | `daemon/api` calls from op processes | which calls, from the seed |
 | HTTP | the client's framing (`mailbox_client`, `core/http1`) and the mailbox codec | mist; `sim/net` frames the server side as `mailbox/http` does |
 | Network | `transport.Dialer` seam | `world.dialer`: requests and responses park with the runner |
 | Stores | SQLite with full strictness | shared-cache in-memory databases kept alive by a keeper connection |
 | Clocks and timers | weft's `Injected` timer source, `weft/poll` | one virtual clock in `atomics`, a timer wheel in the runner |
-| Randomness and crypto | SHA-256, HMAC, ChaCha20-Poly1305, X25519, Ed25519 | `sim/suite`: entropy from seed and counter; fake ML-KEM and ML-DSA at real sizes |
+| Randomness and crypto | SHA-256, SHA-512, HMAC, ChaCha20-Poly1305, X25519, Ed25519 | `sim/suite`: entropy from seed and counter; fake ML-KEM and ML-DSA at real sizes |
 | Cross-actor mail | `daemon/mail`, `mailbox/mail` handles | interceptors park every parcel |
 
 ## Key Types
@@ -162,6 +162,13 @@ Fixed so far:
 - Pairing by ticket (ADR-009) is not driven: the runner pairs by file, and
   `PutBlob`/`GetBlob` appear only as names in traces and as variants the
   byzantine mailbox's wrong-kind answer covers.
+- Pairing by spoken code (ADR-016) is not driven. The five rendezvous
+  requests and their answers appear only in `sim/net.describe`, the
+  runner's trace names and its total matches; no op opens or claims a
+  slot, so the pairing registry in each daemon tree is never given a run.
+  `seed.job_kinds` leaves out the engine's two rendezvous jobs
+  (`RendezvousFailures`, `RecordRendezvousFailure`), and the mailbox's
+  nameplate draw would read the system's randomness, not the seed.
 - A store fault is armed per node and fires on the next transactions, so
   which job it hits depends on the schedule, not on its kind.
 - The swarm draws op arguments uniformly; ops that need an earlier op's

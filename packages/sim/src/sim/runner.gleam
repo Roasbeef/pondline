@@ -1429,6 +1429,11 @@ fn appended(read: net.Read) -> Result(BitArray, Nil) {
     | net.Decoded(protocol.DeleteQueue(..))
     | net.Decoded(protocol.PutBlob(..))
     | net.Decoded(protocol.GetBlob(..))
+    | net.Decoded(protocol.OpenRendezvous(..))
+    | net.Decoded(protocol.ClaimRendezvous(..))
+    | net.Decoded(protocol.RendezvousSend(..))
+    | net.Decoded(protocol.RendezvousFetch(..))
+    | net.Decoded(protocol.CloseRendezvous(..))
     | net.Undecodable(_) -> Error(Nil)
   }
 }
@@ -1445,6 +1450,11 @@ fn batch_envelopes(response: Response) -> List(BitArray) {
     | protocol.QueueDeleted
     | protocol.BlobStored(..)
     | protocol.SealedBlob(..)
+    | protocol.RendezvousOpened(..)
+    | protocol.RendezvousClaimed(..)
+    | protocol.RendezvousSent
+    | protocol.RendezvousMessages(..)
+    | protocol.RendezvousClosed
     | protocol.Refused(..) -> []
   }
 }
@@ -1472,6 +1482,12 @@ fn response_name(response: Response) -> String {
     protocol.QueueDeleted -> "deleted"
     protocol.BlobStored(..) -> "blob_stored"
     protocol.SealedBlob(..) -> "sealed_blob"
+    protocol.RendezvousOpened(..) -> "rendezvous_opened"
+    protocol.RendezvousClaimed(..) -> "rendezvous_claimed"
+    protocol.RendezvousSent -> "rendezvous_sent"
+    protocol.RendezvousMessages(messages:) ->
+      "rendezvous_messages " <> int.to_string(list.length(messages))
+    protocol.RendezvousClosed -> "rendezvous_closed"
     protocol.Refused(reason:) -> "refused " <> string.inspect(reason)
   }
 }

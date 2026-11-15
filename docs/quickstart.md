@@ -80,6 +80,15 @@ to**:
    using B's saved grant, runs hybrid PQXDH + Signal's Double Ratchet, and sets
    each side's inbound message budget.
 
+**Pairing by voice (unreviewed).** `pondline invite create --code` and
+`pondline invite accept --code [--rendezvous HOST:PORT]` pair by a short code
+read aloud, such as `482719-cradle-noble-velvet`
+([ADR-016](adr/016-spoken-pairing-codes.md)). Both daemons must be running
+while the code is in use (it lasts ten minutes) and must reach the same
+rendezvous mailbox, which is the inviter's. The cryptography behind it has not
+been reviewed by an outside cryptographer, and a code is weaker than a ticket
+by construction, so a ticket plus a fingerprint check remains the stronger path.
+
 ## Pairing two machines over Tor
 
 If you are running your own Tor mailbox server (`contrib/` includes `systemd`

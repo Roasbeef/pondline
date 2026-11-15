@@ -39,12 +39,30 @@
 //// its own; a ticket whose store failed leaves an offer that was never
 //// handed out, as a timed-out `invite` does, and the operator asks again.
 ////
+//// ## Spoken codes
+////
+//// `invite_code`, `await_code` and `accept_code` are ADR-016's pairing by a
+//// code read aloud, and their run delivers a ticket. The inviter checks its
+//// count of failed confirmations, does everything `invite_ticket` does, so
+//// the ticket's blob is stored before any rendezvous message can be read,
+//// opens a slot at its own mailbox, and hands the run to the pairing
+//// registry (`daemon/pairing`), which owns it past the call and closes its
+//// slot however it ends; `await_code` waits for it. The joiner decodes the
+//// code strictly, admits the rendezvous under the carrier policy, checks
+//// the count, claims, runs its half in the caller's process, and redeems
+//// the delivered ticket through `accept_ticket_with_budget`, unchanged. The
+//// only durable trace of a run is a failed confirmation, counted per
+//// rendezvous endpoint by the engine; the code, its words and the run's
+//// messages never reach the store or a log.
+////
 //// ## Flow
 ////
 //// 1. `assemble` builds the handle, for `daemon/node` alone.
 //// 2. Pairing: `invite` (and `await_file`), `accept`; by ticket,
 ////    `invite_ticket` (`offer_inbox`, `store_blob`) and `accept_ticket`
-////    (`fetch_blob`), both through `ticket_call`.
+////    (`fetch_blob`), both through `ticket_call`; by spoken code,
+////    `invite_code` (`check_failures`, `open_slot`), `await_code` and
+////    `accept_code` (`claim_slot`), both through `rendezvous_call`.
 //// 3. Relationships: `contacts`, `approve`, `decline`, `close`,
 ////    `raise_budget`.
 //// 4. Messages: `send` and `send_with_key`, `receive`, `acknowledge`,
@@ -60,17 +78,23 @@
 //// (this module calls the engine), so the conversion is the price of the
 //// layering.
 
+import core/capability.{type Capability, type Provision}
 import core/crypto/identity
 import core/crypto/suite.{type Suite}
 import core/endpoint.{type CarrierPolicy, type Endpoint}
+import core/field
 import core/id.{
   type Contact, type Id, type Invitation as InvitationKind,
-  type Message as MessageKind, type Queue,
+  type Message as MessageKind, type Queue, type Rendezvous as RendezvousKind,
 }
 import core/invitation
+import core/limits
 import core/mailbox/protocol
+import core/nameplate.{type Nameplate}
 import core/offer.{type Approval}
+import core/pairing_code.{type PairingCode}
 import core/relationship
+import core/rendezvous
 import core/route.{type Inbox}
 import core/secret.{type Secret}
 import core/ticket
@@ -79,6 +103,7 @@ import daemon/engine
 import daemon/events
 import daemon/mail.{type Handle}
 import daemon/mailbox_client
+import daemon/pairing
 import daemon/status
 import daemon/store
 import daemon/transport.{type Dialer}
@@ -117,6 +142,10 @@ pub const ticket_call_ms = 120_000
 /// How long a ticket's mailbox call waits before it is tried again.
 pub const ticket_retry_ms = 1000
 
+/// How long `await_code` waits for an inviter's run: the longest a slot
+/// lives, the registry's own slack past it, and a margin for the answer.
+pub const code_wait_ms = 700_000
+
 /// A running daemon, as its callers hold it. Built only by `node`.
 pub opaque type Daemon {
   Daemon(
@@ -129,7 +158,60 @@ pub opaque type Daemon {
     state_dir: String,
     poll_clock: poll.Clock,
     dialer: Dialer,
+    pairing: Handle(pairing.Message),
+    rendezvous: Rendezvous,
   )
+}
+
+/// What the spoken-code calls need beyond the ticket's (ADR-016): the
+/// daemon's own mailbox, which is the inviter's rendezvous and the joiner's
+/// default one, the provisioning capability an `OpenRendezvous` is charged
+/// to, and the wall clock a slot's expiry is read against.
+pub type Rendezvous {
+  Rendezvous(
+    /// The mailbox this daemon creates its queues at.
+    mailbox: Endpoint,
+    /// The capability the mailbox operator issued for it.
+    provision: Capability(Provision),
+    /// The daemon's wall clock, the engine's.
+    clock: fn() -> Instant,
+  )
+}
+
+/// What `invite_code` hands back: the run to wait for, the code to read to
+/// the joiner's operator, and when the slot expires by the mailbox's clock.
+/// The code is a `Secret`: its words are the run's password.
+pub type CodeInvite {
+  CodeInvite(
+    /// The run, named by its rendezvous slot, for `await_code`.
+    run: Id(RendezvousKind),
+    /// The code's text, `NNNNNN-word-word-word`.
+    code: Secret,
+    /// When the slot expires, by the mailbox's clock.
+    expires_at: Instant,
+  )
+}
+
+/// How a pairing by spoken code ended (ADR-016). Only `ConfirmationFailed`
+/// may be a spent guess at the words, and only it is counted.
+pub type PairingOutcome {
+  /// The hand-off completed. For the inviter `m4` was stored for the joiner
+  /// and `contact` is `None`, since the joiner's `Hello` arrives later; for
+  /// the joiner the ticket was redeemed and `contact` is the relationship.
+  Paired(contact: Option(Id(Contact)))
+
+  /// The inviter's slot expired or was closed with no joiner's first
+  /// message. Never the joiner's.
+  NeverClaimed
+
+  /// The peer stopped, or the slot ended or was interfered with, before any
+  /// confirmation verdict. Not counted.
+  Stalled
+
+  /// The confirmation failed, or for the joiner its confirmation was sent
+  /// and no hand-off came: the code did not match, or the exchange was
+  /// interrupted. Counted against the rendezvous endpoint.
+  ConfirmationFailed
 }
 
 /// What `invite_ticket` hands back: the invitation file, for an operator
@@ -286,12 +368,15 @@ pub type Health {
 /// Assembles the handle `node.start` returns. Not for other callers: the
 /// handles must belong to a running tree. `poll_clock` is what `invite` and
 /// `node.stop` wait on; `dialer` is what the ticket calls reach a mailbox
-/// through, the same one the tree's workers use.
+/// through, the same one the tree's workers use. `pairing` is the registry
+/// that owns an inviter's spoken-code run, and `rendezvous` what those runs
+/// need of the daemon's own configuration.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// api.assemble(engine, events, status, suite, policy, pid, dir, clock, dialer)
+/// api.assemble(engine, events, status, suite, policy, pid, dir, clock,
+///   dialer, pairing, rendezvous)
 /// ```
 pub fn assemble(
   engine: Handle(engine.Message),
@@ -303,6 +388,8 @@ pub fn assemble(
   state_dir: String,
   poll_clock: poll.Clock,
   dialer: Dialer,
+  pairing: Handle(pairing.Message),
+  rendezvous: Rendezvous,
 ) -> Daemon {
   Daemon(
     engine:,
@@ -314,6 +401,8 @@ pub fn assemble(
     state_dir:,
     poll_clock:,
     dialer:,
+    pairing:,
+    rendezvous:,
   )
 }
 
@@ -659,6 +748,451 @@ pub fn accept_ticket_with_budget(
   accept_with_budget(daemon, file, description, budget)
 }
 
+/// Creates an invitation and its ticket as `invite_ticket` does, opens a
+/// rendezvous slot at this daemon's own mailbox, and returns a spoken code
+/// for it (ADR-016). The run that follows belongs to the daemon's pairing
+/// registry, not to the caller: it waits for the joiner, answers, checks
+/// the joiner's confirmation and only then releases the ticket, and it
+/// closes the slot however it ends. `await_code` reports how it ended.
+///
+/// The order is the ADR's. The failure count at the mailbox is checked
+/// first, so a refused code mints no offer; the ticket is minted and its
+/// blob stored before the slot exists, so it exists before any message can
+/// be read; and the code is built from the nameplate the mailbox drew.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.invite_code(daemon, "vendor support", offer.OperatorApproves, 10)
+/// // -> Ok(CodeInvite(run:, code:, expires_at:))
+/// ```
+pub fn invite_code(
+  daemon: Daemon,
+  description: String,
+  approval: Approval,
+  budget: Int,
+) -> Result(CodeInvite, ApiError) {
+  let mailbox = daemon.rendezvous.mailbox
+  let counted = endpoint.to_string(mailbox)
+
+  use Nil <- result.try(check_failures(daemon, counted))
+  use issued <- result.try(invite_ticket(daemon, description, approval, budget))
+  use slot <- result.try(draw_slot(daemon))
+
+  let link = rendezvous_link(daemon, mailbox, id.to_hex(slot.rendezvous))
+  use #(plate, expires_at) <- result.try(open_slot(daemon, link, slot))
+  let code = pairing_code.generate(daemon.suite, plate)
+
+  // From here the slot exists, so a step that fails closes it before the
+  // caller hears why.
+  use waiting <- or_close_slot(
+    rendezvous.invite(code, slot.rendezvous, issued.ticket),
+    link,
+    slot,
+    Refused("the ticket does not fit a pairing code"),
+  )
+
+  let lifetime = lifetime_ms(daemon, expires_at, limits.rendezvous_seconds)
+  let record = record_failure(daemon, counted)
+  let suite = daemon.suite
+  let work = fn() {
+    pairing.run_inviter(suite, link, slot, waiting, lifetime, record)
+  }
+  let abandon = fn() { pairing.close(link, slot) }
+
+  use Nil <- or_close_slot(
+    pairing.begin(
+      daemon.pairing,
+      slot.rendezvous,
+      work,
+      lifetime + pairing.run_slack_ms,
+      abandon,
+    ),
+    link,
+    slot,
+    Unavailable,
+  )
+
+  Ok(CodeInvite(
+    run: slot.rendezvous,
+    code: pairing_code.encode(code),
+    expires_at:,
+  ))
+}
+
+/// Waits for an inviter's run, started by `invite_code`, to end, for at
+/// most `code_wait_ms`. A run this daemon does not know, because it never
+/// started here or the daemon restarted since, is `NotFound`. Waiting
+/// changes nothing: a caller that goes away leaves the run to finish and
+/// close its slot.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.await_code(daemon, invited.run)
+/// // -> Ok(Paired(contact: None))
+/// ```
+pub fn await_code(
+  daemon: Daemon,
+  run: Id(RendezvousKind),
+) -> Result(PairingOutcome, ApiError) {
+  // The registry's answer decides; no answer in time leaves the run going.
+  case pairing.await(daemon.pairing, run, code_wait_ms) {
+    Ok(pairing.Ended(Ok(Nil))) -> Ok(Paired(contact: None))
+    Ok(pairing.Ended(Error(ending))) -> Ok(from_ending(ending))
+    Ok(pairing.Unknown) -> Error(NotFound)
+    Error(Nil) -> Error(Unavailable)
+  }
+}
+
+/// Pairs by a spoken code as the joiner (ADR-016): claims the slot the
+/// code's nameplate names at the rendezvous, runs the PAKE, and redeems
+/// the ticket it delivers exactly as `accept_ticket_with_budget` does. The
+/// code must be exact; a caller reading a terminal trims it first. The
+/// rendezvous is `rendezvous` as `HOST:PORT` when given, else this daemon's
+/// own mailbox, and it is admitted under the carrier policy before any
+/// connection. A refused claim is a plain `Refused` and costs nothing; a
+/// run that does not pair is `Ok` with its ending.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.accept_code(daemon, code_text, None, "vendor", None)
+/// // -> Ok(Paired(contact: Some(contact)))
+/// ```
+pub fn accept_code(
+  daemon: Daemon,
+  code: Secret,
+  rendezvous: Option(String),
+  description: String,
+  budget: Option(Int),
+) -> Result(PairingOutcome, ApiError) {
+  use parsed <- result.try(decode_code(code))
+  use at <- result.try(rendezvous_endpoint(daemon, rendezvous))
+  use Nil <- result.try(await_tor_for_endpoint(daemon, at))
+
+  let counted = endpoint.to_string(at)
+  use Nil <- result.try(check_failures(daemon, counted))
+  use #(read, append) <- result.try(draw_capabilities(daemon))
+
+  let plate = pairing_code.nameplate(parsed)
+  let link = rendezvous_link(daemon, at, nameplate.to_string(plate))
+  use #(run, expires_at) <- result.try(claim_slot(
+    daemon,
+    link,
+    plate,
+    read,
+    append,
+  ))
+
+  let slot = pairing.Slot(rendezvous: run, read:, append:)
+  let lifetime =
+    lifetime_ms(daemon, expires_at, limits.rendezvous_claimed_seconds)
+  let record = record_failure(daemon, counted)
+
+  // A delivered ticket continues on the ticket's own path, unchanged; any
+  // other ending is the answer.
+  case pairing.run_joiner(daemon.suite, link, slot, parsed, lifetime, record) {
+    Ok(ticket) ->
+      accept_ticket_with_budget(daemon, ticket, description, budget)
+      |> result.map(fn(contact) { Paired(contact: Some(contact)) })
+
+    Error(ending) -> Ok(from_ending(ending))
+  }
+}
+
+/// Refuses a pairing code at an endpoint where `limits.max_rendezvous_failures`
+/// confirmations already failed inside the window (ADR-016). Each failure
+/// may be a spent guess, and the rendezvous gets two per run, so past the
+/// cap the operator is sent to a ticket and a fingerprint check.
+fn check_failures(daemon: Daemon, counted: String) -> Result(Nil, ApiError) {
+  use failures <- result.try(
+    engine.rendezvous_failures(daemon.engine, counted)
+    |> result.map_error(from_failure),
+  )
+
+  use <- bool.guard(
+    failures >= limits.max_rendezvous_failures,
+    Error(Refused(
+      "too many pairing codes failed at this rendezvous recently; pair with a ticket instead (invite create --ticket) and compare fingerprints",
+    )),
+  )
+
+  Ok(Nil)
+}
+
+/// The function a run calls when it ends with a failed confirmation. A
+/// record the engine cannot make is lost: the run has ended either way, and
+/// a count that missed one only lets one more code through.
+fn record_failure(daemon: Daemon, counted: String) -> fn() -> Nil {
+  let engine = daemon.engine
+
+  fn() {
+    let _ = engine.record_rendezvous_failure(engine, counted)
+    Nil
+  }
+}
+
+/// A fresh slot for the inviter: an identifier and its two capabilities,
+/// drawn from the daemon's suite.
+fn draw_slot(daemon: Daemon) -> Result(pairing.Slot, ApiError) {
+  use rendezvous <- result.try(
+    field.fresh_id(daemon.suite) |> result.replace_error(Unavailable),
+  )
+  use #(read, append) <- result.map(draw_capabilities(daemon))
+
+  pairing.Slot(rendezvous:, read:, append:)
+}
+
+/// One side's two fresh capabilities for a slot.
+fn draw_capabilities(
+  daemon: Daemon,
+) -> Result(
+  #(Capability(capability.Read), Capability(capability.Append)),
+  ApiError,
+) {
+  use read <- result.try(
+    field.fresh_capability(daemon.suite) |> result.replace_error(Unavailable),
+  )
+  use append <- result.map(
+    field.fresh_capability(daemon.suite) |> result.replace_error(Unavailable),
+  )
+
+  #(read, append)
+}
+
+/// How a run reaches a rendezvous: the daemon's dialer to `at`, one onion
+/// circuit group per run, and the daemon's poll clock.
+fn rendezvous_link(
+  daemon: Daemon,
+  at: Endpoint,
+  group: String,
+) -> pairing.Link {
+  let dialer = daemon.dialer
+
+  pairing.Link(
+    call: fn(request, timeout) {
+      mailbox_client.call(dialer, at, group, request, timeout)
+      |> result.replace_error(Nil)
+    },
+    clock: daemon.poll_clock,
+  )
+}
+
+/// Opens the inviter's slot under the daemon's provisioning capability.
+/// The identical request answers the same nameplate, so a retry after a
+/// lost answer is safe.
+fn open_slot(
+  daemon: Daemon,
+  link: pairing.Link,
+  slot: pairing.Slot,
+) -> Result(#(Nameplate, Instant), ApiError) {
+  let request =
+    protocol.OpenRendezvous(
+      provision: daemon.rendezvous.provision,
+      rendezvous: slot.rendezvous,
+      read: slot.read,
+      append: slot.append,
+      lifetime_seconds: limits.rendezvous_seconds,
+    )
+
+  rendezvous_call(daemon, link, request, fn(response) {
+    // A nameplate ends the wait; a refusal the mailbox will repeat ends it
+    // with that refusal, and a busy mailbox is tried again.
+    case response {
+      protocol.RendezvousOpened(nameplate:, expires_at:) ->
+        poll.Done(#(nameplate, expires_at))
+
+      protocol.Refused(protocol.QuotaExceeded) ->
+        poll.Fail(Refused(
+          "the mailbox holds as many open codes as it allows; try again later",
+        ))
+
+      protocol.Refused(protocol.Unauthorized) ->
+        poll.Fail(Refused("the mailbox refused this daemon's provisioning"))
+
+      protocol.Refused(protocol.Unavailable) -> poll.Retry
+
+      protocol.Refused(_)
+      | protocol.QueueCreated(_)
+      | protocol.Appended(_)
+      | protocol.Batch(_)
+      | protocol.Acked
+      | protocol.QueueDeleted
+      | protocol.BlobStored(_)
+      | protocol.SealedBlob(_)
+      | protocol.RendezvousClaimed(..)
+      | protocol.RendezvousSent
+      | protocol.RendezvousMessages(_)
+      | protocol.RendezvousClosed ->
+        poll.Fail(Refused("the mailbox did not open a rendezvous"))
+    }
+  })
+}
+
+/// Claims the slot a nameplate names. An unknown, expired or already
+/// claimed nameplate gets one answer from the mailbox, and it is final; the
+/// identical claim is answered the same, so a retry is safe.
+fn claim_slot(
+  daemon: Daemon,
+  link: pairing.Link,
+  plate: Nameplate,
+  read: Capability(capability.Read),
+  append: Capability(capability.Append),
+) -> Result(#(Id(RendezvousKind), Instant), ApiError) {
+  let request = protocol.ClaimRendezvous(nameplate: plate, read:, append:)
+
+  rendezvous_call(daemon, link, request, fn(response) {
+    // A bound claim ends the wait; a refused one is final and costs no
+    // guess; a busy mailbox is tried again.
+    case response {
+      protocol.RendezvousClaimed(rendezvous:, expires_at:) ->
+        poll.Done(#(rendezvous, expires_at))
+
+      protocol.Refused(protocol.Unauthorized) ->
+        poll.Fail(Refused(
+          "no code is open under that nameplate at the rendezvous; it may have expired or been used",
+        ))
+
+      protocol.Refused(protocol.Unavailable) -> poll.Retry
+
+      protocol.Refused(_)
+      | protocol.QueueCreated(_)
+      | protocol.Appended(_)
+      | protocol.Batch(_)
+      | protocol.Acked
+      | protocol.QueueDeleted
+      | protocol.BlobStored(_)
+      | protocol.SealedBlob(_)
+      | protocol.RendezvousOpened(..)
+      | protocol.RendezvousSent
+      | protocol.RendezvousMessages(_)
+      | protocol.RendezvousClosed ->
+        poll.Fail(Refused("the rendezvous did not accept the claim"))
+    }
+  })
+}
+
+/// One request made before a run starts, retried with `weft/poll` on the
+/// daemon's clock for at most `ticket_wait_ms`, as a ticket's calls are. A
+/// call that did not reach the mailbox is always tried again.
+fn rendezvous_call(
+  daemon: Daemon,
+  link: pairing.Link,
+  request: protocol.Request,
+  judge: fn(protocol.Response) -> poll.Attempt(a, ApiError),
+) -> Result(a, ApiError) {
+  let waited =
+    poll.until_on(
+      clock: daemon.poll_clock,
+      within: ticket_wait_ms,
+      every: poll.Fixed(ticket_retry_ms),
+      attempt: fn() {
+        // The answer decides; a transport failure is always worth a retry.
+        case link.call(request, ticket_call_ms) {
+          Ok(response) -> judge(response)
+          Error(Nil) -> poll.Retry
+        }
+      },
+    )
+
+  // A wait that runs out is a mailbox that could not be reached.
+  case waited {
+    poll.Answered(value) -> Ok(value)
+    poll.Failed(error) -> Error(error)
+    poll.Expired -> Error(Unavailable)
+  }
+}
+
+/// How long a run may last: what remains of its slot by the expiry the
+/// mailbox returned, read against this daemon's clock, at most `cap`
+/// seconds. The two clocks may disagree (ADR-008), so a remainder outside
+/// one second to `cap` is read as skew and `cap` is used; the mailbox's own
+/// expiry still ends the slot, which a run sees as the slot going away.
+fn lifetime_ms(daemon: Daemon, expires_at: Instant, cap: Int) -> Int {
+  let remaining =
+    expires_at.unix_seconds - { daemon.rendezvous.clock() }.unix_seconds
+
+  // Only a plausible remainder narrows the cap.
+  case remaining >= 1 && remaining <= cap {
+    True -> remaining * 1000
+    False -> cap * 1000
+  }
+}
+
+/// A spoken code from its text, strictly: a refusal here has spent nothing,
+/// and its reason names a word's position, never a word.
+fn decode_code(code: Secret) -> Result(PairingCode, ApiError) {
+  // The code is exposed only to be decoded; no error repeats it.
+  use text <- result.try(
+    bit_array.to_string(secret.expose(code))
+    |> result.replace_error(InvalidInvitation("the pairing code is not text")),
+  )
+
+  pairing_code.decode(text)
+  |> result.map_error(fn(error) {
+    InvalidInvitation(pairing.describe_code_error(error))
+  })
+}
+
+/// The joiner's rendezvous: `HOST:PORT` when the operator named one, else
+/// this daemon's own mailbox, admitted under the carrier policy before
+/// anything dials it.
+fn rendezvous_endpoint(
+  daemon: Daemon,
+  rendezvous: Option(String),
+) -> Result(Endpoint, ApiError) {
+  // A named rendezvous is parsed; without one the daemon's own is used.
+  use at <- result.try(case rendezvous {
+    None -> Ok(daemon.rendezvous.mailbox)
+
+    Some(text) ->
+      endpoint.parse(text)
+      |> result.replace_error(Refused(
+        "the rendezvous must be ONION:PORT or 127.0.0.1:PORT",
+      ))
+  })
+
+  endpoint.admit(at, daemon.carrier)
+  |> result.replace_error(Refused(
+    "the carrier policy does not permit the rendezvous",
+  ))
+}
+
+/// A run's ending as the contract names it.
+fn from_ending(ending: pairing.Ending) -> PairingOutcome {
+  case ending {
+    pairing.NeverClaimed -> NeverClaimed
+    pairing.Stalled -> Stalled
+    pairing.ConfirmationFailed -> ConfirmationFailed
+  }
+}
+
+/// Continues with the value of a step taken while a slot is open, or closes
+/// the slot and fails with `refusal`, so no path out of `invite_code` after
+/// the open leaves the slot behind.
+///
+/// ```gleam
+/// // use waiting <- or_close_slot(rendezvous.invite(..), link, slot, Unavailable)
+/// ```
+fn or_close_slot(
+  outcome: Result(a, e),
+  link: pairing.Link,
+  slot: pairing.Slot,
+  refusal: ApiError,
+  then: fn(a) -> Result(b, ApiError),
+) -> Result(b, ApiError) {
+  // A failed step owes the open slot its close before the caller hears.
+  case outcome {
+    Ok(value) -> then(value)
+
+    Error(_) -> {
+      pairing.close(link, slot)
+      Error(refusal)
+    }
+  }
+}
+
 /// The inbox behind an offer's queue, whose admin capability pays for the
 /// sealed invitation.
 fn offer_inbox(daemon: Daemon, queue: Id(Queue)) -> Result(Inbox, ApiError) {
@@ -705,7 +1239,12 @@ fn store_blob(
         | protocol.Batch(_)
         | protocol.Acked
         | protocol.QueueDeleted
-        | protocol.SealedBlob(_) ->
+        | protocol.SealedBlob(_)
+        | protocol.RendezvousOpened(..)
+        | protocol.RendezvousClaimed(..)
+        | protocol.RendezvousSent
+        | protocol.RendezvousMessages(_)
+        | protocol.RendezvousClosed ->
           poll.Fail(Refused("the mailbox did not store the invitation"))
       }
     },
@@ -744,7 +1283,12 @@ fn fetch_blob(
         | protocol.Batch(_)
         | protocol.Acked
         | protocol.QueueDeleted
-        | protocol.BlobStored(_) ->
+        | protocol.BlobStored(_)
+        | protocol.RendezvousOpened(..)
+        | protocol.RendezvousClaimed(..)
+        | protocol.RendezvousSent
+        | protocol.RendezvousMessages(_)
+        | protocol.RendezvousClosed ->
           poll.Fail(Refused("the mailbox did not return the invitation"))
       }
     },

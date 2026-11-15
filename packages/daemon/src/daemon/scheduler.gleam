@@ -352,7 +352,12 @@ pub fn classify(
     | Ok(protocol.Acked)
     | Ok(protocol.QueueDeleted)
     | Ok(protocol.BlobStored(_))
-    | Ok(protocol.SealedBlob(_)) -> Transient
+    | Ok(protocol.SealedBlob(_))
+    | Ok(protocol.RendezvousOpened(..))
+    | Ok(protocol.RendezvousClaimed(..))
+    | Ok(protocol.RendezvousSent)
+    | Ok(protocol.RendezvousMessages(_))
+    | Ok(protocol.RendezvousClosed) -> Transient
 
     Error(_) -> Transient
   }

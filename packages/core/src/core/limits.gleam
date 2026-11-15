@@ -169,6 +169,53 @@ pub const max_ticket_bytes = 192
 /// An onion grant token (`plg1...`) is 131 characters and a loopback one 75.
 pub const max_grant_token_bytes = 192
 
+/// How many decimal digits a rendezvous nameplate has (ADR-016). With
+/// `max_live_rendezvous` slots in a space of a million, a claim made
+/// without knowing a nameplate hits a live one at most once in a thousand.
+pub const nameplate_digits = 6
+
+/// How many words a pairing code carries (ADR-016): three from a list of
+/// 2048, so 33 bits of password.
+pub const pairing_code_words = 3
+
+/// The longest pairing code text a decoder reads (64 bytes). A code is a
+/// six-digit nameplate and three words of at most eight letters, 33
+/// characters at most; the bound only stops a decoder from walking a
+/// pasted document.
+pub const max_pairing_code_bytes = 64
+
+/// How long a rendezvous slot lives from the moment it is opened (ten
+/// minutes, ADR-016): long enough to read a code over the phone.
+pub const rendezvous_seconds = 600
+
+/// How long a rendezvous slot lives once it is claimed (two minutes),
+/// unless its opening lifetime ends sooner. The exchange is four messages.
+pub const rendezvous_claimed_seconds = 120
+
+/// The largest rendezvous message body (2 KiB). The largest the exchange
+/// sends is 1694 bytes: a CPace share and a masked ML-KEM key.
+pub const max_rendezvous_body_bytes = 2048
+
+/// How many messages each side of a rendezvous may store (ADR-016). The
+/// exchange needs two from each.
+pub const max_rendezvous_messages = 4
+
+/// How many rendezvous slots one provisioning grant may hold open at once.
+pub const max_grant_rendezvous = 4
+
+/// How many rendezvous slots a mailbox holds open at once (ADR-016). An
+/// open beyond this is refused, which is what keeps the nameplate space
+/// sparse.
+pub const max_live_rendezvous = 1000
+
+/// How many failed confirmations a daemon tolerates at one rendezvous
+/// endpoint inside `rendezvous_failure_window_seconds` before it refuses
+/// pairing codes there (ADR-016). Each failure may be a spent guess.
+pub const max_rendezvous_failures = 3
+
+/// The window `max_rendezvous_failures` is counted over (24 hours).
+pub const rendezvous_failure_window_seconds = 86_400
+
 /// The largest encoded route: an onion hostname, a port, a queue identifier
 /// and a capability, with framing (512 bytes).
 pub const max_route_bytes = 512

@@ -54,8 +54,17 @@
 ////
 //// Malformed input is answered with a category and never crashes the
 //// server, never becomes an atom and never reaches the backend.
+////
+//// A spoken code (ADR-016) is two operator calls: `invite` with `"code":
+//// true` answers the run, the code and the slot's expiry, and `await_code`
+//// holds its connection until that run ends, up to `api.code_wait_ms`. The
+//// run belongs to the daemon's pairing registry, so a client that goes away
+//// between the two strands nothing. `accept` takes a `"code"` and an
+//// optional `"rendezvous"` in place of a file or a ticket. Both answer an
+//// `"outcome"` (`paired`, `never_claimed`, `stalled`,
+//// `confirmation_failed`) and a `"contact"`, null unless a joiner paired.
 
-import core/id.{type Contact, type Id, type Message}
+import core/id.{type Contact, type Id, type Message, type Rendezvous}
 import core/limits
 import core/offer.{type Approval, AutoApprove, OperatorApproves}
 import core/secret.{type Secret}
@@ -65,7 +74,7 @@ import daemon/internal/ffi_local_system
 import daemon/local_api_protocol as protocol
 import daemon/local_api_types.{
   type ApiError, type AuditEntry, type Backend, type ContactView, type Delivery,
-  type Event, type Health, type Incident, type MessageState,
+  type Event, type Health, type Incident, type MessageState, type PairingOutcome,
 }
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -112,6 +121,7 @@ type Failure {
 /// The operations, before their arguments are read.
 type Operation {
   InviteOp
+  AwaitCodeOp
   AcceptOp
   ContactsOp
   ApproveOp
@@ -134,6 +144,10 @@ type InviteForm {
 
   /// The file and a ticket for it.
   WithTicket
+
+  /// A spoken code, whose run delivers a ticket (ADR-016). The file stays
+  /// in the daemon.
+  WithCode
 }
 
 /// An operation with its arguments.
@@ -141,6 +155,13 @@ type Call {
   Invite(description: String, approval: Approval, budget: Int, form: InviteForm)
   Accept(invitation: BitArray, description: String, budget: Option(Int))
   AcceptTicket(ticket: Secret, description: String, budget: Option(Int))
+  AwaitCode(run: Id(Rendezvous))
+  AcceptCode(
+    code: Secret,
+    rendezvous: Option(String),
+    description: String,
+    budget: Option(Int),
+  )
   ListContacts
   Approve(contact: Id(Contact))
   Decline(contact: Id(Contact))
@@ -423,6 +444,7 @@ fn authenticate(context: Context, presented: String) -> Result(Scope, Failure) {
 fn parse_operation(name: String) -> Result(Operation, Nil) {
   case name {
     "invite" -> Ok(InviteOp)
+    "await_code" -> Ok(AwaitCodeOp)
     "accept" -> Ok(AcceptOp)
     "contacts" -> Ok(ContactsOp)
     "approve" -> Ok(ApproveOp)
@@ -449,6 +471,7 @@ fn required_scope(operation: Operation) -> Scope {
       Agent
 
     InviteOp
+    | AwaitCodeOp
     | AcceptOp
     | ApproveOp
     | DeclineOp
@@ -481,14 +504,23 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
       use approval <- result.try(approval(args))
       use budget <- result.try(positive(args, "budget"))
       use ticket <- result.try(optional(args, "ticket", decode.bool, False))
+      use code <- result.try(optional(args, "code", decode.bool, False))
 
-      // The wire's boolean becomes the form here, at the boundary.
-      let form = case ticket {
-        True -> WithTicket
-        False -> FileOnly
-      }
+      // The wire's booleans become the form here, at the boundary; a ticket
+      // and a code at once ask for two hand-outs of one invitation.
+      use form <- result.try(case ticket, code {
+        False, False -> Ok(FileOnly)
+        True, False -> Ok(WithTicket)
+        False, True -> Ok(WithCode)
+        True, True -> Error(invalid("give at most one of ticket and code"))
+      })
 
       Ok(Invite(description:, approval:, budget:, form:))
+    }
+
+    AwaitCodeOp -> {
+      use text <- result.try(required(args, "run", decode.string))
+      result.map(hex_id(text, "run"), AwaitCode)
     }
 
     AcceptOp -> parse_accept(args)
@@ -539,19 +571,60 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
   }
 }
 
-/// Reads `accept`'s arguments: exactly one of an invitation file (base64)
-/// and a ticket's text, and an optional description. The ticket goes
-/// straight into a `Secret`, and no failure names its value.
+/// Reads `accept`'s arguments: exactly one of an invitation file (base64),
+/// a ticket's text and a spoken code, an optional description and budget,
+/// and, with a code only, an optional `rendezvous` `HOST:PORT`. A ticket or
+/// a code goes straight into a `Secret`, and no failure names its value.
 fn parse_accept(args: Dynamic) -> Result(Call, Failure) {
   use file <- result.try(optional(args, "invitation", decode.string, ""))
   use ticket <- result.try(optional(args, "ticket", decode.string, ""))
+  use code <- result.try(optional(args, "code", decode.string, ""))
+  use rendezvous <- result.try(optional(args, "rendezvous", decode.string, ""))
   use description <- result.try(optional(args, "description", decode.string, ""))
   use budget <- result.try(optional_accept_budget(args))
 
-  // Exactly one source: both would be ambiguous and neither is nothing.
-  case file, ticket {
-    "", "" -> Error(invalid("give exactly one of invitation and ticket"))
+  let one = invalid("give exactly one of invitation, ticket and code")
 
+  // Exactly one source: two would be ambiguous and none is nothing. A
+  // rendezvous means something only beside a code.
+  case file, ticket, code, rendezvous {
+    "", "", "", _ -> Error(one)
+
+    "", "", _, "" ->
+      Ok(AcceptCode(
+        code: secret.new(<<code:utf8>>),
+        rendezvous: None,
+        description:,
+        budget:,
+      ))
+
+    "", "", _, _ ->
+      Ok(AcceptCode(
+        code: secret.new(<<code:utf8>>),
+        rendezvous: Some(rendezvous),
+        description:,
+        budget:,
+      ))
+
+    _, _, "", "" ->
+      parse_accept_file_or_ticket(file, ticket, description, budget)
+
+    _, _, "", _ -> Error(invalid("a rendezvous is given only with a code"))
+
+    _, _, _, _ -> Error(one)
+  }
+}
+
+/// The two older sources of `accept`, once no code was given: exactly one of
+/// an invitation file and a ticket.
+fn parse_accept_file_or_ticket(
+  file: String,
+  ticket: String,
+  description: String,
+  budget: Option(Int),
+) -> Result(Call, Failure) {
+  // Exactly one source: both would be ambiguous.
+  case file, ticket {
     "", _ ->
       Ok(AcceptTicket(
         ticket: secret.new(<<ticket:utf8>>),
@@ -564,7 +637,7 @@ fn parse_accept(args: Dynamic) -> Result(Call, Failure) {
       Ok(Accept(invitation:, description:, budget:))
     }
 
-    _, _ -> Error(invalid("give exactly one of invitation and ticket"))
+    _, _ -> Error(invalid("give exactly one of invitation, ticket and code"))
   }
 }
 
@@ -755,6 +828,29 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
           #("ticket", json.string(secret_text(ticket))),
         ])
       })
+
+    Invite(description:, approval:, budget:, form: WithCode) ->
+      backend.invite_code(description, approval, budget)
+      |> lift
+      |> result.map(fn(invited) {
+        // The code leaves the daemon here, in the answer to the operator
+        // who asked for it, and nowhere else.
+        json.object([
+          #("run", json.string(id.to_hex(invited.run))),
+          #("code", json.string(secret_text(invited.code))),
+          #("expires_at", json.int(invited.expires_at.unix_seconds)),
+        ])
+      })
+
+    AwaitCode(run:) ->
+      backend.await_code(run)
+      |> lift
+      |> result.map(outcome_json)
+
+    AcceptCode(code:, rendezvous:, description:, budget:) ->
+      backend.accept_code(code, rendezvous, description, budget)
+      |> lift
+      |> result.map(outcome_json)
 
     Accept(invitation:, description:, budget:) ->
       backend.accept(invitation, description, budget)
@@ -955,8 +1051,28 @@ fn contact_json_of(contact: Id(Contact)) -> Json {
   json.object([#("contact", json.string(id.to_hex(contact)))])
 }
 
-/// A ticket's text for the answer to `invite`. A ticket is ASCII by
-/// construction, so the fallback is unreachable and prints nothing.
+/// The JSON of a spoken-code pairing's outcome: its name, and the contact
+/// when the joiner's ticket was redeemed.
+fn outcome_json(outcome: PairingOutcome) -> Json {
+  // Each outcome has its wire name; only a joiner's pairing has a contact.
+  let #(name, contact) = case outcome {
+    local_api_types.Paired(contact:) -> #("paired", contact)
+    local_api_types.NeverClaimed -> #("never_claimed", None)
+    local_api_types.Stalled -> #("stalled", None)
+    local_api_types.ConfirmationFailed -> #("confirmation_failed", None)
+  }
+
+  json.object([
+    #("outcome", json.string(name)),
+    #(
+      "contact",
+      json.nullable(contact, fn(found) { json.string(id.to_hex(found)) }),
+    ),
+  ])
+}
+
+/// A ticket's or a code's text for the answer to `invite`. Both are ASCII
+/// by construction, so the fallback is unreachable and prints nothing.
 fn secret_text(ticket: Secret) -> String {
   case bit_array.to_string(secret.expose(ticket)) {
     Ok(text) -> text

@@ -31,8 +31,9 @@ import core/id
 import core/limits
 import core/mailbox/codec
 import core/mailbox/protocol.{
-  type Request, type Response, Ack, Append, CreateQueue, DeleteQueue, Fetch,
-  GetBlob, PutBlob,
+  type Request, type Response, Ack, Append, ClaimRendezvous, CloseRendezvous,
+  CreateQueue, DeleteQueue, Fetch, GetBlob, OpenRendezvous, PutBlob,
+  RendezvousFetch, RendezvousSend,
 }
 import daemon/internal/ffi_clock
 import daemon/transport.{type Dialer, type TransportError}
@@ -128,10 +129,10 @@ pub fn call(
 /// // -> 35_000
 /// ```
 pub fn effective_timeout(request: Request, timeout_ms: Int) -> Int {
-  // Only a `Fetch` can be held open by the mailbox, so only it needs more
-  // than the caller's budget.
+  // Only a `Fetch` or a `RendezvousFetch` can be held open by the mailbox,
+  // so only they need more than the caller's budget.
   case request {
-    Fetch(wait_seconds:, ..) -> {
+    Fetch(wait_seconds:, ..) | RendezvousFetch(wait_seconds:, ..) -> {
       // The mailbox clamps the wait to the protocol limit, so waiting for
       // more than that would only hold the connection open.
       let wait = int.clamp(wait_seconds, 0, limits.long_poll_seconds)
@@ -143,7 +144,11 @@ pub fn effective_timeout(request: Request, timeout_ms: Int) -> Int {
     | Ack(..)
     | DeleteQueue(..)
     | PutBlob(..)
-    | GetBlob(..) -> timeout_ms
+    | GetBlob(..)
+    | OpenRendezvous(..)
+    | ClaimRendezvous(..)
+    | RendezvousSend(..)
+    | CloseRendezvous(..) -> timeout_ms
   }
 }
 

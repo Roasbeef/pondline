@@ -8,7 +8,7 @@
 //// the mapping in that one module changes with them and the server does
 //// not.
 
-import core/id.{type Contact, type Id, type Message}
+import core/id.{type Contact, type Id, type Message, type Rendezvous}
 import core/offer.{type Approval}
 import core/secret.{type Secret}
 import core/time.{type Instant}
@@ -116,6 +116,30 @@ pub type Incident {
   )
 }
 
+/// What `invite_code` answers: the run to wait for, the spoken code, and
+/// the slot's expiry by the mailbox's clock (ADR-016). The code is a
+/// `Secret`; its words are the run's password.
+pub type CodeInvite {
+  CodeInvite(run: Id(Rendezvous), code: Secret, expires_at: Instant)
+}
+
+/// How a pairing by spoken code ended, as `daemon/api` names it.
+pub type PairingOutcome {
+  /// The hand-off completed; the joiner's contact, when this side is the
+  /// joiner.
+  Paired(contact: Option(Id(Contact)))
+
+  /// The inviter's code expired with nobody using it.
+  NeverClaimed
+
+  /// The exchange stopped before any confirmation verdict.
+  Stalled
+
+  /// The code did not match, or the exchange was interrupted after the
+  /// joiner's confirmation. Counted against the rendezvous.
+  ConfirmationFailed
+}
+
 /// What the runtime tells subscribers.
 pub type Event {
   /// A delivery for this contact is ready to receive.
@@ -133,7 +157,10 @@ pub type Health {
 
 /// One function per API operation. `invite_ticket` returns the invitation
 /// file and the ticket's text, and `accept_ticket` takes the text, both as
-/// in `daemon/api` (ADR-009); the text is a `Secret` either way.
+/// in `daemon/api` (ADR-009); the text is a `Secret` either way. The three
+/// code operations are ADR-016's: `invite_code` opens a run and answers its
+/// code, `await_code` waits for that run, and `accept_code` takes a code, an
+/// optional rendezvous `HOST:PORT`, a description and a budget.
 pub type Backend {
   Backend(
     invite: fn(String, Approval, Int) -> Result(BitArray, ApiError),
@@ -142,6 +169,10 @@ pub type Backend {
     accept: fn(BitArray, String, Option(Int)) -> Result(Id(Contact), ApiError),
     accept_ticket: fn(Secret, String, Option(Int)) ->
       Result(Id(Contact), ApiError),
+    invite_code: fn(String, Approval, Int) -> Result(CodeInvite, ApiError),
+    await_code: fn(Id(Rendezvous)) -> Result(PairingOutcome, ApiError),
+    accept_code: fn(Secret, Option(String), String, Option(Int)) ->
+      Result(PairingOutcome, ApiError),
     contacts: fn() -> Result(List(ContactView), ApiError),
     approve: fn(Id(Contact)) -> Result(Nil, ApiError),
     decline: fn(Id(Contact)) -> Result(Nil, ApiError),

@@ -6,6 +6,7 @@ import core/id.{type Id, type Queue}
 import core/limits
 import core/mailbox/codec
 import core/mailbox/protocol.{type Request, type Response}
+import core/nameplate.{type Nameplate}
 import core/time.{type Instant}
 import core/tlv
 import gleam/bit_array
@@ -161,7 +162,93 @@ fn requests() -> qcheck.Generator(Request) {
     delete,
     put_blob,
     get_blob,
+    ..rendezvous_requests()
   ])
+}
+
+/// The five rendezvous requests (ADR-016), each over the whole range its
+/// fields can carry on the wire.
+fn rendezvous_requests() -> List(qcheck.Generator(Request)) {
+  let open = {
+    use provision, rendezvous, read, append, lifetime_seconds <- qcheck.map5(
+      capabilities(),
+      ids(),
+      capabilities(),
+      capabilities(),
+      u32s(),
+    )
+    protocol.OpenRendezvous(
+      provision:,
+      rendezvous:,
+      read:,
+      append:,
+      lifetime_seconds:,
+    )
+  }
+  let claim = {
+    use nameplate, read, append <- qcheck.map3(
+      nameplates(),
+      capabilities(),
+      capabilities(),
+    )
+    protocol.ClaimRendezvous(nameplate:, read:, append:)
+  }
+  let send = {
+    use rendezvous, append, index, body <- qcheck.map4(
+      ids(),
+      capabilities(),
+      qcheck.bounded_int(0, 255),
+      bodies(),
+    )
+    protocol.RendezvousSend(rendezvous:, append:, index:, body:)
+  }
+  let fetch = {
+    use rendezvous, read, after, wait_seconds <- qcheck.map4(
+      ids(),
+      capabilities(),
+      qcheck.bounded_int(-1, 254),
+      u32s(),
+    )
+    protocol.RendezvousFetch(rendezvous:, read:, after:, wait_seconds:)
+  }
+  let close = {
+    use rendezvous, read <- qcheck.map2(ids(), capabilities())
+    protocol.CloseRendezvous(rendezvous:, read:)
+  }
+
+  [open, claim, send, fetch, close]
+}
+
+/// Nameplates over the whole six-digit range, with the edges drawn often.
+fn nameplates() -> qcheck.Generator(Nameplate) {
+  qcheck.from_generators(qcheck.bounded_int(0, 999_999), [
+    qcheck.bounded_int(0, 2),
+    qcheck.bounded_int(999_997, 999_999),
+  ])
+  |> qcheck.map(fn(value) {
+    let assert Ok(plate) = nameplate.from_int(value)
+    plate
+  })
+}
+
+/// A rendezvous body: usually short, sometimes exactly the largest allowed.
+fn bodies() -> qcheck.Generator(BitArray) {
+  qcheck.from_generators(blobs(), [
+    qcheck.constant(fill(limits.max_rendezvous_body_bytes)),
+  ])
+}
+
+/// One side's messages, as a fetch returns them.
+fn rendezvous_messages() -> qcheck.Generator(List(protocol.RendezvousMessage)) {
+  let message = {
+    use index, body <- qcheck.map2(qcheck.bounded_int(0, 255), bodies())
+    protocol.RendezvousMessage(index:, body:)
+  }
+
+  qcheck.generic_list(
+    elements_from: message,
+    length_from: qcheck.bounded_int(0, limits.max_rendezvous_messages),
+  )
 }
 
 /// A short sealed blob; its contents are opaque to the codec.
@@ -225,6 +312,19 @@ fn responses() -> qcheck.Generator(Response) {
   let stored = qcheck.map(ids(), fn(blob) { protocol.BlobStored(blob:) })
   let found = qcheck.map(blobs(), fn(sealed) { protocol.SealedBlob(sealed:) })
 
+  let opened = {
+    use nameplate, expires_at <- qcheck.map2(nameplates(), instants())
+    protocol.RendezvousOpened(nameplate:, expires_at:)
+  }
+  let claimed = {
+    use rendezvous, expires_at <- qcheck.map2(ids(), instants())
+    protocol.RendezvousClaimed(rendezvous:, expires_at:)
+  }
+  let messages =
+    qcheck.map(rendezvous_messages(), fn(messages) {
+      protocol.RendezvousMessages(messages:)
+    })
+
   qcheck.from_generators(created, [
     appended,
     batch,
@@ -233,6 +333,11 @@ fn responses() -> qcheck.Generator(Response) {
     refused,
     stored,
     found,
+    opened,
+    claimed,
+    qcheck.constant(protocol.RendezvousSent),
+    messages,
+    qcheck.constant(protocol.RendezvousClosed),
   ])
 }
 
@@ -467,7 +572,7 @@ pub fn field_errors_are_specific_test() {
 
   assert codec.decode_request(with_record(bytes, 4, <<1, 2>>))
     == Error(codec.Malformed(tlv.InvalidField(4)))
-  assert codec.decode_request(with_record(bytes, 2, <<9>>))
+  assert codec.decode_request(with_record(bytes, 2, <<99>>))
     == Error(codec.Malformed(tlv.InvalidField(2)))
   assert codec.decode_request(with_record(bytes, 8, <<>>))
     == Error(codec.Malformed(tlv.UnknownRequired(8)))
@@ -656,4 +761,205 @@ pub fn a_get_blob_with_a_stray_field_is_refused_test() {
     ))
 
   assert is_error(codec.decode_request(with_record(bytes, 38, <<1, 2, 3>>)))
+}
+
+// ------------------------------------------------------------ rendezvous
+
+/// A rendezvous request every test below starts from, with a marked
+/// capability so a stray rendering would show it.
+fn a_send(body: BitArray) -> Request {
+  protocol.RendezvousSend(
+    rendezvous: ident(),
+    append: marked_capability(),
+    index: 0,
+    body:,
+  )
+}
+
+/// The generators reach every rendezvous kind, so the round trip, version,
+/// truncation and secrecy properties above are about them too.
+pub fn the_generators_reach_every_rendezvous_kind_test() {
+  let #(drawn, _) =
+    qcheck.generate(
+      qcheck.tuple2(requests(), responses()),
+      2000,
+      qcheck.seed(property_seed),
+    )
+  let kinds =
+    list.fold(drawn, #(0, 0), fn(counts, pair) {
+      let #(request, response) = pair
+      #(
+        int.bitwise_or(counts.0, request_kind(request)),
+        int.bitwise_or(counts.1, response_kind(response)),
+      )
+    })
+
+  // Each kind has its own bit, so all five are set only when every kind
+  // was drawn at least once.
+  assert kinds == #(0b11111, 0b11111)
+}
+
+/// A bit per rendezvous request kind, zero for every other request.
+fn request_kind(request: Request) -> Int {
+  case request {
+    protocol.OpenRendezvous(..) -> 0b00001
+    protocol.ClaimRendezvous(..) -> 0b00010
+    protocol.RendezvousSend(..) -> 0b00100
+    protocol.RendezvousFetch(..) -> 0b01000
+    protocol.CloseRendezvous(..) -> 0b10000
+    protocol.CreateQueue(..)
+    | protocol.Append(..)
+    | protocol.Fetch(..)
+    | protocol.Ack(..)
+    | protocol.DeleteQueue(..)
+    | protocol.PutBlob(..)
+    | protocol.GetBlob(..) -> 0
+  }
+}
+
+/// A bit per rendezvous response kind, zero for every other response.
+fn response_kind(response: Response) -> Int {
+  case response {
+    protocol.RendezvousOpened(..) -> 0b00001
+    protocol.RendezvousClaimed(..) -> 0b00010
+    protocol.RendezvousSent -> 0b00100
+    protocol.RendezvousMessages(..) -> 0b01000
+    protocol.RendezvousClosed -> 0b10000
+    protocol.QueueCreated(..)
+    | protocol.Appended(..)
+    | protocol.Batch(..)
+    | protocol.Acked
+    | protocol.QueueDeleted
+    | protocol.BlobStored(..)
+    | protocol.SealedBlob(..)
+    | protocol.Refused(..) -> 0
+  }
+}
+
+/// A fetch from the start (`after` of `-1`) goes on the wire as zero
+/// indices seen, and comes back as `-1`.
+pub fn a_fetch_from_the_start_carries_after_as_a_count_test() {
+  let request =
+    protocol.RendezvousFetch(
+      rendezvous: ident(),
+      read: marked_capability(),
+      after: -1,
+      wait_seconds: 25,
+    )
+  let bytes = codec.encode_request(request)
+  let assert Ok(stream) = tlv.parse(bytes, max_bytes: 1000)
+
+  assert tlv.peek(stream, 52, tlv.u8) == Ok(0)
+  assert codec.decode_request(bytes) == Ok(request)
+}
+
+/// A nameplate past the six-digit range is refused as that field, in a
+/// claim and in an answer, rather than reaching the mailbox's lookup.
+pub fn a_nameplate_out_of_range_is_refused_test() {
+  let assert Ok(plate) = nameplate.from_int(999_999)
+  let claim =
+    codec.encode_request(protocol.ClaimRendezvous(
+      nameplate: plate,
+      read: marked_capability(),
+      append: marked_capability(),
+    ))
+  let opened =
+    codec.encode_response(protocol.RendezvousOpened(
+      nameplate: plate,
+      expires_at: time.Instant(10),
+    ))
+
+  assert codec.decode_request(with_record(claim, 42, <<1_000_000:size(32)>>))
+    == Error(codec.Malformed(tlv.InvalidField(42)))
+  assert codec.decode_response(with_record(opened, 42, <<1_000_000:size(32)>>))
+    == Error(codec.Malformed(tlv.InvalidField(42)))
+}
+
+/// A body is bounded in both directions: the largest allowed one round
+/// trips in a send and in a fetch's answer, and one byte more is refused as
+/// that field before anything is stored.
+pub fn rendezvous_bodies_are_bounded_test() {
+  let largest = fill(limits.max_rendezvous_body_bytes)
+  let over = fill(limits.max_rendezvous_body_bytes + 1)
+  let answer = fn(body) {
+    protocol.RendezvousMessages([protocol.RendezvousMessage(index: 0, body:)])
+  }
+
+  assert codec.decode_request(codec.encode_request(a_send(largest)))
+    == Ok(a_send(largest))
+  assert codec.decode_response(codec.encode_response(answer(largest)))
+    == Ok(answer(largest))
+
+  assert codec.decode_request(codec.encode_request(a_send(over)))
+    == Error(codec.Malformed(tlv.InvalidField(50)))
+  assert is_error(codec.decode_response(codec.encode_response(answer(over))))
+}
+
+/// A fetch's answer holds at most one side's worth of messages; a longer
+/// list is refused rather than read.
+pub fn rendezvous_answers_are_bounded_test() {
+  let messages = fn(count) {
+    list.repeat(protocol.RendezvousMessage(index: 0, body: <<1>>), count)
+    |> protocol.RendezvousMessages
+  }
+  let most = messages(limits.max_rendezvous_messages)
+  let more = messages(limits.max_rendezvous_messages + 1)
+
+  assert codec.decode_response(codec.encode_response(most)) == Ok(most)
+  assert codec.decode_response(codec.encode_response(more))
+    == Error(codec.Malformed(tlv.TooManyItems))
+}
+
+/// The largest legitimate rendezvous answer, a full side of largest bodies,
+/// is far inside the response bound.
+pub fn the_largest_rendezvous_answer_fits_the_response_bound_test() {
+  let full =
+    protocol.RendezvousMessages(list.repeat(
+      protocol.RendezvousMessage(
+        index: 255,
+        body: fill(limits.max_rendezvous_body_bytes),
+      ),
+      limits.max_rendezvous_messages,
+    ))
+  let bytes = codec.encode_response(full)
+
+  assert bit_array.byte_size(bytes) < codec.max_response_bytes()
+  assert codec.decode_response(bytes) == Ok(full)
+}
+
+/// Each rendezvous kind reads exactly its own fields: a send carrying a
+/// fetch's count, a claim carrying a slot identifier and a close carrying a
+/// body are each refused.
+pub fn rendezvous_requests_with_a_stray_field_are_refused_test() {
+  let assert Ok(plate) = nameplate.from_int(7)
+  let claim =
+    codec.encode_request(protocol.ClaimRendezvous(
+      nameplate: plate,
+      read: marked_capability(),
+      append: marked_capability(),
+    ))
+  let close =
+    codec.encode_request(protocol.CloseRendezvous(
+      rendezvous: ident(),
+      read: marked_capability(),
+    ))
+
+  assert codec.decode_request(
+      with_record(codec.encode_request(a_send(<<1>>)), 52, <<0>>),
+    )
+    == Error(codec.Malformed(tlv.UnknownRequired(52)))
+  assert codec.decode_request(with_record(claim, 40, fill(id.id_bytes)))
+    == Error(codec.Malformed(tlv.UnknownRequired(40)))
+  assert codec.decode_request(with_record(close, 50, <<1>>))
+    == Error(codec.Malformed(tlv.UnknownRequired(50)))
+}
+
+/// The version is read before anything else in a rendezvous request too,
+/// so a peer on another version is told so rather than told its fields
+/// are wrong.
+pub fn a_rendezvous_request_checks_the_version_first_test() {
+  let bytes = codec.encode_request(a_send(<<1, 2, 3>>))
+
+  assert codec.decode_request(with_version(bytes, 2))
+    == Error(codec.UnsupportedVersion)
 }

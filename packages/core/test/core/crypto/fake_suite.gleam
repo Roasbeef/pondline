@@ -88,6 +88,9 @@ fn build(draw: fn(Int) -> BitArray) -> Suite {
   Suite(
     random: draw,
     sha256: hash,
+    sha512: fn(data) {
+      <<hash(data):bits, hash(<<"sha512":utf8, data:bits>>):bits>>
+    },
     hmac_sha256: hmac,
     constant_time_equal: fn(left, right) { left == right },
     x25519_keypair: fn() {

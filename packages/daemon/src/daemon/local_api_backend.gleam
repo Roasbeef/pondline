@@ -48,6 +48,9 @@ pub fn unavailable() -> Backend {
     invite_ticket: fn(_, _, _) { Error(Unavailable) },
     accept: fn(_, _, _) { Error(Unavailable) },
     accept_ticket: fn(_, _, _) { Error(Unavailable) },
+    invite_code: fn(_, _, _) { Error(Unavailable) },
+    await_code: fn(_) { Error(Unavailable) },
+    accept_code: fn(_, _, _, _) { Error(Unavailable) },
     contacts: fn() { Error(Unavailable) },
     approve: fn(_) { Error(Unavailable) },
     decline: fn(_) { Error(Unavailable) },
@@ -128,6 +131,27 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     },
     accept_ticket: fn(text, description, budget) {
       api.accept_ticket_with_budget(daemon, text, description, budget)
+      |> map_error
+    },
+    invite_code: fn(description, approval, budget) {
+      api.invite_code(daemon, description, approval, budget)
+      |> result.map(fn(invited) {
+        local_api_types.CodeInvite(
+          run: invited.run,
+          code: invited.code,
+          expires_at: invited.expires_at,
+        )
+      })
+      |> map_error
+    },
+    await_code: fn(run) {
+      api.await_code(daemon, run)
+      |> result.map(pairing_outcome)
+      |> map_error
+    },
+    accept_code: fn(code, rendezvous, description, budget) {
+      api.accept_code(daemon, code, rendezvous, description, budget)
+      |> result.map(pairing_outcome)
       |> map_error
     },
     contacts: fn() {
@@ -303,6 +327,18 @@ fn api_error(error: api.ApiError) -> ApiError {
     api.InvalidInvitation(reason) -> local_api_types.InvalidInvitation(reason)
     api.Refused(reason) -> local_api_types.Refused(reason)
     api.Unavailable -> local_api_types.Unavailable
+  }
+}
+
+/// A spoken-code pairing's outcome as the local API reports it.
+fn pairing_outcome(
+  outcome: api.PairingOutcome,
+) -> local_api_types.PairingOutcome {
+  case outcome {
+    api.Paired(contact:) -> local_api_types.Paired(contact:)
+    api.NeverClaimed -> local_api_types.NeverClaimed
+    api.Stalled -> local_api_types.Stalled
+    api.ConfirmationFailed -> local_api_types.ConfirmationFailed
   }
 }
 

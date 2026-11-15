@@ -197,15 +197,15 @@ nine states:
 6. The dispatch that ends `close` starts row 1 in run 1's recycled slot
    while run 2 is still sending it, and `NoDoubleSend` fails.
 
-With the current `close` (`close` at `scheduler.gleam:689`, its filter on
-`Sending(sink:)` at `scheduler.gleam:693`), step 5 releases only run 1's
+With the current `close` (`close` at `scheduler.gleam:697`, its filter on
+`Sending(sink:)` at `scheduler.gleam:701`), step 5 releases only run 1's
 own `Sending` claims, and row 1 stays with run 2.
 
 `SchedulerMutBatchOwner` and `SchedulerMutAnyEnd` find a shorter path to
 the same hazard, with no failed record at all: a run whose deadline reports
 `NeverStarted` for both rows. The first `NeverStarted` deletes row 1's
 claim and the dispatch that follows puts row 1 into a newer run (in
-`conclude`, the `Unattempted` arm at `scheduler.gleam:675`); the old run's end
+`conclude`, the `Unattempted` arm at `scheduler.gleam:683`); the old run's end
 marker then releases row 1 although the newer run holds it. The per-run
 claim closes this path too, which the comments did not mention.
 
@@ -238,7 +238,7 @@ gives the shortest trace, with no crash and no fault:
 5. No fetcher ever starts again for a queue that is not live, so the
    mailbox keeps envelope 1 until its retention ends.
 
-The current code checks liveness in `after_ack` (`fetcher.gleam:262`),
+The current code checks liveness in `after_ack` (`fetcher.gleam:269`),
 after the round's acknowledgements, and the fetch manager's `reconcile`
 also asks `engine.draining_inboxes` (`fetch_manager.gleam:161`) for retired
 queues with unacknowledged rows. Both halves are needed:
@@ -268,40 +268,40 @@ mirrors, with its line. The tables below give the same map, against main at
 
 | Model step | Code |
 |---|---|
-| `Handle`, Tick | the Tick arm of `handle` (`scheduler.gleam:400`): `release_held` (`scheduler.gleam:527`), `retransmit_due` (`scheduler.gleam:411`), then `dispatch` |
-| `Handle`, Nudge | the Nudge arm of `handle` (`scheduler.gleam:399`) |
-| `Handle`, Finished | the `Finished` arm (`scheduler.gleam:401`), for the `Finished` an expired row is sent (`scheduler.gleam:461`) |
-| `Handle`, outcome with an attempt | `settle` (`scheduler.gleam:610`), `settlement` (`scheduler.gleam:641`), `conclude` (`scheduler.gleam:666`), `finish` (`scheduler.gleam:708`) |
-| `Handle`, outcome NeverStarted | in `conclude`, the `Unattempted` arm (`scheduler.gleam:675`): the claim is deleted whatever it is |
-| `Handle`, end or lost marker | `settle`'s `AllDelivered` and `RunLost` arms (`scheduler.gleam:635`), `close` (`scheduler.gleam:689`) |
-| `Handle`, restart | `supervised` (`scheduler.gleam:267`), `builder` with `continuing(Tick)` (`scheduler.gleam:286`) |
-| `Dispatch` operator | `dispatch` (`scheduler.gleam:440`), reading `due_outbox` (`scheduler.gleam:445`), and `start_batch` (`scheduler.gleam:476`) |
-| `Finish` macro | `finish` (`scheduler.gleam:708`), whose `Held` insert is at `scheduler.gleam:742`; `record_send` (`engine.gleam:1459`), `answer` (`engine.gleam:425`) |
-| `Run`, complete | `send_row` (`scheduler.gleam:543`) and `classify` (`scheduler.gleam:337`); `Crashed` and `Failed` settle as Transient (`settlement`, `scheduler.gleam:641`) |
+| `Handle`, Tick | the Tick arm of `handle` (`scheduler.gleam:406`): `release_held` (`scheduler.gleam:535`), `retransmit_due` (`scheduler.gleam:417`), then `dispatch` |
+| `Handle`, Nudge | the Nudge arm of `handle` (`scheduler.gleam:405`) |
+| `Handle`, Finished | the `Finished` arm (`scheduler.gleam:407`), for the `Finished` an expired row is sent (`scheduler.gleam:469`) |
+| `Handle`, outcome with an attempt | `settle` (`scheduler.gleam:618`), `settlement` (`scheduler.gleam:649`), `conclude` (`scheduler.gleam:674`), `finish` (`scheduler.gleam:716`) |
+| `Handle`, outcome NeverStarted | in `conclude`, the `Unattempted` arm (`scheduler.gleam:683`): the claim is deleted whatever it is |
+| `Handle`, end or lost marker | `settle`'s `AllDelivered` and `RunLost` arms (`scheduler.gleam:640`), `close` (`scheduler.gleam:697`) |
+| `Handle`, restart | `supervised` (`scheduler.gleam:268`), `builder` with `continuing(Tick)` (`scheduler.gleam:287`) |
+| `Dispatch` operator | `dispatch` (`scheduler.gleam:448`), reading `due_outbox` (`scheduler.gleam:453`), and `start_batch` (`scheduler.gleam:484`) |
+| `Finish` macro | `finish` (`scheduler.gleam:716`), whose `Held` insert is at `scheduler.gleam:747`; `record_send` (`engine.gleam:1499`), `answer` (`engine.gleam:427`) |
+| `Run`, complete | `send_row` (`scheduler.gleam:551`) and `classify` (`scheduler.gleam:338`); `Crashed` and `Failed` settle as Transient (`settlement`, `scheduler.gleam:649`) |
 | `Run`, end | the relay's `AllDelivered` after the scope's `Done` (`start_relayed` in weft) |
-| `Run`, deadline | `send_batch` (`scheduler.gleam:504`) with `weft.deadline`: running tasks are `Abandoned` |
+| `Run`, deadline | `send_batch` (`scheduler.gleam:512`) with `weft.deadline`: running tasks are `Abandoned` |
 | `Run`, early deadline | `NeverStarted`, spent from the run-fault budget |
 | `Run`, lost | `RunLost`, spent from the run-fault budget |
-| `Timer` | `builder`'s `actor.periodic` (`scheduler.gleam:291`) |
-| `Engine` | a committed row and `nudge` (`scheduler.gleam:304`) |
+| `Timer` | `builder`'s `actor.periodic` (`scheduler.gleam:292`) |
+| `Engine` | a committed row and `nudge` (`scheduler.gleam:305`) |
 
 ### `Fetcher.tla`
 
 | Model step | Code |
 |---|---|
-| `Machine` | `handle` (`fetcher.gleam:218`), every state and message pair |
-| `Machine`, Begin | `begin_round` (`fetcher.gleam:250`) |
-| `Machine`, Acked | `acked` (`fetcher.gleam:271`), then `after_ack` (`fetcher.gleam:262`) with `liveness` (`fetcher.gleam:361`), then `begin_poll` (`fetcher.gleam:306`) |
-| `Machine`, Polled | `polled` (`fetcher.gleam:288`), which begins the next round |
+| `Machine` | `handle` (`fetcher.gleam:225`), every state and message pair |
+| `Machine`, Begin | `begin_round` (`fetcher.gleam:257`) |
+| `Machine`, Acked | `acked` (`fetcher.gleam:278`), then `after_ack` (`fetcher.gleam:269`) with `liveness` (`fetcher.gleam:368`), then `begin_poll` (`fetcher.gleam:313`) |
+| `Machine`, Polled | `polled` (`fetcher.gleam:295`), which begins the next round |
 | `Fail` macro | `failed` (`fetcher.gleam:319`) and its state timeout |
-| `Worker`, unacked | `ack_pending` (`fetcher.gleam:376`), `unacked` (`engine.gleam:1478`) |
-| `Worker`, call | `acknowledge` (`fetcher.gleam:396`), the mailbox `Ack` |
-| `Worker`, mark | `mark_acked` (`engine.gleam:1493`), then `ack_pending` repeats |
-| `Worker`, fetch | `fetch_batch` (`fetcher.gleam:423`) |
-| `Worker`, process | `process_batch` (`fetcher.gleam:450`), `process` (`engine.gleam:1035`); a repeat's `repeat` (`engine.gleam:1093`) and a poison envelope's `attempt` (`engine.gleam:1110`) |
-| `Worker`, abandon | `start_run` (`fetcher.gleam:327`) with its deadline, and `RunLost`, both read by `step_result` (`fetcher.gleam:345`) as a failed step |
+| `Worker`, unacked | `ack_pending` (`fetcher.gleam:380`), `unacked` (`engine.gleam:1518`) |
+| `Worker`, call | `acknowledge` (`fetcher.gleam:403`), the mailbox `Ack` |
+| `Worker`, mark | `mark_acked` (`engine.gleam:1533`), then `ack_pending` repeats |
+| `Worker`, fetch | `fetch_batch` (`fetcher.gleam:435`) |
+| `Worker`, process | `process_batch` (`fetcher.gleam:464`), `process` (`engine.gleam:1037`); a repeat's `repeat` (`engine.gleam:1095`) and a poison envelope's `attempt` (`engine.gleam:1112`) |
+| `Worker`, abandon | `start_run` (`fetcher.gleam:334`) with its deadline, and `RunLost`, both read by `step_result` (`fetcher.gleam:352`) as a failed step |
 | `Timer` | the state timeout armed in `failed` (`fetcher.gleam:319`) |
-| `Manager` | `reconcile` (`fetch_manager.gleam:150`) and `draining_inboxes` (`engine.gleam:1414`) |
+| `Manager` | `reconcile` (`fetch_manager.gleam:150`) and `draining_inboxes` (`engine.gleam:1454`) |
 
 ## Abstractions, and what each could hide
 
@@ -371,7 +371,7 @@ mirrors, with its line. The tables below give the same map, against main at
   outcome being handled.
 - Each half of the closed-queue fix is necessary: ack-first alone loses a
   commit across a crash, and draining alone loops without acknowledging.
-- The outbox writes in `record_send` (`daemon/store.gleam:1350`) are not guarded
+- The outbox writes in `record_send` (`daemon/store.gleam:1353`) are not guarded
   by `status = 'queued'` (`MarkStored`, `MarkFailed` and `Reschedule` in
   `outbox.sql`). The claims are what keep two outcomes for one row from
   landing, so the store relies on `OneOwner`; the model writes the rows the

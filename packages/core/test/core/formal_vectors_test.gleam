@@ -2,8 +2,10 @@
 //// transcriptions (`formal/lean`, `docs/formal/lean.md`).
 ////
 //// The Lean side proves theorems about its own definitions of the TLV
-//// codec, the padding buckets, the retention offers and the retransmit
-//// schedule. Those theorems say nothing about this package unless the two
+//// codec, the padding buckets, the retention offers, the retransmit
+//// schedule, and the pure arithmetic of spoken pairing codes (ADR-016):
+//// Kemeleon, the nameplate's spelling, the word indices `generate` draws,
+//// the PAKE's length framing and the Elligator 2 map. Those theorems say nothing about this package unless the two
 //// definitions agree, so the Lean build also writes
 //// `test/core/formal_vectors.txt`: thousands of inputs, exhaustive over
 //// small domains and adversarial at every boundary, each with the output
@@ -24,12 +26,22 @@
 //// Reading the file is the only I/O here, through OTP's `file:read_file/1`,
 //// the same way `swarm_test` reads the environment through `os:getenv/2`.
 
+import core/crypto/elligator2
+import core/crypto/fake_suite
+import core/crypto/kemeleon
+import core/crypto/pake_common
+import core/crypto/suite.{Suite}
 import core/envelope
 import core/id
 import core/limits
+import core/nameplate
+import core/pairing_code
+import core/pairing_code/words
 import core/plan
+import core/rendezvous
 import core/retention
 import core/retransmit
+import core/secret
 import core/time.{type Instant, Instant}
 import core/tlv
 import gleam/bit_array
@@ -198,6 +210,164 @@ pub fn retransmit_due_at_test() {
   }
 
   string.join([window, kind, stored_at, retransmits, deadline, rendered], " ")
+}
+
+// --------------------------------------------------------------- Kemeleon
+
+pub fn kemeleon_encode_test() {
+  use fields <- conform("kem.enc", 15)
+  let assert [key, draws, _] = fields as "kem.enc: key, draws, encoded"
+  let assert Ok(randomness) =
+    kemeleon.randomness_from_multiples(list.map(split_commas(draws), number))
+    as "a vector's draws are four non-negative multiples"
+
+  // A key the modulus check or the length check refuses has no encoding.
+  let rendered = case kemeleon.encode(bytes(key), randomness) {
+    Ok(encoded) -> hex(encoded)
+    Error(_) -> "err"
+  }
+
+  string.join([key, draws, rendered], " ")
+}
+
+pub fn kemeleon_decode_test() {
+  use fields <- conform("kem.dec", 20)
+  let assert [encoded, _] = fields as "kem.dec: encoded, key"
+
+  // Only a wrong length is refused; every right-length input is a key.
+  let rendered = case kemeleon.decode(bytes(encoded)) {
+    Ok(key) -> hex(key)
+    Error(_) -> "err"
+  }
+
+  encoded <> " " <> rendered
+}
+
+// ---------------------------------------------------------- pairing codes
+
+pub fn nameplate_to_string_test() {
+  use fields <- conform("np.str", 250)
+  let assert [value, _] = fields as "np.str: value, text"
+
+  // A value with no nameplate renders `none`.
+  let rendered = case nameplate.from_int(number(value)) {
+    Ok(plate) -> nameplate.to_string(plate)
+    Error(Nil) -> "none"
+  }
+
+  value <> " " <> rendered
+}
+
+pub fn nameplate_parse_test() {
+  use fields <- conform("np.parse", 800)
+  let assert [input, _] = fields as "np.parse: text, value"
+  let assert Ok(text) = bit_array.to_string(bytes(input))
+    as "a nameplate vector's text is UTF-8"
+
+  // Anything but the six-digit spelling is refused.
+  let rendered = case nameplate.parse(text) {
+    Ok(plate) -> int.to_string(nameplate.to_int(plate))
+    Error(Nil) -> "none"
+  }
+
+  input <> " " <> rendered
+}
+
+pub fn pairing_code_indices_test() {
+  use fields <- conform("code.idx", 150)
+  let assert [input, _] = fields as "code.idx: drawn, indices"
+  let drawn = bytes(input)
+  let assert Ok(plate) = nameplate.from_int(0) as "zero is a nameplate"
+
+  // The suite returns the vector's bytes whatever it is asked for, so a
+  // short or long draw reaches `read_indices` as it stands.
+  let code =
+    pairing_code.generate(
+      Suite(..fake_suite.suite(), random: fn(_) { drawn }),
+      plate,
+    )
+  let assert Ok(password) =
+    bit_array.to_string(secret.expose(pairing_code.password(code)))
+    as "a password is ASCII"
+
+  // The words are read back to the indices they were looked up by.
+  let indices =
+    string.split(password, "-")
+    |> list.map(fn(word) {
+      let assert Ok(index) = words.index_of(word)
+        as "a generated word is on the list"
+      int.to_string(index)
+    })
+
+  input <> " " <> commas(indices)
+}
+
+pub fn lv_encode_test() {
+  use fields <- conform("lv", 10)
+  let assert [field, _] = fields as "lv: field, framed"
+
+  // A field past the two-byte prefix is refused.
+  let rendered = case pake_common.lv_encode(runs_to_bytes(field)) {
+    Ok(framed) -> rle(framed)
+    Error(Nil) -> "none"
+  }
+
+  field <> " " <> rendered
+}
+
+pub fn encode_public_context_test() {
+  use fields <- conform("epc", 50)
+  let assert [sid, client, server, _] = fields
+    as "epc: sid, client, server, context"
+
+  // No vector part reaches the four-byte bound, so every one frames.
+  let rendered = case
+    pake_common.encode_public_context(bytes(sid), bytes(client), bytes(server))
+  {
+    Ok(context) -> hex(context)
+    Error(Nil) -> "none"
+  }
+
+  string.join([sid, client, server, rendered], " ")
+}
+
+pub fn rendezvous_public_context_test() {
+  use fields <- conform("pctx", 20)
+  let assert [value, slot, _] = fields as "pctx: nameplate, rendezvous, context"
+  let assert Ok(plate) = nameplate.from_int(number(value))
+    as "a vector nameplate is in range"
+  let assert Ok(slot_id) = id.from_bytes(bytes(slot))
+    as "a vector rendezvous identifier is sixteen bytes"
+
+  // Every field here is fixed and short, so the framing never refuses.
+  let rendered = case rendezvous.public_context(plate, slot_id) {
+    Ok(context) -> hex(context)
+    Error(_) -> "none"
+  }
+
+  string.join([value, slot, rendered], " ")
+}
+
+// ------------------------------------------------------------ Elligator 2
+
+pub fn elligator2_map_test() {
+  use fields <- conform("ell2", 250)
+  let assert [input, _] = fields as "ell2: field element, u"
+
+  input <> " " <> int.to_string(elligator2.map_to_curve(number(input)))
+}
+
+pub fn elligator2_bytes_test() {
+  use fields <- conform("ell2.u", 40)
+  let assert [input, _] = fields as "ell2.u: bytes, u bytes"
+
+  // Only a length other than 32 bytes is refused.
+  let rendered = case elligator2.decode_u_coordinate(bytes(input)) {
+    Ok(r) -> hex(elligator2.encode_u_coordinate(elligator2.map_to_curve(r)))
+    Error(Nil) -> "none"
+  }
+
+  input <> " " <> rendered
 }
 
 // ----------------------------------------------------------- the harness

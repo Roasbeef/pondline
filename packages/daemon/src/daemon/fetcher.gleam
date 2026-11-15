@@ -419,6 +419,11 @@ fn acknowledge(
     | protocol.QueueDeleted
     | protocol.BlobStored(_)
     | protocol.SealedBlob(_)
+    | protocol.RendezvousOpened(..)
+    | protocol.RendezvousClaimed(..)
+    | protocol.RendezvousSent
+    | protocol.RendezvousMessages(_)
+    | protocol.RendezvousClosed
     | protocol.Refused(_) -> Error(RoundFailed)
   }
 }
@@ -445,6 +450,11 @@ fn fetch_batch(config: Config) -> Result(List(StoredEnvelope), RoundFailed) {
     | protocol.QueueDeleted
     | protocol.BlobStored(_)
     | protocol.SealedBlob(_)
+    | protocol.RendezvousOpened(..)
+    | protocol.RendezvousClaimed(..)
+    | protocol.RendezvousSent
+    | protocol.RendezvousMessages(_)
+    | protocol.RendezvousClosed
     | protocol.Refused(_) -> Error(RoundFailed)
   }
 }

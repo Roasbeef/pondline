@@ -76,7 +76,7 @@ SQLite, and the notifier never touches SQLite.
 ## Startup
 
 `pondline-mailbox serve --db <path> [--port <n>] [--tor-state <dir> [--tor-bin <path>]]`
-installs the log handler first, resolves the Tor sidecar binary when `--tor-state` is given (using `--tor-bin`, `$PONDLINE_TOR_BIN`, `PATH` or the sibling release layout), starts the supervised node, starts the HTTP listener on `127.0.0.1` (`--port` defaults to `0`, an ephemeral port), and then hosts the optional onion service. No request can arrive before the database is open and migrated, and the `onion` line follows the `listening` line while also saving `<tor-state>/onion` (`0600`) for `grant --token` and `status` ([ADR-015](../adr/015-grant-tokens-and-daemon-config.md)). `sweep_period_ms` is 60_000 (`mailbox.gleam:71`). `serve` passes `timer.WallClock`, `None` and `None` for `timer`, `interceptor` and `store_faults`, which only a simulation changes. `--tor-bin` requires `--tor-state`, and the sidecar is linked to the serving process. Beyond `serve`, `pondline-mailbox grant` mints a provisioning grant row and exports a raw capability file or a `plg1...` token, and `pondline-mailbox status` reads a single-transaction summary (`store.status`, `mailbox/store.gleam:899`) without starting the actor tree.
+installs the log handler first, resolves the Tor sidecar binary when `--tor-state` is given (using `--tor-bin`, `$PONDLINE_TOR_BIN`, `PATH` or the sibling release layout), starts the supervised node, starts the HTTP listener on `127.0.0.1` (`--port` defaults to `0`, an ephemeral port), and then hosts the optional onion service. No request can arrive before the database is open and migrated, and the `onion` line follows the `listening` line while also saving `<tor-state>/onion` (`0600`) for `grant --token` and `status` ([ADR-015](../adr/015-grant-tokens-and-daemon-config.md)). `sweep_period_ms` is 60_000 (`mailbox.gleam:71`). `serve` passes `timer.WallClock`, `None` and `None` for `timer`, `interceptor` and `store_faults`, which only a simulation changes. `--tor-bin` requires `--tor-state`, and the sidecar is linked to the serving process. Beyond `serve`, `pondline-mailbox grant` mints a provisioning grant row and exports a raw capability file or a `plg1...` token, and `pondline-mailbox status` reads a single-transaction summary (`store.status`, `mailbox/store.gleam:1333`) without starting the actor tree.
 
 ```mermaid
 sequenceDiagram
@@ -242,6 +242,38 @@ points at. They are ordinary coordinator commands and add no process.
    blobs, then deletes them, in the same transaction as the envelope and
    tombstone sweep. `DeleteQueue` removes blobs by cascade.
 
+## Pipeline: a rendezvous slot
+
+A pairing by spoken code ([ADR-016](../adr/016-spoken-pairing-codes.md))
+meets at a short-lived slot at the inviter's mailbox. The five requests
+are ordinary coordinator commands, and a waiting `RendezvousFetch` parks
+with the notifier as a `Fetch` does, under `service.rendezvous_wake(read)`
+rather than a queue identifier. The two daemons drive the exchange; the
+mailbox only files and serves opaque bodies.
+
+1. **Open.** The inviter's `OpenRendezvous`, under its provisioning grant,
+   purges expired slots, checks the grant's and the mailbox's live-slot
+   caps (`QuotaExceeded`), draws a free six-digit nameplate and stores the
+   slot with the hashes of the inviter's two capabilities
+   (`open_rendezvous`). The identical open answers the same nameplate.
+2. **Claim.** The joiner's `ClaimRendezvous` carries only the nameplate
+   and its own two capabilities. The first claim binds them and shortens
+   the expiry to at most two minutes away; any other claim, like an
+   unknown or expired nameplate, is `Unauthorized` (`claim_rendezvous`).
+3. **Exchange.** `RendezvousSend` files a body under the sender's side and
+   index, and `RendezvousFetch` returns the other side's bodies past
+   `after`. The mailbox tells the sides apart only by which stored hash a
+   presented capability matches (`side_of`). Different bytes at a filed
+   index are `Conflict` and never replace the first.
+4. **End.** Either side's `CloseRendezvous` deletes the slot and its
+   messages and wakes both sides' waiting fetches. A slot nobody closes
+   is invisible from its expiry and deleted by the sweep.
+
+A slot holds hashes, the nameplate, the expiry and the bodies, never the
+code's words, a key or an identity. It is the only state of the exchange
+anywhere outside the two runs' memory, and it lives at most
+`limits.rendezvous_seconds`.
+
 ## State machines
 
 An envelope moves between a live row, a tombstone, and nothing.
@@ -272,10 +304,11 @@ churn against one grant.
 
 ## Storage
 
-The store is one SQLite file. The migrations are `sql/001_initial.sql` and
-`sql/002_blobs.sql`, embedded into `mailbox/schema` by
-`dev/embed_schema.gleam`, and every other statement is a named query in
-`src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`, `blobs`, `status`) that
+The store is one SQLite file. The migrations are `sql/001_initial.sql`,
+`sql/002_blobs.sql` and `sql/003_rendezvous.sql`, embedded into
+`mailbox/schema` by `dev/embed_schema.gleam`, and every other statement is
+a named query in `src/mailbox/sql/*.sql` (`grants`, `queues`, `envelopes`,
+`blobs`, `rendezvous`) that
 parrot generates into `mailbox/sql` ([ADR-007](../adr/007-parrot-sql-codegen.md)).
 Neither generated module is edited by hand. `store.open` sets
 `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`,
@@ -324,12 +357,36 @@ erDiagram
         INTEGER size
         BLOB sealed
     }
+    rendezvous {
+        BLOB rendezvous_id PK "chosen by the opener"
+        INTEGER nameplate UK "drawn by the mailbox"
+        BLOB grant_hash FK "the opening Provision grant"
+        BLOB opener_read_hash
+        BLOB opener_append_hash
+        BLOB claimant_read_hash "NULL until claimed"
+        BLOB claimant_append_hash "NULL until claimed"
+        INTEGER lifetime
+        INTEGER expires_at
+    }
+    rendezvous_messages {
+        BLOB rendezvous_id PK "and FK, ON DELETE CASCADE"
+        INTEGER side PK "0 opener, 1 claimant"
+        INTEGER message_index PK
+        BLOB digest
+        BLOB body
+    }
     queues ||--o{ envelopes : holds
     queues ||--o{ blobs : "pays for"
     queues ||--o{ tombstones : remembers
+    grants ||--o{ rendezvous : "pays for"
+    rendezvous ||--o{ rendezvous_messages : files
 ```
 
-All five tables are `STRICT`. A `blobs` row is charged to the storing
+All seven tables, the two rendezvous tables of ADR-016 among them, are
+`STRICT`. A `rendezvous` row references the grant that opened it, which
+is how the per-grant cap counts live slots, and has indexes on
+`expires_at` and `grant_hash`; its messages go with it through the
+cascade, and `rendezvous_messages` is `WITHOUT ROWID`. A `blobs` row is charged to the storing
 queue's `bytes_used`, goes with the queue through the same cascade, and has
 an index on `deadline`, as `envelopes` and `tombstones` do. There is no
 foreign key from `queues` to `grants`: the grant that created a queue is not recorded, because nothing
@@ -343,7 +400,7 @@ Every write command runs in `store.transaction`, which issues
 an `Ok` value and commits an empty transaction. Migrations are an
 append-only list applied by `migrate` through `PRAGMA user_version`, each
 in its own transaction together with its version bump. A file whose
-`user_version` is above `schema_version` (2, from the generated
+`user_version` is above `schema_version` (3, from the generated
 `mailbox/schema`) is refused with
 `FutureSchema`.
 

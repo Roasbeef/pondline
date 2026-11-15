@@ -160,8 +160,9 @@ flowchart TB
         prov["provisioner<br/>creates committed queues"]
         fm["fetch_manager<br/>one fetcher per live queue"]
         fetcher["fetcher (linked, one per queue)<br/>state machine: Acking, Polling, BackingOff"]
+        pairing["pairing<br/>registry of inviters' spoken-code runs"]
         lock --> status --> events --> carrier --> engine
-        engine --> sched --> prov --> fm
+        engine --> sched --> prov --> fm --> pairing
         fm -.-> fetcher
     end
 
@@ -181,10 +182,14 @@ and fetch manager, which hold no state that outlives a restart; each reads
 committed rows back from the engine on its first scan
 (`daemon/node.gleam`, module doc). `start_offline` builds the same tree
 without the scheduler, provisioner and fetch manager, so local commands
-commit and nothing touches the network.
+commit and nothing touches the network. The pairing registry
+([ADR-016](../adr/016-spoken-pairing-codes.md)) is the last child and is in
+both trees. It holds nothing durable: a restart of it, or of any child
+before it, loses the inviter runs it held, and their rendezvous slots are
+left to the mailbox's expiry.
 
 The engine reaches the workers through exactly one function. It calls
-`notify` after each commit, and `route_notice` (`daemon/node.gleam:479`)
+`notify` after each commit, and `route_notice` (`daemon/node.gleam:503`)
 maps a notice to a nudge: `Transmit` to `scheduler.nudge`, `CreateQueue` to
 `provisioner.nudge`, `Topology` to `fetch_manager.nudge`, and
 `WakeAdapter` and `Changed` to the `events` list. Every nudge is advisory,
@@ -230,20 +235,20 @@ The mailbox side of the `Append` in step 10 of the diagram is the Append pipelin
    credential and the scope, in that order, before it decodes arguments. The
    send payload becomes a `Secret` at `local_api.parse_send` and stays one
    until the engine seals it.
-2. **Plan.** `engine.send` (`daemon/engine.gleam:799`) runs the job inside
+2. **Plan.** `engine.send` (`daemon/engine.gleam:801`) runs the job inside
    the engine actor: it loads the relationship, calls the pure
    `relationship.send` with the real `Suite` and the injected clock, and
    receives a `Plan` of records. The ciphertext in the plan is final; no
    later step encrypts again.
-3. **Commit.** `store.commit` (`daemon/store.gleam:634`) writes the new
+3. **Commit.** `store.commit` (`daemon/store.gleam:637`) writes the new
    relationship state with a version check, the `Outbound` record as an
    `outbox` row with status `queued`, and the `sent_messages` row in one
    `BEGIN IMMEDIATE` transaction. `engine.commit_change`
-   (`daemon/engine.gleam:1592`) calls `notify` only after the commit
+   (`daemon/engine.gleam:1632`) calls `notify` only after the commit
    returned. An idempotency key (`KeyedSend`, ADR-011) commits its
    `send_keys` row in the same transaction, so a retry after a lost answer
    queues nothing new.
-4. **Dispatch.** The scheduler's `dispatch` (`daemon/scheduler.gleam:443`)
+4. **Dispatch.** The scheduler's `dispatch` (`daemon/scheduler.gleam:448`)
    reads due rows through `engine.due_outbox`, skips rows already in
    flight, and starts one weft run for the batch with `limit`
    `max_in_flight` (8) and `deadline` `send_deadline_ms` (130_000). The
@@ -254,7 +259,7 @@ The mailbox side of the `Append` in step 10 of the diagram is the Append pipelin
    offer in the same attempt (ADR-008). Each offer is one `mailbox_client.call`
    with an `append_timeout_ms` of 120_000. The call opens one connection,
    writes one `POST /v1/mailbox` and closes it, whatever the outcome
-   (`daemon/mailbox_client.gleam:100`).
+   (`daemon/mailbox_client.gleam:101`).
 6. **Classify.** `scheduler.classify` turns the answer into a verdict. An
    `Appended` receipt that names the row's envelope and the SHA-256 of the
    bytes sent is `Accepted`. `Conflict`, `Unauthorized`, `TooLarge`,
@@ -292,7 +297,7 @@ sequenceDiagram
 ```
 
 8. **Fetch.** A fetcher is a `weft/state_machine` with states `Acking`,
-   `Polling` and `BackingOff`. `begin_round` (`daemon/fetcher.gleam:250`)
+   `Polling` and `BackingOff`. `begin_round` (`daemon/fetcher.gleam:254`)
    first runs `ack_pending`, which acknowledges exactly the envelopes that
    `store.unacked` lists, and then, if the queue is still live, long-polls
    with `wait_seconds` `limits.long_poll_seconds` and `max_envelopes`
@@ -300,7 +305,7 @@ sequenceDiagram
    a 240_000 ms deadline (`ack_deadline_ms`, `poll_deadline_ms`). A failure
    enters `BackingOff` with `backoff_ms` between 500 and 30_000.
 9. **Process.** `process_batch` hands each envelope to `engine.process`
-   (`daemon/engine.gleam:1035`). `handle_envelope` treats an envelope as a
+   (`daemon/engine.gleam:1037`). `handle_envelope` treats an envelope as a
    repeat only when its identifier and digest both match its `Processed`
    row; a repeat marks the row unacknowledged and delivers nothing. Any
    other envelope is counted (`store.count_attempt`), quarantined if the
@@ -351,8 +356,23 @@ outside the message path but uses the same machinery.
 - `api.invite` and `api.accept` exchange an invitation file, and
   `api.invite_ticket` and `api.accept_ticket` exchange a short ticket whose
   sealed invitation is held by the inviter's mailbox as a blob
-  ([ADR-009](../adr/009-invitation-tickets.md)). The ticket calls are the
-  only API calls that reach a mailbox from the caller's own process.
+  ([ADR-009](../adr/009-invitation-tickets.md)). The ticket calls and the
+  spoken-code calls below are the only API calls that reach a mailbox from
+  the caller's own process.
+- `api.invite_code`, `api.await_code` and `api.accept_code` pair by a code
+  read aloud ([ADR-016](../adr/016-spoken-pairing-codes.md)), and what the
+  run delivers is a ticket. The inviter checks its failure count, does
+  everything `invite_ticket` does, and opens a rendezvous slot at its own
+  mailbox from the caller's process; the run itself belongs to the
+  `pairing` registry, which closes the slot however the run ends, and
+  `await_code` waits for it. The joiner claims the slot by its nameplate at
+  its own mailbox or a named one, runs its half of the exchange in the
+  caller's process, and redeems the delivered ticket through
+  `accept_ticket`. The four messages live only in the slot at the mailbox
+  and in the two runs' memory. The one durable trace is a row per failed
+  confirmation in the daemon's `rendezvous_failures` table (schema 6),
+  written through the engine; three inside 24 hours refuse codes at that
+  endpoint.
 - A queue is first a committed inbox row. The provisioner (a one-state
   `weft/state_machine`) sends `CreateQueue` for committed inboxes using the
   32-byte provisioning capability stored at `<state-dir>/provision.cap` (or
@@ -385,8 +405,8 @@ rather than by a recovery routine.
   (spec §8.4).
 
 Both SQLite files use `journal_mode=WAL`, `synchronous=FULL`, `fullfsync=ON`
-and `checkpoint_fullfsync=ON` (`daemon/store.gleam:502`,
-`mailbox/store.gleam:288`), so a commit that returned is on disk. The table
+and `checkpoint_fullfsync=ON` (`daemon/store.gleam:505`,
+`mailbox/store.gleam:340`), so a commit that returned is on disk. The table
 lists where a crash can land and what finds the work afterwards.
 
 | Crash or loss point | Durable state at that moment | What resumes the work |
@@ -409,6 +429,21 @@ receiver commits each distinct envelope once. The formal models that check
 these interleavings are in [../formal/README.md](../formal/README.md), and
 the deterministic simulation of the same code is in [sim.md](sim.md).
 
+Pairing by spoken code is verified differently, and less. Its exchange is
+a ProVerif model ([../formal/crypto.md](../formal/crypto.md), "Spoken
+pairing codes"), a symbolic model of the design rather than of the code.
+Its arithmetic (Kemeleon, the nameplate's spelling, the word indices, the
+context framing, and the range of the Elligator 2 map) is proved in Lean
+of transcriptions that conformance vectors tie to the Gleam
+([../formal/lean.md](../formal/lean.md)); that the Elligator 2 output lies
+on the curve is tested, not proved. The PAKE is pinned by the drafts'
+vectors in `packages/primitives`, with ML-KEM's steps reproduced from
+their seeds by a test-only reference. There is no P or TLA+ model of the
+rendezvous, the P and TLA+ checks were not rerun for this work, and the
+simulation does not drive a rendezvous; the daemon's runs are tested
+against a scripted mailbox and end to end over loopback. No outside
+cryptographer has reviewed the design or the code.
+
 ## Concurrency summary
 
 | Process | Owns | Reached by |
@@ -419,9 +454,10 @@ the deterministic simulation of the same code is in [sim.md](sim.md).
 | `fetch_manager` | the map of running fetchers | `Nudge`, `Tick` |
 | `provisioner` | the next-scan timeout | `Nudge`, `scan` timeout |
 | `carrier` | the Tor handle and bootstrap state | dial requests, sidecar events |
+| `pairing` | the inviters' spoken-code runs and their recent outcomes, in memory | `Begin`, `Await`, run outcomes |
 | `lock`, `status`, `events` | the lock connection, the reachability cell, the subscriber list | their own messages |
 | `coordinator` (mailbox) | the mailbox `Store` | `mail.ask`, 30_000 ms timeout |
-| `notifier` (mailbox) | waiters by queue | `Wait`, `Notify`, `Forget` |
+| `notifier` (mailbox) | waiters by wake key: a queue, or a rendezvous reader | `Wait`, `Notify`, `Forget` |
 | connection process (mist, local API) | one request or one client connection | the socket |
 
 A timeout on an ask does not mean the callee left its state unchanged. The

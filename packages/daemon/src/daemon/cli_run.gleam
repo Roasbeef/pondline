@@ -23,6 +23,13 @@
 ////    invitation never reaches a terminal or a log. With `--ticket` it
 ////    prints the ticket instead (ADR-009): the short string is meant to be
 ////    copied, and standard output is the operator's own, not argv or a log.
+//// 5. `invite create --code` is the one command with two answers (ADR-016).
+////    `hand_out_code` prints the code through the `announce` function the
+////    moment the daemon opens the rendezvous, then waits for the run with a
+////    second request and reports how it ended. `invite accept --code` reads
+////    its code from a file, standard input or a prompt; `prepare_input`
+////    trims it and refuses one that is not a code before the daemon is
+////    asked, naming a word's position and never a word.
 ////
 //// The daemon command goes through `run_daemon`, which starts the runtime
 //// by way of the backend module, serves the local API and then waits
@@ -33,6 +40,7 @@ import core/endpoint.{TorOnly, TorOrLoopback}
 import core/grant
 import core/id
 import core/limits
+import core/pairing_code
 import core/secret
 import daemon/build
 import daemon/cli.{
@@ -51,6 +59,7 @@ import daemon/local_api_client.{CannotConnect, ConnectionFailed, MalformedReply}
 import daemon/local_api_protocol as protocol
 import daemon/lock
 import daemon/node
+import daemon/pairing
 import daemon/service
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -83,6 +92,24 @@ pub type Outcome {
 /// // -> Outcome(0, <<usage text>>, "")
 /// ```
 pub fn run(command: Command) -> Outcome {
+  run_with(command, announce)
+}
+
+/// Runs a command as `run` does, writing what must appear before the command
+/// ends through `announce`: a spoken code before `invite create --code`
+/// waits, and a code prompt before `invite accept --code` reads. A test
+/// passes its own to capture both.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_run.run_with(command, fn(stdout, stderr) { Nil })
+/// // -> Outcome(0, <<>>, "paired: ...")
+/// ```
+pub fn run_with(
+  command: Command,
+  announce: fn(BitArray, String) -> Nil,
+) -> Outcome {
   case command {
     Help -> Outcome(cli.exit_ok, <<cli.usage:utf8, "\n">>, "")
 
@@ -93,8 +120,18 @@ pub fn run(command: Command) -> Outcome {
     InitDaemon(init_cmd) -> run_init(init_cmd)
     RunDaemon(options) -> run_daemon(options)
     ManageService(cmd) -> run_service(cmd)
-    Client(target:, output:, action:) -> run_client(target, output, action)
+    Client(target:, output:, action:) ->
+      run_client(target, output, action, announce)
   }
+}
+
+/// Writes to standard output and standard error at once, ahead of the
+/// command's own answer. Standard output takes raw bytes, as `emit` writes
+/// them; a write that fails is the operator's terminal gone, and the
+/// command's final answer reports what it can.
+fn announce(stdout: BitArray, stderr: String) -> Nil {
+  let _ = ffi_local_system.write_stdout(stdout)
+  io.print_error(stderr)
 }
 
 /// Starts the runtime and the local API, announces the socket and waits.
@@ -270,7 +307,7 @@ fn materialize_and_save_config(
     ExplicitMailbox(mailbox:, provision_file:) ->
       read_explicit_provision(mailbox, provision_file)
     GrantMailbox(source:) -> {
-      use raw <- result.try(read_input(source))
+      use raw <- result.try(read_input(source, announce))
       decode_grant_token(raw)
     }
     SavedMailbox -> Error(failure(cli.exit_usage, "missing setup input"))
@@ -604,8 +641,13 @@ fn grant_decode_outcome(error: grant.GrantError) -> Outcome {
 }
 
 /// Runs one client command.
-fn run_client(target: Target, output: Output, action: Action) -> Outcome {
-  case attempt(target, output, action) {
+fn run_client(
+  target: Target,
+  output: Output,
+  action: Action,
+  announce: fn(BitArray, String) -> Nil,
+) -> Outcome {
+  case attempt(target, output, action, announce) {
     Ok(outcome) -> outcome
     Error(outcome) -> outcome
   }
@@ -616,14 +658,15 @@ fn attempt(
   target: Target,
   output: Output,
   action: Action,
+  announce: fn(BitArray, String) -> Nil,
 ) -> Result(Outcome, Outcome) {
   use Nil <- result.try(check_output_file(action))
   use credential <- result.try(
     credential.read(target.credential_file)
     |> result.map_error(failure(cli.exit_unauthorized, _)),
   )
-  use input <- result.try(read_input(cli.input_of(action)))
-  use Nil <- result.try(check_ticket_text(action, input))
+  use raw <- result.try(read_input(cli.input_of(action), announce))
+  use input <- result.try(prepare_input(action, raw))
   use resolved_action <- result.try(resolve_contacts_if_needed(
     target,
     output,
@@ -646,13 +689,163 @@ fn attempt(
     |> result.map_error(unreachable(_, target.socket)),
   )
 
-  // A refusal maps to its category's exit status, and a success is rendered.
+  // A refusal maps to its category's exit status; a code invite goes on to
+  // wait for its run; any other success is rendered.
+  case response, resolved_action {
+    protocol.Failed(category:, message:), _ ->
+      Ok(failed(output, line, category, message))
+
+    protocol.Succeeded(result:), CreateInvite(output: cli.SpokenCode, ..) ->
+      hand_out_code(target, secret.expose(credential), output, result, announce)
+
+    protocol.Succeeded(result:), _ ->
+      succeeded(output, resolved_action, line, result)
+  }
+}
+
+/// Prints the code the daemon answered with, at once, then waits for the
+/// run with a second request and reports how it ended (ADR-016). The code
+/// is the one secret this command prints, alone on standard output in
+/// human mode so a person can read it out and a script can capture it.
+fn hand_out_code(
+  target: Target,
+  credential_bytes: BitArray,
+  output: Output,
+  result: Dynamic,
+  announce: fn(BitArray, String) -> Nil,
+) -> Result(Outcome, Outcome) {
+  use invited <- result.try(
+    cli_render.code_invite(result)
+    |> result.map_error(failure(cli.exit_unavailable, _)),
+  )
+
+  // The code goes out before the wait, as a line of its own; in JSON mode
+  // the first answer is a response line, and the run's is the second.
+  case output {
+    JsonOutput ->
+      announce(
+        <<
+          protocol.success_json(
+            json.object([
+              #("run", json.string(invited.run)),
+              #("code", json.string(invited.code)),
+              #("expires_at", json.int(invited.expires_at)),
+            ]),
+          ):utf8,
+          "\n",
+        >>,
+        "",
+      )
+
+    HumanOutput ->
+      announce(
+        <<invited.code:utf8, "\n">>,
+        "waiting for the joiner to enter the code\n",
+      )
+  }
+
+  let #(op, args) = cli.await_code_request(invited.run)
+  use #(line, response) <- result.try(
+    local_api_client.exchange(
+      target.socket,
+      credential_bytes,
+      op,
+      args,
+      cli.code_wait_timeout_ms,
+    )
+    |> result.map_error(unreachable(_, target.socket)),
+  )
+
+  // A refusal maps to its category's exit status; an answer is an outcome.
   case response {
     protocol.Failed(category:, message:) ->
       Ok(failed(output, line, category, message))
 
-    protocol.Succeeded(result:) ->
-      succeeded(output, resolved_action, line, result)
+    protocol.Succeeded(result:) -> code_outcome(output, Inviting, line, result)
+  }
+}
+
+/// Which side of a spoken-code pairing a command is, for its messages.
+type Side {
+  Inviting
+  Joining
+}
+
+/// What a spoken-code run's outcome means for the command: paired exits 0,
+/// every other ending exits as a refusal with the operator's next step. In
+/// JSON mode the response line is printed as it came.
+fn code_outcome(
+  output: Output,
+  side: Side,
+  line: String,
+  result: Dynamic,
+) -> Result(Outcome, Outcome) {
+  use outcome <- result.try(
+    cli_render.code_outcome(result)
+    |> result.map_error(failure(cli.exit_unavailable, _)),
+  )
+
+  // Only a paired run succeeded; every ending is a refusal to report.
+  let status = case outcome {
+    cli_render.CodePaired(..) -> cli.exit_ok
+    cli_render.CodeNeverClaimed
+    | cli_render.CodeStalled
+    | cli_render.CodeConfirmationFailed -> cli.exit_refused
+  }
+
+  // JSON carries the outcome itself; human output says it and what to do.
+  case output {
+    JsonOutput -> Ok(Outcome(status, <<line:utf8, "\n">>, ""))
+    HumanOutput -> Ok(describe_outcome(side, outcome, status))
+  }
+}
+
+/// The human account of a spoken-code run's outcome. A joiner that paired
+/// prints its contact as `invite accept` always has.
+fn describe_outcome(
+  side: Side,
+  outcome: cli_render.CodeOutcome,
+  status: Int,
+) -> Outcome {
+  case side, outcome {
+    Joining, cli_render.CodePaired(contact: Some(contact)) ->
+      Outcome(status, <<contact:utf8, "\n">>, "")
+
+    Inviting, cli_render.CodePaired(..)
+    | Joining, cli_render.CodePaired(None)
+    ->
+      Outcome(
+        status,
+        <<>>,
+        "paired: the joiner has the invitation; it appears in contacts once it connects",
+      )
+
+    _, cli_render.CodeNeverClaimed ->
+      failure(status, "the code expired before anyone used it; make a new code")
+
+    Inviting, cli_render.CodeStalled ->
+      failure(
+        status,
+        "the other side stopped before the exchange finished; make a new code",
+      )
+
+    Joining, cli_render.CodeStalled ->
+      failure(
+        status,
+        "the other side stopped before the exchange finished; ask for a new code",
+      )
+
+    Inviting, cli_render.CodeConfirmationFailed ->
+      failure(
+        status,
+        "the code did not match; make a new code and read it out again",
+      )
+
+    Joining, cli_render.CodeConfirmationFailed ->
+      failure(
+        status,
+        "the code did not match, or the exchange was interrupted; ask for a new code",
+      )
   }
 }
 
@@ -747,11 +940,15 @@ fn not_found_outcome(output: Output, message: String) -> Outcome {
   failed(output, encoded_line, protocol.NotFound, message)
 }
 
-/// Refuses a ticket input that is not text before the daemon is asked. A
-/// ticket is ASCII, so such input is usually an invitation file given
-/// without dropping `--ticket`; the refusal does not repeat it.
-fn check_ticket_text(action: Action, input: BitArray) -> Result(Nil, Outcome) {
-  // Only a ticket accept reads its input as text.
+/// Checks a command's input before the daemon is asked, and returns what
+/// to send. A ticket that is not text is refused: a ticket is ASCII, so
+/// such input is usually an invitation file given without dropping
+/// `--ticket`. A spoken code is trimmed of the whitespace a terminal or a
+/// file leaves around it and must then decode, strictly (ADR-016): a typo
+/// refused here never reaches the rendezvous and spends nothing. Neither
+/// refusal repeats the input.
+fn prepare_input(action: Action, input: BitArray) -> Result(BitArray, Outcome) {
+  // Only a ticket or a code accept reads its input as text.
   case action, bit_array.to_string(input) {
     cli.AcceptInvite(form: cli.FromTicket, ..), Error(Nil) ->
       Error(failure(
@@ -759,7 +956,23 @@ fn check_ticket_text(action: Action, input: BitArray) -> Result(Nil, Outcome) {
         "the ticket is not text; an invitation file is accepted without --ticket",
       ))
 
-    _, _ -> Ok(Nil)
+    cli.AcceptInvite(form: cli.FromCode(..), ..), Error(Nil) ->
+      Error(failure(cli.exit_refused, "the code is not text"))
+
+    cli.AcceptInvite(form: cli.FromCode(..), ..), Ok(text) -> {
+      let trimmed = string.trim(text)
+
+      pairing_code.decode(trimmed)
+      |> result.map(fn(_) { <<trimmed:utf8>> })
+      |> result.map_error(fn(error) {
+        failure(
+          cli.exit_refused,
+          "the code is not valid: " <> pairing.describe_code_error(error),
+        )
+      })
+    }
+
+    _, _ -> Ok(input)
   }
 }
 
@@ -783,11 +996,27 @@ fn check_output_file(action: Action) -> Result(Nil, Outcome) {
   }
 }
 
-/// Reads a command's one input, bounded.
-fn read_input(input: Input) -> Result(BitArray, Outcome) {
+/// Reads a command's one input, bounded. A prompt is written through
+/// `announce` and answered by one line of standard input.
+fn read_input(
+  input: Input,
+  announce: fn(BitArray, String) -> Nil,
+) -> Result(BitArray, Outcome) {
   // Each input source reads differently, and none is read without a bound.
   case input {
     NoInput -> Ok(<<>>)
+
+    cli.InputPrompt -> {
+      announce(<<>>, "pairing code: ")
+
+      ffi_local_system.read_stdin_line(limits.max_pairing_code_bytes * 4)
+      |> result.map_error(fn(reason) {
+        case reason {
+          "too_large" -> failure(cli.exit_refused, "the code is too long")
+          _ -> failure(cli.exit_local, "could not read standard input")
+        }
+      })
+    }
 
     InputStdin ->
       ffi_local_system.read_stdin(limits.max_body_bytes)
@@ -878,6 +1107,9 @@ fn succeeded(
     CreateInvite(output: handed, ..), _ ->
       hand_out_invitation(output, handed, result)
 
+    cli.AcceptInvite(form: cli.FromCode(..), ..), _ ->
+      code_outcome(output, Joining, line, result)
+
     _, JsonOutput -> Ok(Outcome(cli.exit_ok, <<line:utf8, "\n">>, ""))
 
     _, _ ->
@@ -913,6 +1145,10 @@ fn hand_out_invitation(
       use _ <- result.try(save_invitation(output, path, result))
       Ok(ticket_outcome(output, ticket, Some(path)))
     }
+
+    // `attempt` hands a code invite to `hand_out_code` before it gets here.
+    cli.SpokenCode ->
+      Error(failure(cli.exit_unavailable, "the daemon sent a malformed result"))
   }
 }
 

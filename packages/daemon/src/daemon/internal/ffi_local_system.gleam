@@ -39,6 +39,13 @@ pub fn write_stdout(bytes: BitArray) -> Result(Nil, String)
 @external(erlang, "daemon_local_ffi", "read_stdin")
 pub fn read_stdin(max: Int) -> Result(BitArray, String)
 
+/// Reads one line from standard input, newline included, for a prompt. An
+/// empty answer means standard input ended. The error is `too_large` when
+/// the line is longer than `max` bytes. `gleam_stdlib` and `gleam_erlang`
+/// read nothing from standard input, so this is the shim's `file:read_line`.
+@external(erlang, "daemon_local_ffi", "read_stdin_line")
+pub fn read_stdin_line(max: Int) -> Result(BitArray, String)
+
 /// The value of an environment variable.
 @external(erlang, "daemon_local_ffi", "getenv")
 pub fn getenv(name: String) -> Result(String, Nil)

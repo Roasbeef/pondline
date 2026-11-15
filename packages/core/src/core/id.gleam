@@ -46,6 +46,12 @@ pub type Invitation
 /// ticket's holder and the inviter can name it.
 pub type Blob
 
+/// A short-lived rendezvous slot at a mailbox where two daemons pairing by
+/// a spoken code exchange their messages (ADR-016). The inviter draws it,
+/// and it doubles as the PAKE's session identifier, so it is chosen by a
+/// client rather than allocated by the mailbox.
+pub type Rendezvous
+
 /// Builds an identifier from exactly `id_bytes` bytes, which a caller
 /// draws from the injected randomness source or decodes from the wire.
 ///

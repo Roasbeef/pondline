@@ -3,10 +3,14 @@
 //// bag of named fields, so a test module decides for itself which fields
 //// the primitive under test consumes.
 ////
-//// The files are produced by `test/vectors/trim.py` from the upstream
-//// Wycheproof and NIST ACVP repositories at the commit each file records,
-//// and each keeps the upstream `tcId`, so a failure names a case that can
-//// be looked up upstream. Every lookup here uses `let assert`: a vector
+//// The Wycheproof and NIST ACVP files are produced by `test/vectors/trim.py`
+//// from the upstream repositories at the commit each file records, and
+//// each keeps the upstream `tcId`, so a failure names a case that can be
+//// looked up upstream. The spoken-code PAKE's fixtures (ADR-016) are not
+//// `trim.py`'s: they were extracted from the CPace and pqpake draft texts
+//// by scripts kept outside the repository, and
+//// `cpace_oquake_rendezvous_schedule.json` was computed by an independent
+//// script, not taken from a draft. Every lookup here uses `let assert`: a vector
 //// file that does not decode is a broken fixture, and a test should stop
 //// on it rather than pass vacuously.
 

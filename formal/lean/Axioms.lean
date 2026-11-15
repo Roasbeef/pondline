@@ -58,3 +58,50 @@ open Pondline
 #print axioms span_lower_bound
 #print axioms day_outage_five_copies
 #print axioms span_inside_retention
+
+-- Kemeleon (ADR-016).
+#print axioms Kemeleon.span_lt_ceiling
+#print axioms Kemeleon.ceiling_eq
+#print axioms Kemeleon.vector_bits_tight
+#print axioms Kemeleon.encoded_width
+#print axioms Kemeleon.range_large
+#print axioms Kemeleon.encodedValue_lt
+#print axioms Kemeleon.draft_bound_overflows
+#print axioms Kemeleon.range_eq_draftRange
+#print axioms Kemeleon.vector_round_trip
+#print axioms Kemeleon.round_trip
+#print axioms Kemeleon.decode_total
+#print axioms Kemeleon.decode_then_encode
+#print axioms Kemeleon.encoding_injective
+#print axioms Kemeleon.encoding_image
+#print axioms Kemeleon.encoding_bijective
+#print axioms Kemeleon.range_bounds
+
+-- Nameplates.
+#print axioms Nameplate.fromInt_some_iff
+#print axioms Nameplate.toString_digits
+#print axioms Nameplate.parse_toString
+#print axioms Nameplate.parse_isSome_iff
+#print axioms Nameplate.parse_canonical
+
+-- Word indices.
+#print axioms PairingCode.bytesDrawn_eq
+#print axioms PairingCode.indices_eq
+#print axioms PairingCode.split_lt
+#print axioms PairingCode.join_split
+#print axioms PairingCode.split_join
+#print axioms PairingCode.indices_preimage
+
+-- PAKE framing.
+#print axioms PakeCommon.lvEncode_prefix
+#print axioms PakeCommon.lvEncode_none_iff
+#print axioms PakeCommon.framePart_prefix
+#print axioms PakeCommon.encodePublicContext_prefix
+#print axioms PakeCommon.publicContext_injective
+#print axioms PakeCommon.rendezvousContext_injective
+
+-- Elligator 2.
+#print axioms Elligator2.constants
+#print axioms Elligator2.mapToCurve_range
+#print axioms Elligator2.mapToCurve_neg
+#print axioms Elligator2.mapToCurve_periodic

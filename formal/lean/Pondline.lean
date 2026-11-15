@@ -5,3 +5,8 @@ import Pondline.TlvDecode
 import Pondline.Padding
 import Pondline.Retention
 import Pondline.Retransmit
+import Pondline.Kemeleon
+import Pondline.Nameplate
+import Pondline.PairingCode
+import Pondline.PakeCommon
+import Pondline.Elligator2

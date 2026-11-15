@@ -7,9 +7,12 @@ leaked invitation, and against a set of deliberately broken variants that
 each have to produce an attack. Underneath, every primitive the profile
 uses is run against the published Wycheproof and NIST ACVP vectors through
 the `primitives` API the protocol actually calls. The sealed invitation of
-ADR-009 has a model of its own, built the same way.
+ADR-009 and pairing by spoken code (ADR-016) each have a model of their
+own, built the same way.
 
-The verdict: `check.sh` exits 0, with all 30 rows matching.
+The verdict: `check.sh` exits 0, with all 58 rows matching: the 30
+handshake and ticket rows, and the 28 rendezvous rows, which were added
+later and run on their own (see that section).
 
 Every property the profile claims for the handshake holds in every scenario
 where it should, and fails where it should not (a leaked invitation lets its
@@ -442,6 +445,287 @@ party), one stored blob can be opened to two different invitations under
 the two tickets unless the commitment is checked. ProVerif finds that
 attack when and only when the commitment check is removed.
 
+## Spoken pairing codes (rendezvous, ADR-016)
+
+`formal/crypto/rendezvous.pv.in` models the exchange ADR-016 decides:
+CPaceOQUAKE (`draft-vos-cfrg-pqpake-03` section 7) between a joiner, the
+draft's client, and an inviter, its server, at a rendezvous mailbox, then
+the hand-off of a ticket under the PAKE's session key. The model was
+written from the ADR and the draft before the code; the code now exists,
+in `core/crypto/cpace_oquake` (the PAKE), `core/rendezvous` (the steps and
+the schedule) and `daemon/pairing` (the run at the mailbox). The code
+carries the derivations the model abstracts, the check of `confirm_J`
+before release, and the ticket minted and stored before the run. Two of its rules the model cannot represent,
+because a process here runs each step once on whatever message it
+receives: that each side acts only on the first message at each index,
+and that `m4` is sealed once and resent as the same bytes. Both are
+enforced in the daemon and tested there, not proved here. The 28 `rv_` rows run in 0 to 4 seconds each.
+
+### What is modelled
+
+The four messages of the ADR's diagram, with every derivation of its
+"Explicit confirmation is ours" block and of the draft's sections 6.1,
+6.2, 6.3, 7.2 to 7.4 and Appendix B:
+
+- **CPace** (Appendix B). The generator is `gen(PRS, public_context)`,
+  public, so the attacker computes it for any candidate; `Ya` and `Yb` are
+  `exp(g, ya)` and `exp(g, yb)`; `key1` is the ISK over the context, the
+  point and both shares; `th1` is `TH("CPace", context, Ya, Yb)`.
+- **OQUAKE**, inviter as initiator (6.1, 7.2): a fresh ML-KEM key, its `ut`
+  part masked under `ePRS = KDF(PRS, th1, key1)` with `rho` in the clear;
+  the joiner unmasks, encapsulates to `Combine(ut, rho)`, and derives `prk`
+  over `ePRS, T, rho, pk, ct, k`, then `h` and `key2` (6.2); the inviter's
+  Finish gives a random `key2` when `h` does not match (6.3), exactly as
+  the draft says, rather than an error.
+- **The combiner and the ADR's schedule**: `session = KDF(key2, th, key1)`
+  with `th` the OQUAKE transcript hash over `th1`; `confirm_J =
+  HMAC(confirm_key(session), th)`; `m4 = AEAD(handoff_key(session),
+  "Handoff_v1" || th, ticket)`. The inviter checks `confirm_J` before it
+  releases `m4`; the joiner accepts the ticket only if `m4` opens.
+- **The context.** The mailbox draws the nameplate (the attacker supplies
+  it), the inviter draws `sid`, and the joiner receives both from the
+  mailbox, so the attacker can hand the joiner a context of its choosing.
+  The context feeds the generator, the ISK and `th1`, as the ADR's
+  `public_context` does through CPace's `sid`.
+- **The ticket** is a fresh secret the inviter mints before the run. What
+  follows it is the ticket model above and is not repeated.
+
+The attacker is the network and the mailbox: it drops, reorders and
+forges every message, chooses the nameplate and the context the joiner
+sees, and plays either role under passwords and generators of its own.
+Honest parties run unboundedly many sessions, on one free password `PW`
+(the weak secret Q1 is about) and on unboundedly many fresh passwords, each
+shared by unboundedly many inviter and joiner sessions. Reusing a password
+across runs gives the attacker more than the ADR's one run per code, so a
+proof here covers the one-run case.
+
+### Scenarios
+
+| Macro | The attacker can |
+| --- | --- |
+| `BREAK_DH` | learn the CPace point of every honest computation (an over-approximation of a discrete-log break; see below) |
+| `DH_ORACLE` | compute, under any candidate generator, the CDH of any two shares: the discrete-log break as the brief states it |
+| `BREAK_KEM` | decapsulate any ciphertext made to a real ML-KEM key, and tell a real ML-KEM `ut` (with its `rho`) from a random string: what an MLWE break gives against the Kemeleon masking |
+| `REVEAL_PW` | learn every password after every run has ended (phase 1): a recorded run whose code is later known |
+
+**Why there are two DH breaks.** A DH break has to be modelled with care,
+because in a weak-secret query any destructor that behaves differently
+under a right and a wrong guess is a password test. A real discrete-log
+oracle answers under every base, so a CDH destructor that *failed* on a
+wrong generator, or that answered a term the attacker could also build,
+would be a test no real break gives. The first version of `DH_ORACLE`
+made the wrong-generator answer a public constructor, and ProVerif duly
+found that false attack; the answer is now private, and where the attacker
+made one share under the named base itself, the oracle answers the point
+the attacker can compute anyway. Under `DH_ORACLE`, ProVerif finds every
+weak-secret attack and proves every trace query in seconds, but it does not
+finish a weak-secret *proof*. Two forms were tried, the destructor with
+`otherwise` clauses and a constructor with two rewrite equations; both stop
+growing at about 15 000 clauses with hundreds of termination warnings on
+the disequalities over `gen(PW, ...)` and ran past 14 and 4 minutes of CPU
+respectively before being stopped. The textbook encoding, one `exp` with
+the commutativity equation over a variable base, does not get past
+ProVerif's completion of the equational theory (seven minutes at
+"Completing equations").
+
+So the weak-secret proofs under a DH break use `BREAK_DH`: every honest
+party publishes the CPace point it computes, at the moment it computes it.
+The argument that this is at least as strong as the oracle is as follows.
+For an honest pair of shares, the oracle yields the point only under the
+right generator, which is the right guess, and publishing hands over that
+same point without a guess. For a point an honest party computes against a
+share the attacker made, the oracle also needs the right generator, and
+publishing gives the point outright. What the oracle gives beyond that, its
+answers under wrong generators, are points unrelated to anything an honest
+party uses. And the published point is the same term whichever password
+the weak-secret query substitutes afterwards, so publishing is no password
+test in itself. This is an argument, not something ProVerif checks, and it
+is the abstraction in this model a reader has to accept. The `rv_oracle_`
+rows run the faithful oracle where it terminates. Every `BREAK_DH` row
+that shows an attack has an oracle row that shows one too (on Q1 rather
+than Q2 to Q4 for `NO_KEY2`, explained below), and Q2 to Q4 are proved
+under it.
+
+The Diffie-Hellman points are oriented as in the handshake model:
+`dhpt(X, Y)` with the joiner-side share on the left, computed by `dhl`
+from the joiner's exponent or by `dhr` from the inviter's. A reflection
+that used one joiner's share as another joiner's peer share cannot be
+represented. No such run reaches an inviter's events, because only an
+inviter sends OQUAKE's first message.
+
+### Queries
+
+| | Property | Query |
+| --- | --- | --- |
+| Q1 | the code resists offline guessing | `weaksecret PW` |
+| Q2 | the released ticket is secret | `event(InviterReleases(p,x,th,t)) && attacker(t)` is unreachable |
+| Q3 | the inviter releases only to a joiner with the same password, context and transcript, injectively | `inj-event(InviterReleases(p,x,th,t)) ==> inj-event(JoinerConfirms(p,x,th))` |
+| Q4 | the joiner accepts only a ticket an inviter with the same password and context released in that transcript, injectively | `inj-event(JoinerAccepts(p,x,th,t)) ==> inj-event(InviterReleases(p,x,th,t))` |
+| R1 | an inviter releases on `PW` | `event(InviterReleases(PW,x,th,t))`, expected reachable (`F`) |
+| R2 | a joiner accepts on `PW` | `event(JoinerAccepts(PW,x,th,t))`, expected reachable (`F`) |
+
+R1 and R2 are the vacuity checks: in every row both events are reached,
+and with Q4 proved, R2's reachability is a full honest run in which the
+inviter's release and the joiner's acceptance match. `NO_Q1` drops Q1 for
+the `DH_ORACLE` row that checks the other properties, which then has five
+letters.
+
+### Results
+
+| Row | Macros | Q1 | Q2 | Q3 | Q4 | R1 | R2 | Seconds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `rv_base` | | T | T | T | T | F | F | 4 |
+| `rv_break_dh` | `BREAK_DH` | T | T | T | T | F | F | 4 |
+| `rv_break_kem` | `BREAK_KEM` | T | T | T | T | F | F | 4 |
+| `rv_break_both` | `BREAK_DH BREAK_KEM` | F | T | T | T | F | F | 2 |
+| `rv_oracle_dh` | `DH_ORACLE NO_Q1` | | T | T | T | F | F | 2 |
+| `rv_oracle_both` | `DH_ORACLE BREAK_KEM` | F | T | T | T | F | F | 4 |
+| `rv_reveal` | `REVEAL_PW` | F | T | T | T | F | F | 1 |
+| `rv_reveal_dh` | `REVEAL_PW BREAK_DH` | F | T | T | T | F | F | 2 |
+| `rv_reveal_kem` | `REVEAL_PW BREAK_KEM` | F | T | T | T | F | F | 3 |
+| `rv_reveal_both` | `REVEAL_PW BREAK_DH BREAK_KEM` | F | F | T | T | F | F | 3 |
+| `rv_oracle_reveal_both` | `DH_ORACLE REVEAL_PW BREAK_KEM` | F | F | T | T | F | F | 3 |
+
+The faithful rows, read in protocol terms:
+
+- **The hybrid claim holds.** The code resists offline guessing with
+  nothing broken, with the DH break alone and with the MLWE break alone,
+  and falls when both are broken (`rv_break_both`, and under the faithful
+  oracle `rv_oracle_both`). The trace: the attacker claims the slot, sends
+  one `m1` under a generator of its own, takes the inviter's `m2` and
+  abandons the run; offline, for each candidate it computes the CPace
+  point (the oracle under that candidate's generator), then `key1`,
+  `ePRS`, unmasks `T`, and asks the MLWE distinguisher whether the result
+  is an ML-KEM key. A passive recording serves equally.
+- **The ticket and both authentication properties hold under each break,
+  and under both.** Q2 to Q4 stay true in `rv_break_both`, but only
+  because a symbolic attacker never guesses: a `false` in Q1 means that in
+  reality a 33-bit code falls, and every other property with it. Read Q2 to
+  Q4 under both breaks as statements about an attacker that has not yet
+  found the code.
+- **A recorded run stays sealed when its code later becomes known**, with
+  either primitive intact (`rv_reveal_dh`, `rv_reveal_kem`: Q2 true; Q1 is
+  trivially false once the code is published). With both broken the ticket
+  falls (`rv_reveal_both`, `rv_oracle_reveal_both`): the trace is passive,
+  the code arrives in phase 1, the oracle under the right generator gives
+  `key1`, decapsulation gives `key2`, and `m4` opens. This is the draft's
+  section 11.3 statement for a harvested transcript, made for the ticket.
+
+### Broken variants
+
+| Row | Mutation | Scenario | Attack found | Q1 | Q2 | Q3 | Q4 | Seconds |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `rv_parallel_kem` | OQUAKE on the raw password and the application's context (parallel composition) | MLWE broken | yes: one `m2` from the inviter; offline, `ePRS` of each candidate unmasks `T` and the distinguisher tests it | F | T | T | T | 0 |
+| `rv_parallel_dh` | same | DH broken | no: CPace hides the code unconditionally, and OQUAKE's masking holds without the MLWE break | T | T | T | T | 1 |
+| `rv_no_kemeleon` | the unmasked `ut` is recognisable without a break | nothing broken | no: `ePRS` needs `key1`, which needs the CPace point | T | T | T | T | 2 |
+| `rv_no_kemeleon_dh` | same | DH broken | yes: the trace of `rv_break_both`, with recognition in place of the MLWE break | F | T | T | T | 2 |
+| `rv_oracle_no_kemeleon` | same | DH oracle | yes, the same trace through the oracle | F | T | T | T | 4 |
+| `rv_no_confirm` | the inviter does not check `confirm_J` and reads `h` as Finish does | nothing broken | yes: the attacker plays joiner under its own generator, sends arbitrary `ct, h, confirm_J`, and the inviter releases `m4` under a random `key2`; the ticket stays sealed, but a release happens with no matching joiner | T | T | F | T | 4 |
+| `rv_h_verdict` | as above, but the inviter aborts when `h` does not match | nothing broken | no | T | T | T | T | 3 |
+| `rv_h_verdict_dh` | same | DH broken | no | T | T | T | T | 3 |
+| `rv_h_verdict_kem` | same | MLWE broken | no | T | T | T | T | 3 |
+| `rv_no_key2` | the session key omits OQUAKE's `key2` | nothing broken | no | T | T | T | T | 2 |
+| `rv_no_key2_dh` | same | DH broken (published points) | yes: the published point gives `key1`, so the session key, `confirm_J` and `m4`, with no guess at all | T | F | F | F | 3 |
+| `rv_oracle_no_key2` | same | DH oracle | yes: the attacker plays inviter under its own generator and records the joiner's `confirm_J`; offline, the oracle under each candidate's generator gives the joiner's point, so `key1`, the session key and `confirm_J`, compared with the recorded one | F | T | T | T | 4 |
+| `rv_no_key1_dh` | the session key omits CPace's `key1` | DH broken | no | T | T | T | T | 3 |
+| `rv_no_key1_kem` | same | MLWE broken | no | T | T | T | T | 3 |
+| `rv_no_th_dh` | the session key, `confirm_J` and `m4`'s associated data omit `th` | DH broken | no | T | T | T | T | 2 |
+| `rv_no_th_kem` | same | MLWE broken | no | T | T | T | T | 2 |
+| `rv_no_context` | the nameplate and `sid` are bound into neither the generator nor `key1` nor `th1` | nothing broken | yes: the mailbox hands the joiner a nameplate and `sid` other than the inviter's, and both complete, each believing in its own context | T | T | F | F | 2 |
+
+R1 and R2 are `F` (reachable) in every one of these rows, so no `T`
+above is vacuous.
+
+The two DH encodings disagree only on `rv_no_key2`, and both are right
+about the real attack. Without `key2`, a DH break alone is enough to test
+the code offline against `confirm_J` and then open the ticket. The oracle
+shows the offline test, Q1. The published point skips the guess and shows
+the ticket, Q2 to Q4, because it hands over the point that only the right
+guess would give.
+
+### Findings
+
+1. **The model confirms the hybrid claim and found no flaw in the
+   ADR's design** (confirmation). Under the stated abstractions the code
+   resists offline guessing unless both X25519 and ML-KEM fall; a recorded
+   run's ticket survives a later-known code unless both fall; and Q3 and Q4
+   hold in every scenario.
+2. **Sequential composition is what the hybrid claim rests on, and
+   Kemeleon is what makes it hybrid** (informational, sharpens the ADR's
+   "Why"). The parallel variant falls under the MLWE break alone. Without
+   Kemeleon the password does *not* fall with nothing broken, contrary to
+   the intuition for plain OQUAKE: `ePRS` is keyed by CPace's key, so the
+   attacker cannot unmask anything to recognise. It falls under the DH
+   break alone. Kemeleon is load-bearing in exactly one case, the one the
+   hybrid claim exists for: a discrete-log break with ML-KEM intact.
+3. **`key2` is the one binding in the session key whose removal turns into
+   an attack, and it takes only a DH break** (informational). `key1` in the
+   combiner and `th` in the session key, `confirm_J` and the associated data
+   of `m4` are each redundant symbolically: `ePRS` already carries `key1`
+   and `th1`, and OQUAKE's `prk` carries its own transcript. They cost
+   nothing and the draft's proof uses them, so this changes nothing; it
+   says which line to guard in review. The derivation of `m4`'s key from a
+   session key that contains `key2` is the line that makes the hand-off
+   post-quantum.
+4. **`confirm_J` is necessary given the draft's Finish, and would be
+   redundant if `h` were a verdict** (informational, confirms the ADR's
+   "Explicit confirmation is ours"). With the draft's random-key Finish,
+   dropping `confirm_J` lets an attacker trigger a release with no matching
+   joiner (`rv_no_confirm`, Q3 false). An inviter that aborted on a
+   mismatched `h` instead would be just as safe in every scenario here.
+   Either check works; reading Finish's output as a verdict, with neither
+   check, does not.
+5. **Binding the nameplate and `sid` is what makes both sides agree on the
+   rendezvous** (low, confirms the ADR). Without it, a mailbox can complete
+   a run in which the joiner believes in a different slot than the inviter.
+   The ADR's length prefix on the nameplate, from the addendum, cannot be
+   seen here: symbolic tuples are unambiguous by construction.
+6. **A stalled run is not a spent guess, and the model agrees, except
+   when both primitives are broken** (confirms the ADR's failure
+   classification). In every single-break scenario, an attacker who
+   claims, sends `m1`, takes `m2` and stops learns nothing it can test
+   offline, so counting only confirmation failures loses nothing. With both
+   broken, that stalled run is an offline dictionary attack the failure cap
+   never sees. This is outside the hybrid claim, and a passive recording
+   would do the same, but it is the reason the cap is no defence once both
+   assumptions have fallen.
+
+### What the model does not show
+
+- **Online guessing.** A symbolic model cannot say that one online guess
+  succeeds with probability 2^-33, cannot count guesses, and cannot prove
+  the computational hybrid bound. `weaksecret` shows resistance to
+  *offline* guessing only. The bounds on online guessing are the state
+  machines' job (one run per code, the failure count of three in 24 hours)
+  and are out of this model's scope, as is the mailbox's two guesses per
+  run, which the ADR's Consequences derive.
+- **Q2 to Q4 assume an unguessed code.** A symbolic attacker never guesses
+  a password, so those queries hold for an attacker that has not found the
+  code; wherever Q1 is false, they fall in reality.
+- **The DH break under weak-secret proofs is the published-point
+  over-approximation**, argued above, not the oracle. The oracle confirms
+  every attack and every trace property but not the weak-secret proofs.
+- **Abstractions**: the Feistel is an ideal tweakable cipher without
+  redundancy, keyed by `ePRS` and tweaked by `rho`, with `(s, T)` as one
+  ciphertext; Kemeleon is the absence of the distinguisher, not a
+  statistical encoding; the KEM is perfectly binding, with implicit
+  rejection; hashes, HKDF, HMAC and the AEAD are ideal, and each
+  Extract-then-Expand is one symbol; the AEAD key and nonce are one
+  symbol, so "`m4` is sealed once" (nonce reuse under two plaintexts) is
+  not representable; CPace's identity-point check and the encodings,
+  lengths and DSTs are not modelled; the X25519 points are oriented (above).
+- **Out of scope by the brief**: the nameplate lifecycle, slot expiry and
+  claim races (a later P model); everything after the ticket (the ticket
+  model and the handshake model); timing, which the ADR's own argument
+  covers.
+
+`check.sh -j 3 -k` exits 0 on the 28 `rv_` rows. The new rows were added
+without changing the script's mechanism, and a separate run of the
+existing rows `base` and `ticket_leak_nc_no_commit` matched unchanged. Changing `rendezvous.pv.in` when the ADR changes: a new
+input to a derivation is a change to the macro or the line for it (`EPRS`,
+`SESSION`, `BOUND_TH`, `BOUND_CTX`), and the mutation rows say which
+property each binding carries.
+
 ## Vectors
 
 Every file under `packages/primitives/test/vectors/` records its upstream
@@ -450,8 +734,8 @@ repository, commit, path and the SHA-256 of the upstream file;
 `primitives` module (`primitives.gleam`), never through `crypto:`
 directly, so a vector that passes is a statement about the function the
 protocol calls, including the Erlang shim's size guards and exception
-catching (`primitives_ffi.erl:50`, `primitives_ffi.erl:66`,
-`primitives_ffi.erl:85`, `primitives_ffi.erl:106`, `primitives_ffi.erl:124`).
+catching (`primitives_ffi.erl:58`, `primitives_ffi.erl:74`,
+`primitives_ffi.erl:93`, `primitives_ffi.erl:114`, `primitives_ffi.erl:132`).
 
 Wycheproof, `C2SP/wycheproof` at `d17cc89fa5c8f4f4d378b5385ebf75da5d0926c9`
 (`testvectors_v1/`):
@@ -478,8 +762,13 @@ NIST ACVP, `usnistgov/ACVP-Server` at
 
 What the ACVP suites cannot reach through this binding: ML-KEM key
 generation from `(d, z)` and encapsulation from `m` (OTP exposes neither
-seed), so the keyGen `ek`/`dk` pair and the encapsulation `c`/`k` pair are
-checked by using them rather than by regenerating them; ML-DSA key
+seed), so through the binding the keyGen `ek`/`dk` pair and the
+encapsulation `c`/`k` pair are checked by using them rather than by
+regenerating them. A test-only FIPS 203 reference
+(`packages/primitives/test/primitives/mlkem_reference.gleam`) does
+regenerate both byte for byte (`mlkem_reference_test`), which is what
+lets the pqpake-03 vectors' ML-KEM steps be reproduced from their seeds;
+it is not the production implementation and is not in a release; ML-DSA key
 generation from a seed and deterministic signing (OTP 29 raises on a seed
 and OpenSSL signs hedged), so no NIST signature is reproduced byte for
 byte; ML-DSA with a non-empty context, the pre-hash interface and the
@@ -608,14 +897,14 @@ would want to know them.
    that compared Ed25519 keys on their own (a directory, a pin) would
    have to revisit this.
    Evidence: 29 `acceptable` cases of `ed25519_test.json`, pinned through
-   `ed25519_verify`, `primitives_ffi.erl:66`.
+   `ed25519_verify`, `primitives_ffi.erl:74`.
 7. **X25519 accepts non-canonical public key encodings** (informational,
    pinned). RFC 7748 masks the top bit and reduces, and OpenSSL does; the
    fingerprint hashes the encoding, so two encodings of one key are two
    identities with one agreement key, which an attacker cannot use
    without the secret.
    Evidence: the `acceptable` `NonCanonicalPublic` cases of
-   `x25519_test.json`, pinned through `x25519`, `primitives_ffi.erl:50`.
+   `x25519_test.json`, pinned through `x25519`, `primitives_ffi.erl:58`.
 8. **The spec's `join_secret` is unimplemented** (documentation; see
    difference 1). Nothing to change in the code.
    Evidence: the module doc of `invitation.gleam:5`, and row `base`, where

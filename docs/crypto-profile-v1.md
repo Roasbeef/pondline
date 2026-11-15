@@ -23,6 +23,7 @@ PQXDH and Double Ratchet, specialised. The profile is not yet frozen
 | Signatures (post-quantum half) | ML-DSA-65 (FIPS 204, pure, empty context, hedged signing) | public key 1952, secret key 4032 (OpenSSL's expanded form), signature 3309 |
 | Post-quantum KEM | ML-KEM-1024 (FIPS 203) | encapsulation key 1568, decapsulation key 3168 (OpenSSL's expanded form), ciphertext 1568, shared secret 32 |
 | Hash | SHA-256 (FIPS 180-4) | 32 |
+| Hash (CPace only, §12) | SHA-512 (FIPS 180-4) | 64 |
 | MAC | HMAC-SHA-256 (RFC 2104) | 32 |
 | KDF | HKDF-SHA-256 (RFC 5869) | up to 8160 |
 | AEAD | ChaCha20-Poly1305 (RFC 8439) | key 32, nonce 12, tag 16 |
@@ -290,6 +291,13 @@ capability, the ciphertext's length and its deadline, and which
 connection fetched it, but not `K` or anything derived from it that could
 open the blob.
 
+For a pairing by spoken code (§12), the rendezvous mailbox sees the
+nameplate, the rendezvous identifier, which grant opened the slot and
+when it was opened and claimed, and the four messages, whose lengths are
+fixed except `m4`'s, which is the ticket text's length plus 16. It never
+sees the words. It can play either side, which gives it two online
+guesses per run (§12).
+
 ## 8. Guarantees, stated honestly
 
 What v1 provides:
@@ -361,6 +369,9 @@ What v1 does not provide:
 | `Pondline_TicketKey_v1` | ticket AEAD key and nonce HKDF info (§11) |
 | `Pondline_TicketCommitment_v1` | ticket commitment key HKDF info (§11) |
 | `Pondline_TicketBlob_v1` | prefix of the sealed invitation's associated data (§11) |
+| `Pondline_Rendezvous_v1` | first field of the spoken-code PAKE's public context, the one string here that is length-prefixed (`lv`), and the rendezvous HKDF-Extract salt (§12) |
+| `Pondline_RendezvousConfirm_v1` | rendezvous confirmation key HKDF info (§12) |
+| `Pondline_RendezvousHandoff_v1` | rendezvous hand-off key and nonce HKDF info, and prefix of `m4`'s associated data (§12) |
 
 All are ASCII, with no terminator or length prefix. Each signature input is
 the string followed immediately by fixed-size fields; only the transcript
@@ -425,3 +436,236 @@ including a holder of `K`, can make one blob open to two invitations under
 two tickets, which Poly1305 alone does not prevent. A holder of `K` can
 seal an invitation of its own, as a holder of an invitation file can hand
 on a different file; the ticket is a bearer credential.
+
+## 12. Spoken pairing codes
+
+*Added by ADR-016.* This section is part of V1 for the same reason §11
+is: the profile is not yet frozen (`docs/spec.md` §5.2), and an addition
+made before the freeze is made by an ADR and recorded here, with labels
+ending in `_v1`. ADR-016 is that decision; this section is its bytes. One
+part of it is pinned from outside: the PAKE is `draft-vos-cfrg-pqpake-03`,
+an individual submission, and its DST fixes that version, so a later
+draft that changes the wire is a new profile, not an edit to this one.
+
+### Code and password
+
+```text
+code     = nameplate "-" word "-" word "-" word        at most 64 bytes read
+nameplate= 6 ASCII digits, zero-padded, drawn by the rendezvous mailbox
+word     = a word of the BIP-39 English list (2048 words, published order,
+           SHA-256 2f5eed53a4727b4bf8880d8f3f199efc90e58503646d9ff8eff3a2ed3b24dbda)
+PRS      = word1 "-" word2 "-" word3                   ASCII, 33 bits of secret
+```
+
+The inviter draws the words as the first 33 bits of five bytes from the
+CSPRNG, read as three consecutive eleven-bit big-endian indices; the list
+has 2048 words, so no index is biased. Only the words are used, not
+BIP-39's checksum or seed derivation. The decoder accepts exactly the
+text the encoder produces: lowercase ASCII letters, digits and single
+hyphens, six digits, three listed words, no case folding and no trimming.
+
+### The PAKE
+
+CPaceOQUAKE, `draft-vos-cfrg-pqpake-03` §7, configuration
+`cpaceoquake-x25519-mlbuaskem1024` (§9.4.1), with the message encodings of
+its Appendix C.4. Its DST applies throughout, including inside CPace's
+transcript hash:
+
+```text
+DST = 443e3089985f0f8dddfb20cc5e8618f447bdcfe6dd39abb23911cd784c075120   32 bytes
+lv(x)  = len(x) as 2 big-endian bytes || x          (refused above 65 535 bytes)
+TH(label, f_1, ..., f_n) = HKDF-Extract(salt = DST || "TH-" || label,
+                                        ikm  = lv(f_1) || ... || lv(f_n))      32 bytes
+EncodePublicContext(sid, U, S) = len32(sid) || sid || len32(U) || U || len32(S) || S
+```
+
+**Stage 1, CPace** is `CPACE-X25519-SHA512` of `draft-irtf-cfrg-cpace-21`
+inside the draft's Appendix B wrapper: the channel identifier `CI` is the
+secret context, CPace's own `sid` is the whole public context, and the
+associated data `ADa` and `ADb` are empty. `lv_cat` is cpace-21's LEB128
+framing, not `lv`.
+
+```text
+generator_string = lv_cat("CPace255", PRS, zero padding, CI, public_context)
+g    = Elligator2(SHA-512(generator_string)[0:32], bit 255 cleared)   RFC 9380 §6.7.1, Z = 2
+Ya   = X25519(ya, g)          Yb = X25519(yb, g)      32 bytes each
+K    = X25519(ya, Yb) = X25519(yb, Ya)                abort if K is all zero
+key1 = SHA-512(lv_cat("CPace255_ISK", public_context, K)
+               || lv_cat(Ya, "") || lv_cat(Yb, ""))  64 bytes
+th1  = TH("CPace", public_context, Ya, Yb)
+```
+
+**Stage 2, OQUAKE** runs on the same PRS with `key1` as its secret
+context and `th1` as its public context, over ML-BUA-sKEM-1024: ML-KEM-1024
+whose encapsulation key is Kemeleon-encoded at `t = 132` (each of the
+four polynomials as a 391-byte little-endian integer, then the 32-byte
+seed `rho`), 1596 bytes, split as `ut` (the first 1564) and `rho`. In
+the block below `public_context` and `secret_context` are OQUAKE's, that
+is `th1` and `key1`, and `Extract(salt, ikm)` and `Expand(prk, info, L)`
+are HKDF-SHA-256 with their arguments in that order.
+
+```text
+effective_PRS = Expand(Extract(PRS, DST || "OQUAKE-context" ||
+                  lv(public_context) || lv(secret_context)),
+                DST || "effective_PRS", 32)
+T   = ut XOR Expand(Extract(effective_PRS, DST || "OQUAKE" || rho || r), DST || "T_pad", 1564)
+s   = r  XOR Expand(Extract(effective_PRS, DST || "OQUAKE" || rho || T), DST || "s_pad", 64)
+upk = ut || rho;  (ct, k) = ML-KEM-1024.Encaps(Kemeleon.Decode(upk))   at the client
+prk_sk  = Extract(effective_PRS, DST || "OQUAKE" || s || T || rho || upk || ct || k)
+h    = Expand(prk_sk, DST || "confirm", 32)
+key2 = Expand(prk_sk, DST || "key", 32)
+th   = TH("OQUAKE", th1, s, T, rho, ct, h)
+```
+
+`r` is 64 fresh bytes. The server sends `s`, `T` and `rho`; the client
+runs the two rounds backwards (`s_pad` first, recovering `r`, then
+`T_pad`, recovering `ut`) under its own PRS, so a wrong PRS gives another
+`ut` that Kemeleon still decodes to a valid key.
+
+**Kemeleon** at `t = 132`, as `core/crypto/kemeleon` implements it, for
+each polynomial `t_i` of the encapsulation key (256 coefficients below
+3329, read as FIPS 203's `ByteDecode_12`):
+
+```text
+x_i   = sum_j t_i[j] * 3329^j                          0 <= x_i < 3329^256
+range = floor((2^3128 - 1 - x_i) / 3329^256) + 1       multiples allowed for x_i
+m_i   = draw_i mod range                               draw_i: 48 fresh bytes per polynomial
+r_i   = x_i + m_i * 3329^256                           391 bytes, little-endian
+encoded key = r_1 || r_2 || r_3 || r_4 || rho          1596 bytes
+Decode(r_i) = r_i mod 3329^256, written back as 256 coefficients
+```
+
+The range differs from `draft-irtf-cfrg-kemeleon-02` §4.1, whose
+`VectorEncode` draws `m_i` from `[0, floor((2^3128 - x_i) / 3329^256)]`
+inclusive. For the single value `x* = 2^3128 mod 3329^256` the draft's
+largest multiple makes `r_i` exactly `2^3128`, which 391 bytes cannot
+hold; written in 3128 bits it becomes zero and decodes to a different
+key. This profile excludes that one multiple. For every other value the
+two ranges are equal, so every multiple the draft allows elsewhere is
+used unchanged and no draft vector is affected. With the change the
+encoding is a bijection between pairs `(x_i, m_i)` and 391-byte strings
+(`docs/formal/lean.md`, Kemeleon). Reported upstream as
+Roasbeef/pondline#10.
+
+**The combiner**:
+
+```text
+prk         = HKDF-Extract(salt = key2, ikm = DST || "CPaceOQUAKE" || th || key1)
+session_key = HKDF-Expand(prk, DST || "key", 32)
+```
+
+### Context and roles
+
+```text
+public_context = lv("Pondline_Rendezvous_v1") || lv(nameplate, 6 ASCII digits)
+                 || EncodePublicContext(sid = rendezvous identifier (16),
+                                        U = "joiner", S = "inviter")      73 bytes
+secret_context = empty
+```
+
+The rendezvous identifier is the 16 random bytes the inviter opened the
+slot under; the joiner learns it from its claim. The nameplate and the
+identifier are bound into CPace's generator, its key and `th1`, so a
+mailbox that showed the joiner a different slot from the inviter's gives
+the two sides different passwords in effect. The endpoint is not in the
+context.
+
+The **joiner is the draft's client** (CPace initiator, OQUAKE responder)
+and the **inviter its server** (CPace responder, OQUAKE initiator), the
+draft's own §7 assignment, so its proof and vector apply unchanged and
+the inviter has the joiner's proof of the words before it releases
+anything.
+
+### Messages
+
+| Message | From | Contents | Bytes |
+| --- | --- | --- | --- |
+| `m1` | joiner | `lv(Ya)` | 34 |
+| `m2` | inviter | `lv(Yb) \|\| s (64) \|\| T (1564) \|\| rho (32)` | 1694 |
+| `m3` | joiner | `ct (1568) \|\| h (32) \|\| confirm_J (32)` | 1632 |
+| `m4` | inviter | ChaCha20-Poly1305 of the ticket text, with its 16-byte tag | ticket text + 16, at most 208 (146 for an onion ticket) |
+
+Each is checked for exactly its length, and `m1` and `m2` for a 32-byte
+share behind their prefix, before anything else is done with it. Every
+message fits a rendezvous body of 2048 bytes.
+
+### Confirmation and hand-off
+
+OQUAKE's Finish never reports a wrong password: on a bad `h` or a failed
+decapsulation it returns a fresh random `key2`, and the draft forbids
+reading completion as evidence that the peer knew the password. So both
+directions are confirmed explicitly, from the session key and `th`:
+
+```text
+PRK         = HKDF-Extract(salt = "Pondline_Rendezvous_v1", ikm = session_key)
+confirm_key = HKDF-Expand(PRK, "Pondline_RendezvousConfirm_v1", 32)
+confirm_J   = HMAC-SHA-256(confirm_key, th)                              32 bytes
+key, nonce  = HKDF-Expand(PRK, "Pondline_RendezvousHandoff_v1", 44)      32 then 12
+m4          = ChaCha20-Poly1305(key, nonce,
+                aad = "Pondline_RendezvousHandoff_v1" || th, ticket text)
+```
+
+The inviter compares `confirm_J` in constant time and seals `m4` only on a
+match. The joiner's proof that the inviter held the words is that `m4`
+opens. Either failure ends the run. For the session key and `th` of the
+draft's E.4 vector, `confirm_J` is
+`0465897caf04e2ddb1c32c09bc8cf992227c6d01026bb31cbd9eef420bd33c09` and
+the hand-off nonce `705b8662948b4521b87ceb0a`, computed by an independent
+script and pinned by `schedule_matches_the_independent_vector_test`.
+
+**`m4` is sealed once.** Its key and nonce are fixed by the session key,
+so two different plaintexts under them would break ChaCha20-Poly1305. The
+ticket is minted and stored at the mailbox before the inviter reads `m1`,
+`m4` is computed exactly once per run, and a resend sends the same bytes.
+Separately, a step run on a second message at the same index is a second
+guess at the words, so each side acts only on the first message at each
+index and ends the run on any error.
+
+### What is and is not constant time
+
+The X25519 multiplications, ML-KEM-1024, SHA-256, SHA-512, HMAC, HKDF
+and ChaCha20-Poly1305 run inside OpenSSL. The comparison of `confirm_J`
+and OQUAKE's comparison of `h` are constant-time equality, and OQUAKE
+draws its fallback key whether or not it uses it, so both outcomes make
+the same calls. The Elligator 2 map, the Kemeleon encoding and decoding,
+and the Feistel XOR are arithmetic on the BEAM's arbitrary-precision
+integers, on values derived from the password or from secret randomness,
+and **are not constant time**: bignum operations take time that depends
+on their operands, and Elligator 2's final choice between two points is
+an ordinary branch. Both drafts ask for constant time there. ADR-016
+accepts the gap on an argument: the observer would have to share the
+host, across Tor the jitter is orders of magnitude above the signal, and
+a code is used once. That argument is assumed, not shown.
+
+### Status
+
+Implemented in `core/crypto/elligator2`, `pake_common`, `cpace`,
+`kemeleon`, `bua_skem`, `oquake`, `cpace_oquake` and `core/rendezvous`,
+and tested against cpace-21 Appendix B.1 (including the low-order points
+that must abort), pqpake-03 Appendices E.1.2, E.2, E.4 end to end for
+both roles and E.5.4, and the independent schedule vector
+(`packages/primitives/test/primitives/`). OTP's `crypto` takes neither a
+key-generation seed nor an encapsulation seed, so ML-KEM's own steps
+inside the draft's vectors are reproduced by a test-only FIPS 203
+reference (`mlkem_reference.gleam`, held first to NIST ACVP keyGen and
+encapsulation cases and to OpenSSL): the key pair from `keygen_seed` and
+the ciphertext and `k` from `encaps_m` equal the vector's. The vector
+tests seed only encapsulation through it; decapsulation is OpenSSL's,
+with the derived key. The draft's values do not pin the second half of
+`keygen_seed` (`z`, which enters only the implicit-rejection key); ACVP
+does. The reference lives under `test/` and is not in a release. The
+ProVerif model of the exchange is in `docs/formal/crypto.md`, "Spoken
+pairing codes"; Kemeleon, the nameplate, the word indices, the context
+framing and the Elligator 2 map's range are proved in Lean against
+transcriptions tied to the Gleam by conformance vectors
+(`docs/formal/lean.md`). That the Elligator 2 output lies on the curve is
+tested, not proved. The daemon's run, `daemon/pairing`, holds the two rules
+above that `core` cannot, acting only on the first message at each index
+and sealing `m4` once and resending those bytes; both are tested against a
+scripted mailbox in `packages/daemon/test/daemon/pairing_test.gleam`, and
+the whole pairing between two daemons and a real mailbox in
+`pairing_code_test.gleam`. Assumed, until an outside reader says otherwise: that the
+draft's argument carries over to a store-and-forward rendezvous, that the
+confirmation and hand-off derivations above are sound uses of the session
+key, and the timing argument. No outside cryptographer has reviewed this
+code.

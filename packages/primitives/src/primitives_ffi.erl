@@ -5,13 +5,13 @@
 %% returns {error, nil} or false. That is a security property, not tidiness:
 %% OTP's crypto raises errors whose arguments include the key material it was
 %% handed, so an uncaught error there would print a private key into a crash
-%% report. Unkeyed helpers and total digests (sha256/1, hmac_sha256/2, equal/2,
-%% random_bytes/1, keypair generation, openssl_version/0) stay plain calls; see
-%% sha256/1 below.
+%% report. Unkeyed helpers and total digests (sha256/1, sha512/1,
+%% hmac_sha256/2, equal/2, random_bytes/1, keypair generation,
+%% openssl_version/0) stay plain calls; see sha256/1 below.
 -module(primitives_ffi).
 
 -export([random_bytes/1,
-         sha256/1, hmac_sha256/2, equal/2,
+         sha256/1, sha512/1, hmac_sha256/2, equal/2,
          x25519_keypair/0, x25519_public/1, x25519/2,
          ed25519_keypair/0, ed25519_public/1, ed25519_sign/2, ed25519_verify/3,
          mlkem1024_keypair/0, mlkem1024_encapsulate/1, mlkem1024_decapsulate/2,
@@ -30,6 +30,12 @@ random_bytes(N) when is_integer(N), N >= 0 -> crypto:strong_rand_bytes(N).
 %% and an HMAC key of any length is valid. Neither carries a secret in a
 %% raised error the way the key operations below could.
 sha256(Data) -> crypto:hash(sha256, Data).
+
+%% sha512/1 stays unwrapped for the same reason as sha256/1. CPace hashes
+%% its password-derived generator string with it, but crypto:hash/2 raises
+%% only on a non-binary argument, never on a value, so nothing secret can
+%% reach an error from here.
+sha512(Data) -> crypto:hash(sha512, Data).
 
 hmac_sha256(Key, Data) -> crypto:mac(hmac, sha256, Key, Data).
 

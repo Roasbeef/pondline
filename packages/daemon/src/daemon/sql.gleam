@@ -710,6 +710,39 @@ pub fn pending_count_decoder() -> decode.Decoder(PendingCount) {
   decode.success(PendingCount(pending:))
 }
 
+pub type RendezvousFailureCount {
+  RendezvousFailureCount(total: Int)
+}
+
+pub fn rendezvous_failure_count(endpoint endpoint: String, since since: Int) {
+  let sql =
+    "
+SELECT CAST(COUNT(*) AS INTEGER) AS total FROM rendezvous_failures
+WHERE endpoint = ?1 AND at > ?2"
+  #(
+    sql,
+    [dev.ParamString(endpoint), dev.ParamInt(since)],
+    rendezvous_failure_count_decoder(),
+  )
+}
+
+pub fn rendezvous_failure_count_decoder() -> decode.Decoder(
+  RendezvousFailureCount,
+) {
+  use total <- decode.field(0, decode.int)
+  decode.success(RendezvousFailureCount(total:))
+}
+
+pub fn prune_rendezvous_failures(since since: Int) {
+  let sql = "DELETE FROM rendezvous_failures WHERE at <= ?1"
+  #(sql, [dev.ParamInt(since)])
+}
+
+pub fn insert_rendezvous_failure(endpoint endpoint: String, at at: Int) {
+  let sql = "INSERT INTO rendezvous_failures (endpoint, at) VALUES (?, ?)"
+  #(sql, [dev.ParamString(endpoint), dev.ParamInt(at)])
+}
+
 pub type SendByKey {
   SendByKey(message_id: BitArray, digest: BitArray)
 }

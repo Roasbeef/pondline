@@ -33,5 +33,12 @@ The runner has no Tor sidecar, no HTTP server, and runs last at most a few hours
 of virtual time. So the carrier, `mailbox/http`, and anything that needs a
 message or an offer to expire are out of its reach, and the end-to-end
 retransmit paths weren't called in the measured 500 seeds. Those paths rely on
-their unit and integration tests. The "Known gaps" section of the architecture
+their unit and integration tests. Pairing by spoken code (ADR-016) is not
+driven at all: no op opens or claims a rendezvous, because the mailbox's
+nameplate randomness is not injectable through `node.Config` (a run that
+opened a slot would draw from the system source and stop replaying), and
+`seed.job_kinds` leaves out the engine's two rendezvous jobs, so no store
+fault is ever armed on the failure count the guess cap rests on. That is a
+gap, not a ruling: the rendezvous's interleavings with crashes and faults
+are covered only by `daemon`'s scripted-mailbox tests. The "Known gaps" section of the architecture
 document has the full list.
