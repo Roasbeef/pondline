@@ -12,6 +12,7 @@ import core/crypto/error.{Malformed}
 import core/crypto/kemeleon
 import core/secret
 import gleam/bit_array
+import gleam/int
 import gleam/list
 import gleam/string
 import qcheck
@@ -208,6 +209,59 @@ pub fn a_multiple_in_range_is_used_as_given_test() {
 
 fn span() -> Int {
   list.fold(list.repeat(kemeleon.modulus, 256), 1, fn(acc, q) { acc * q })
+}
+
+/// The lowest `count` base-3329 digits of `value`, lowest first: the
+/// coefficients of the polynomial whose integer is `value`.
+fn digits(value: Int, count: Int) -> List(Int) {
+  case count {
+    0 -> []
+    _ -> [
+      value % kemeleon.modulus,
+      ..digits(value / kemeleon.modulus, count - 1)
+    ]
+  }
+}
+
+/// The Kemeleon draft draws a multiple from `[0, floor((2^3128 - r) /
+/// 3329^256)]`, and for the one polynomial value `2^3128 mod 3329^256` its
+/// top multiple makes the sum exactly `2^3128`, which 391 bytes would write
+/// as zeros. Here that multiple is out of range and reduces, so a key made
+/// of that polynomial round-trips under the draft's top multiple, the
+/// largest multiple still in range, and the largest 48-byte draw.
+pub fn the_drafts_overflow_point_round_trips_test() {
+  let ceiling = int.bitwise_shift_left(1, 3128)
+  let star = ceiling % span()
+  let draft_top = { ceiling - star } / span()
+  let polynomial = byte_encode(digits(star, 256))
+  let key = <<
+    polynomial:bits,
+    polynomial:bits,
+    polynomial:bits,
+    polynomial:bits,
+    3:size(256),
+  >>
+  let assert Ok(multiples) =
+    kemeleon.randomness_from_multiples([
+      draft_top,
+      draft_top - 1,
+      draft_top + 1,
+      0,
+    ])
+    as "four non-negative multiples"
+
+  // The draft's top multiple is the one whose sum would not fit.
+  assert star + draft_top * span() == ceiling
+
+  // Each draw encodes to a first chunk that is not the zero string the
+  // overflow would write, and decodes back to the key.
+  assert list.all([multiples, randomness_from(<<-1:size(1536)>>)], fn(draw) {
+    let assert Ok(encoded) = kemeleon.encode(key, draw)
+    let assert <<first:little-size(3128), _:bits>> = encoded
+      as "an encoding starts with a whole chunk"
+
+    first != 0 && kemeleon.decode(encoded) == Ok(key)
+  })
 }
 
 /// A coefficient of 3329 fails FIPS 203's modulus check and has no

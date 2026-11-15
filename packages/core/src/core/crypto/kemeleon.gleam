@@ -32,8 +32,17 @@
 //// encapsulation key  = t_1 (384) || t_2 (384) || t_3 (384) || t_4 (384) || rho (32)
 //// encoded key        = r_1 (391) || r_2 (391) || r_3 (391) || r_4 (391) || rho (32)
 //// r_i                = sum_j t_i[j] * 3329^j  +  m_i * 3329^256,   little-endian
-//// m_i                in [0, floor((2^3128 - sum_j t_i[j] * 3329^j) / 3329^256)]
+//// m_i                in [0, floor((2^3128 - 1 - sum_j t_i[j] * 3329^j) / 3329^256)]
 //// ```
+////
+//// The bound on `m_i` is one less than the Kemeleon draft's. Its
+//// `VectorEncode` draws from `[0, floor((2^(b+t) - r) / q^n)]`, and that
+//// inclusive bound admits one sum equal to `2^3128`, for the single
+//// polynomial value `2^3128 mod 3329^256` with the largest multiple, which
+//// 391 bytes cannot hold: it would be written as zeros and decode to a
+//// different key. This implementation excludes that one multiple. No other
+//// polynomial value has a different range, so every draft vector is
+//// unchanged, and every encoding fits and decodes back to its key.
 ////
 //// ## Randomness
 ////
@@ -270,11 +279,13 @@ fn read_coefficients(
 
 /// `VectorEncode` at t = 132: the polynomial's integer plus its multiple of
 /// 3329^256, as 391 little-endian bytes. The draw is reduced into the
-/// range the draft gives for the multiple, so the sum never reaches 2^3128.
+/// multiples that keep the sum below 2^3128, one fewer than the draft
+/// allows for the single value the module doc names, so the sum always
+/// fits the 3128 bits it is written in.
 fn vector_encode(value: Int, draw: Int) -> BitArray {
   let span = polynomial_span()
   let ceiling = int.bitwise_shift_left(1, vector_bits + statistical_distance)
-  let range = { ceiling - value } / span + 1
+  let range = { ceiling - 1 - value } / span + 1
   let encoded = value + draw % range * span
 
   <<encoded:little-size(3128)>>
