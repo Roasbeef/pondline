@@ -7,9 +7,9 @@ import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, ContactEntry,
   CreateInvite, DeclineContact, Encoded, ExactContact, FromInvitation,
   FromTicket, HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput,
-  ListContacts, LookupContact, MessageStatus, RaiseBudget, Raw, ReceiveMessages,
-  RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents, Target,
-  TicketAndFile, TicketOnly,
+  ListContacts, LookupContact, MessageStatus, NoInput, RaiseBudget, Raw,
+  ReceiveMessages, RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
+  ShowMessages, Target, TicketAndFile, TicketOnly,
 }
 import daemon/fetcher
 import daemon/local_api_protocol as protocol
@@ -246,6 +246,26 @@ pub fn ack_status_audit_health_test() {
   assert action == ShowHealth
 }
 
+pub fn messages_parse_with_a_smaller_default_window_than_audit_test() {
+  let assert Ok(Client(action:, ..)) = parse(["messages", ..common])
+  assert action == ShowMessages(None, 20)
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["messages", "--contact", hex, "--limit", "7", ..common])
+  assert action == ShowMessages(Some(ExactContact(identifier(hex))), 7)
+
+  assert result_is_error(parse(["messages", "--limit", "0", ..common]))
+  assert result_is_error(parse(["messages", "--limit", "257", ..common]))
+  assert result_is_error(parse(["messages", "--message", hex, ..common]))
+}
+
+pub fn messages_resolve_a_petname_like_audit_test() {
+  let action = ShowMessages(Some(LookupContact("bob")), 20)
+
+  assert cli.needs_contact_lookup(action)
+  assert cli.input_of(action) == NoInput
+}
+
 pub fn output_of_names_the_mode_each_command_prints_in_test() {
   let assert Ok(json) = parse(["health", "--json", ..common])
   let assert Ok(human) = parse(["health", ..common])
@@ -420,6 +440,7 @@ fn every_command() -> List(List(String)) {
     ["ack", "--message", hex],
     ["status", "--message", hex],
     ["audit"],
+    ["messages"],
     ["incidents"],
     ["health"],
     ["init", "--stdin"],
