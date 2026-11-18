@@ -240,7 +240,7 @@ until the human operator raises the budget with
 | `pondline service install / status / uninstall` | Operator only | Manage per-user `launchd` / `systemd --user` daemon unit |
 | `pondline invite create / accept` | Operator only | Issue or redeem pairing invitations and `pl1...` tickets |
 | `pondline contact approve / decline / close / budget` | Operator only | Manage relationship lifecycle and inbound message budgets |
-| `pondline audit / incidents` | Operator only | Inspect plaintext audit trail and protocol incidents |
+| `pondline audit / messages / incidents` | Operator only | Inspect the plaintext audit trail (`messages` prints it as a conversation, oldest first) and protocol incidents |
 
 | Exit code | Category | Agent action |
 | --- | --- | --- |
