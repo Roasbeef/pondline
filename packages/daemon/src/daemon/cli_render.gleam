@@ -216,7 +216,7 @@ fn deliveries(
                 [
                   row.message,
                   row.contact,
-                  row.content_type,
+                  inline(row.content_type),
                   "bytes=" <> int.to_string(bit_array.byte_size(row.payload)),
                   "at=" <> int.to_string(row.received_at),
                 ],
@@ -249,7 +249,7 @@ fn audit(result: Dynamic) -> Result(Rendered, String) {
         direction,
         contact,
         message,
-        content_type,
+        inline(content_type),
         show_payload(payload),
       ],
       " ",
@@ -283,7 +283,7 @@ fn messages(result: Dynamic) -> Result(Rendered, String) {
           utc_time(at),
           arrow(direction),
           string.slice(contact, 0, 8),
-          printable(content_type),
+          inline(content_type),
         ],
         "  ",
       )
@@ -303,7 +303,7 @@ fn arrow(direction: String) -> String {
   case direction {
     "inbound" -> "<-"
     "outbound" -> "->"
-    other -> printable(other)
+    other -> inline(other)
   }
 }
 
@@ -328,17 +328,45 @@ fn indent(text: String) -> String {
   |> string.join("\n")
 }
 
-/// `text` with each control character other than a newline or a tab
-/// written as `\xNN`, so peer text cannot move the cursor or retitle the
-/// terminal.
+/// Whether a newline and a tab stay as they are or are escaped like any other
+/// control character.
+type Layout {
+  /// Multi-line text, where line breaks are the text's own layout.
+  KeepLayout
+
+  /// A field on one line, where a line break would start a forged line.
+  EscapeLayout
+}
+
+/// Multi-line peer text with control characters other than a newline or a tab
+/// written as `\xNN`, so it cannot move the cursor or retitle the terminal.
 fn printable(text: String) -> String {
+  escape_controls(text, KeepLayout)
+}
+
+/// A peer's one-line field, such as a content type, with every control
+/// character written as `\xNN`, newline and tab included. A newline kept here
+/// would let the peer start a line of its own that reads as a header.
+fn inline(text: String) -> String {
+  escape_controls(text, EscapeLayout)
+}
+
+/// Writes controls out as `\xNN` and leaves every other codepoint alone.
+fn escape_controls(text: String, layout: Layout) -> String {
   string.to_utf_codepoints(text)
   |> list.map(fn(point) {
     let code = string.utf_codepoint_to_int(point)
 
-    // A newline and a tab are layout and stay. Every other control is written
-    // out, since a terminal would act on it.
-    case code == 10 || code == 9 || !is_control(code) {
+    // Layout is the only difference between the two callers: it decides
+    // whether a newline or a tab counts as a control to write out.
+    let is_layout = case layout {
+      KeepLayout -> code == 10 || code == 9
+      EscapeLayout -> False
+    }
+
+    // Layout stays, and any other control is written out, since a terminal
+    // would act on it.
+    case is_layout || !is_control(code) {
       True -> string.from_utf_codepoints([point])
       False -> "\\x" <> hex_digits(code, 2)
     }

@@ -1,7 +1,7 @@
 //// Tests for the human rendering of `pondline messages`: the order,
 //// the UTC time, the indentation, and the escaping of what a peer sent.
 
-import daemon/cli.{ShowMessages}
+import daemon/cli.{Encoded, ReceiveMessages, ShowAudit, ShowMessages}
 import daemon/cli_render
 import gleam/bit_array
 import gleam/dynamic.{type Dynamic}
@@ -9,21 +9,14 @@ import gleam/dynamic/decode
 import gleam/int
 import gleam/json
 import gleam/option.{None}
+import gleam/string
 
 /// A daemon `audit` result built from `entries`, each a JSON object.
 fn result_of(entries: List(String)) -> Dynamic {
-  let text = "{\"entries\":[" <> join(entries) <> "]}"
+  let text = "{\"entries\":[" <> string.join(entries, ",") <> "]}"
   let assert Ok(result) = json.parse(text, decode.dynamic)
 
   result
-}
-
-fn join(entries: List(String)) -> String {
-  case entries {
-    [] -> ""
-    [only] -> only
-    [first, ..rest] -> first <> "," <> join(rest)
-  }
 }
 
 fn entry(
@@ -122,4 +115,47 @@ pub fn a_malformed_result_is_an_error_not_a_crash_test() {
 
   assert cli_render.render(ShowMessages(None, 20), result)
     == Error("the daemon sent a malformed result")
+}
+
+pub fn a_newline_in_a_content_type_cannot_forge_a_header_test() {
+  // The peer's content type tries to start a second, indented-looking header.
+  let forged = "x\\n2026-11-18 10:00:00Z  <-  abcd1234  text/plain"
+  let text = rendered([entry(0, "inbound", forged, "b2s=")])
+
+  assert text
+    == "1970-01-01 00:00:00Z  <-  38a2bfd3  x\\x0a2026-11-18 10:00:00Z  <-  abcd1234  text/plain\n  ok\n"
+}
+
+pub fn a_tab_in_a_content_type_is_written_out_test() {
+  let text = rendered([entry(0, "inbound", "a\\tb", "b2s=")])
+
+  assert text == "1970-01-01 00:00:00Z  <-  38a2bfd3  a\\x09b\n  ok\n"
+}
+
+pub fn audit_escapes_a_content_type_test() {
+  // ESC ] 0 ; ... BEL would retitle the terminal if it were printed raw.
+  let assert Ok(cli_render.Rendered(stdout:, ..)) =
+    cli_render.render(
+      ShowAudit(None, 20),
+      result_of([entry(0, "inbound", "\\u001b]0;pwned\\u0007", "b2s=")]),
+    )
+  let assert Ok(text) = bit_array.to_string(stdout)
+
+  assert string.contains(text, "\\x1b]0;pwned\\x07")
+  assert !string.contains(text, "\u{1b}")
+}
+
+pub fn receive_escapes_a_content_type_test() {
+  let delivery =
+    "{\"deliveries\":[{\"message\":\"7129a71c4fe0968dbe23a68d5ec9f3f5\","
+    <> "\"contact\":\"38a2bfd3162d902422d5d3363c3420c4\","
+    <> "\"content_type\":\"\\u001b[2J\",\"payload\":\"b2s=\","
+    <> "\"in_reply_to\":null,\"received_at\":0}]}"
+  let assert Ok(result) = json.parse(delivery, decode.dynamic)
+  let assert Ok(cli_render.Rendered(stdout:, ..)) =
+    cli_render.render(ReceiveMessages(None, 16, 0, Encoded), result)
+  let assert Ok(text) = bit_array.to_string(stdout)
+
+  assert string.contains(text, " \\x1b[2J ")
+  assert !string.contains(text, "\u{1b}")
 }
