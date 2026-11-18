@@ -306,6 +306,24 @@ pub type Command {
   Version
 }
 
+/// How `command` prints its answer. A command with no answer to format, the
+/// daemon itself and the usage and version text, is `HumanOutput`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.output_of(Version)
+/// // -> HumanOutput
+/// ```
+pub fn output_of(command: Command) -> Output {
+  case command {
+    InitDaemon(InitCommand(output:, ..)) -> output
+    ManageService(ServiceCommand(output:, ..)) -> output
+    Client(output:, ..) -> output
+    RunDaemon(..) | Help | Version -> HumanOutput
+  }
+}
+
 /// The options found on a command line.
 type Options {
   Options(values: Dict(String, String), flags: List(String))

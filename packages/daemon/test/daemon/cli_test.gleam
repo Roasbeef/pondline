@@ -246,6 +246,21 @@ pub fn ack_status_audit_health_test() {
   assert action == ShowHealth
 }
 
+pub fn output_of_names_the_mode_each_command_prints_in_test() {
+  let assert Ok(json) = parse(["health", "--json", ..common])
+  let assert Ok(human) = parse(["health", ..common])
+  let assert Ok(init) =
+    parse(["init", "--stdin", "--json", "--state-dir", "/s"])
+  let assert Ok(service) = parse(["service", "status", "--json", ..common])
+
+  assert cli.output_of(json) == JsonOutput
+  assert cli.output_of(human) == HumanOutput
+  assert cli.output_of(init) == JsonOutput
+  assert cli.output_of(service) == JsonOutput
+  assert cli.output_of(cli.Help) == HumanOutput
+  assert cli.output_of(cli.Version) == HumanOutput
+}
+
 pub fn daemon_test() {
   let assert Ok(RunDaemon(options)) =
     parse([

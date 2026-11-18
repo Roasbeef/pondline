@@ -10,6 +10,8 @@ import argv
 import daemon/cli
 import daemon/cli_run.{type Outcome}
 import daemon/internal/ffi_local_system
+import daemon/json_indent
+import gleam/bit_array
 import gleam/io
 import gleam/option
 import gleam/result
@@ -39,7 +41,8 @@ pub fn main() -> Nil {
         "pondline: the log handler could not be installed",
       ))
 
-    Ok(_), Ok(command) -> emit(cli_run.run(command))
+    Ok(_), Ok(command) ->
+      emit(for_reader(cli_run.run(command), cli.output_of(command)))
 
     Ok(_), Error(message) ->
       emit(cli_run.Outcome(
@@ -68,6 +71,30 @@ fn default_state_dir() -> option.Option(String) {
   |> option.lazy_or(fn() {
     option.map(non_empty_env("HOME"), fn(home) { home <> "/.pondline" })
   })
+}
+
+/// Indents a JSON answer when a person is reading it. `--json` stays one
+/// compact line for a program, so the answer is changed only when standard
+/// output is a terminal, and only for a command that printed JSON: a payload
+/// that happens to look like JSON is `receive --raw` output, which is bytes
+/// and is left alone. Output that is not text is left alone as well.
+fn for_reader(outcome: Outcome, output: cli.Output) -> Outcome {
+  // Only a JSON answer is ever indented, so a human-mode command never asks
+  // whether standard output is a terminal.
+  case output {
+    cli.HumanOutput -> outcome
+
+    cli.JsonOutput ->
+      case
+        ffi_local_system.stdout_is_terminal(),
+        bit_array.to_string(outcome.stdout)
+      {
+        True, Ok(text) ->
+          cli_run.Outcome(..outcome, stdout: <<json_indent.indent(text):utf8>>)
+
+        _, _ -> outcome
+      }
+  }
 }
 
 /// Writes an outcome's output and exits with its status.

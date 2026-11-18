@@ -34,6 +34,10 @@ pub fn file_mode(path: String) -> Result(Int, String)
 @external(erlang, "daemon_local_ffi", "write_stdout")
 pub fn write_stdout(bytes: BitArray) -> Result(Nil, String)
 
+/// Whether standard output is a terminal, as opposed to a file or a pipe.
+@external(erlang, "daemon_local_ffi", "stdout_is_terminal")
+pub fn stdout_is_terminal() -> Bool
+
 /// Reads standard input to its end. The error is `too_large` when more than
 /// `max` bytes arrive.
 @external(erlang, "daemon_local_ffi", "read_stdin")
