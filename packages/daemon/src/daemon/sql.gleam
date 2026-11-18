@@ -836,6 +836,29 @@ pub fn update_relationship_decoder() -> decode.Decoder(UpdateRelationship) {
   decode.success(UpdateRelationship(version:))
 }
 
+pub type RenameRelationship {
+  RenameRelationship(contact: BitArray)
+}
+
+pub fn rename_relationship(
+  description description: String,
+  contact contact: BitArray,
+) {
+  let sql =
+    "UPDATE relationships SET description = ? WHERE contact = ?
+RETURNING contact"
+  #(
+    sql,
+    [dev.ParamString(description), dev.ParamBitArray(contact)],
+    rename_relationship_decoder(),
+  )
+}
+
+pub fn rename_relationship_decoder() -> decode.Decoder(RenameRelationship) {
+  use contact <- decode.field(0, decode.bit_array)
+  decode.success(RenameRelationship(contact:))
+}
+
 pub fn insert_offer(
   invitation invitation: BitArray,
   phase phase: String,

@@ -230,7 +230,7 @@ The mailbox side of the `Append` in step 10 of the diagram is the Append pipelin
    credential and the scope, in that order, before it decodes arguments. The
    send payload becomes a `Secret` at `local_api.parse_send` and stays one
    until the engine seals it.
-2. **Plan.** `engine.send` (`daemon/engine.gleam:799`) runs the job inside
+2. **Plan.** `engine.send` (`daemon/engine.gleam:851`) runs the job inside
    the engine actor: it loads the relationship, calls the pure
    `relationship.send` with the real `Suite` and the injected clock, and
    receives a `Plan` of records. The ciphertext in the plan is final; no

@@ -46,7 +46,7 @@
 ////    `invite_ticket` (`offer_inbox`, `store_blob`) and `accept_ticket`
 ////    (`fetch_blob`), both through `ticket_call`.
 //// 3. Relationships: `contacts`, `approve`, `decline`, `close`,
-////    `raise_budget`.
+////    `raise_budget`, `rename`.
 //// 4. Messages: `send` and `send_with_key`, `receive`, `acknowledge`,
 ////    `status`; the operator's trail: `audit` and `incidents`.
 //// 5. `subscribe` and `health` for adapters and monitoring.
@@ -858,6 +858,23 @@ pub fn raise_budget(
   by: Int,
 ) -> Result(Nil, ApiError) {
   engine.raise_budget(daemon.engine, contact, by)
+  |> result.map_error(from_failure)
+}
+
+/// Gives a contact a new description, the name `--contact` finds it by.
+///
+/// ## Examples
+///
+/// ```gleam
+/// api.rename(daemon, contact, "kevin")
+/// // -> Ok(Nil)
+/// ```
+pub fn rename(
+  daemon: Daemon,
+  contact: Id(Contact),
+  description: String,
+) -> Result(Nil, ApiError) {
+  engine.rename(daemon.engine, contact, description)
   |> result.map_error(from_failure)
 }
 

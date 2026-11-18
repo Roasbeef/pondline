@@ -5,11 +5,12 @@ import daemon/api
 import daemon/carrier as daemon_carrier
 import daemon/cli.{
   AcceptInvite, Acknowledge, ApproveContact, Client, CloseContact, ContactEntry,
-  CreateInvite, DeclineContact, Encoded, ExactContact, FromInvitation,
-  FromTicket, HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput,
-  ListContacts, LookupContact, MessageStatus, NoInput, RaiseBudget, Raw,
-  ReceiveMessages, RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
-  ShowMessages, Target, TicketAndFile, TicketOnly,
+  CreateInvite, DeclineContact, DecodeText, Encoded, ExactContact,
+  FromInvitation, FromTicket, HumanOutput, InputFile, InputStdin, InvitationFile,
+  JsonOutput, KeepEncoded, ListContacts, LookupContact, MessageStatus, NoInput,
+  RaiseBudget, Raw, ReceiveMessages, RenameContact, RunDaemon, SendMessage,
+  ShowAudit, ShowHealth, ShowIncidents, ShowMessages, Target, TicketAndFile,
+  TicketOnly,
 }
 import daemon/fetcher
 import daemon/local_api_protocol as protocol
@@ -248,19 +249,29 @@ pub fn ack_status_audit_health_test() {
 
 pub fn messages_parse_with_a_smaller_default_window_than_audit_test() {
   let assert Ok(Client(action:, ..)) = parse(["messages", ..common])
-  assert action == ShowMessages(None, 20)
+  assert action == ShowMessages(None, 20, DecodeText)
 
   let assert Ok(Client(action:, ..)) =
     parse(["messages", "--contact", hex, "--limit", "7", ..common])
-  assert action == ShowMessages(Some(ExactContact(identifier(hex))), 7)
+  assert action
+    == ShowMessages(Some(ExactContact(identifier(hex))), 7, DecodeText)
 
   assert result_is_error(parse(["messages", "--limit", "0", ..common]))
   assert result_is_error(parse(["messages", "--limit", "257", ..common]))
   assert result_is_error(parse(["messages", "--message", hex, ..common]))
 }
 
+pub fn messages_no_decode_is_a_switch_test() {
+  let assert Ok(Client(action:, ..)) =
+    parse(["messages", "--no-decode", ..common])
+  assert action == ShowMessages(None, 20, KeepEncoded)
+
+  // A switch takes no value, and a stray word after it is refused.
+  assert result_is_error(parse(["messages", "--no-decode", "x", ..common]))
+}
+
 pub fn messages_resolve_a_petname_like_audit_test() {
-  let action = ShowMessages(Some(LookupContact("bob")), 20)
+  let action = ShowMessages(Some(LookupContact("bob")), 20, DecodeText)
 
   assert cli.needs_contact_lookup(action)
   assert cli.input_of(action) == NoInput
@@ -279,6 +290,27 @@ pub fn output_of_names_the_mode_each_command_prints_in_test() {
   assert cli.output_of(service) == JsonOutput
   assert cli.output_of(cli.Help) == HumanOutput
   assert cli.output_of(cli.Version) == HumanOutput
+}
+
+pub fn contact_alias_parses_and_resolves_a_petname_test() {
+  let assert Ok(Client(action:, ..)) =
+    parse(["contact", "alias", "--contact", hex, "--name", "kevin", ..common])
+  assert action == RenameContact(ExactContact(identifier(hex)), "kevin")
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["contact", "alias", "--contact", "bob", "--name", "kevin", ..common])
+  assert cli.needs_contact_lookup(action)
+  assert cli.input_of(action) == NoInput
+
+  let #(op, _) = cli.request(action, <<>>)
+  assert op == "rename"
+
+  assert result_is_error(
+    parse(["contact", "alias", "--contact", hex, ..common]),
+  )
+  assert result_is_error(
+    parse(["contact", "alias", "--name", "kevin", ..common]),
+  )
 }
 
 pub fn daemon_test() {
@@ -435,6 +467,7 @@ fn every_command() -> List(List(String)) {
     ["contact", "decline", "--contact", hex],
     ["contact", "close", "--contact", hex],
     ["contact", "budget", "--contact", hex, "--add", "1"],
+    ["contact", "alias", "--contact", hex, "--name", "n"],
     ["send", "--contact", hex, "--file", "f"],
     ["receive"],
     ["ack", "--message", hex],

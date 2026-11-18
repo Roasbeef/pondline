@@ -256,6 +256,10 @@ pub fn backend(fake: Fake) -> Backend {
       record("close " <> id.to_hex(c))
       Ok(Nil)
     },
+    rename: fn(c, name) {
+      record("rename " <> id.to_hex(c) <> " " <> string.inspect(name))
+      Ok(Nil)
+    },
     raise_budget: fn(c, by) {
       record("raise_budget " <> id.to_hex(c) <> " " <> string.inspect(by))
       Ok(Nil)

@@ -10,19 +10,22 @@
 //// as text, one record per line, with fields separated by spaces so a shell
 //// script can split it.
 
+import core/id
 import daemon/cli.{
-  type Action, AcceptInvite, Acknowledge, ApproveContact, CloseContact,
-  CreateInvite, DeclineContact, ListContacts, MessageStatus, RaiseBudget, Raw,
-  ReceiveMessages, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
-  ShowMessages,
+  type Action, type ContactEntry, type Decoding, AcceptInvite, Acknowledge,
+  ApproveContact, CloseContact, CreateInvite, DeclineContact, DecodeText,
+  KeepEncoded, ListContacts, MessageStatus, RaiseBudget, Raw, ReceiveMessages,
+  RenameContact, SendMessage, ShowAudit, ShowHealth, ShowIncidents, ShowMessages,
 }
+import daemon/local_api_protocol as protocol
 import gleam/bit_array
 import gleam/dict
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/int
+import gleam/json
 import gleam/list
-import gleam/option
+import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
 
@@ -60,16 +63,21 @@ pub fn ticket(result: Dynamic) -> Result(String, String) {
   field(result, "ticket", decode.string)
 }
 
-/// Renders a result for human reading. `CreateInvite` renders nothing:
+/// Renders a result for human reading. `names` are the contacts the daemon
+/// lists, which `messages` uses to title each section. `CreateInvite` renders nothing:
 /// `cli_run` writes the file and prints the ticket or path itself.
 ///
 /// ## Examples
 ///
 /// ```gleam
-/// cli_render.render(Acknowledge(message), result)
+/// cli_render.render(Acknowledge(message), result, [])
 /// // -> Ok(Rendered(<<"ok\n">>, ""))
 /// ```
-pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
+pub fn render(
+  action: Action,
+  result: Dynamic,
+  names: List(ContactEntry),
+) -> Result(Rendered, String) {
   case action {
     // `cli_run` hands out an invitation itself, before rendering.
     CreateInvite(..) -> Ok(Rendered(<<>>, ""))
@@ -81,13 +89,14 @@ pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
     | DeclineContact(..)
     | CloseContact(..)
     | RaiseBudget(..)
+    | RenameContact(..)
     | Acknowledge(..) -> Ok(text("ok"))
 
     SendMessage(..) -> message_line(result)
     ReceiveMessages(view:, ..) -> deliveries(result, view)
     MessageStatus(..) -> state_line(result)
     ShowAudit(..) -> audit(result)
-    ShowMessages(..) -> messages(result)
+    ShowMessages(decoding:, ..) -> messages(result, names, decoding)
     ShowIncidents(..) -> incidents(result)
     ShowHealth -> health(result)
   }
@@ -260,42 +269,207 @@ fn audit(result: Dynamic) -> Result(Rendered, String) {
   Ok(lines_of(lines))
 }
 
-/// The audit log read as a conversation, oldest first. Each message is a
-/// header, `<UTC time> <-|-> <contact prefix> <content type>`, then its
-/// payload indented by two spaces, with a blank line between messages.
-///
-/// The daemon answers newest first, so that a limit keeps the most recent
-/// messages; reversing here puts them in the order they were said. A peer
-/// chose the payload and the content type, so both are shown with control
-/// characters escaped: a raw escape sequence would otherwise reach the
-/// operator's terminal.
-fn messages(result: Dynamic) -> Result(Rendered, String) {
+/// One message of the audit log, with the payload still base64 as the daemon
+/// sent it.
+type Entry {
+  Entry(
+    contact: String,
+    message: String,
+    direction: String,
+    at: Int,
+    content_type: String,
+    payload: String,
+  )
+}
+
+/// One contact's messages, oldest first, with the name the operator knows the
+/// contact by when there is one.
+type Conversation {
+  Conversation(contact: String, name: Option(String), entries: List(Entry))
+}
+
+/// The audit entries of an `audit` result, newest first as the daemon sends
+/// them.
+fn entries(result: Dynamic) -> Result(List(Entry), String) {
   let row = {
     use at <- decode.field("at", decode.int)
     use direction <- decode.field("direction", decode.string)
     use contact <- decode.field("contact", decode.string)
+    use message <- decode.field("message", decode.string)
     use content_type <- decode.field("content_type", decode.string)
     use payload <- decode.field("payload", decode.string)
 
-    decode.success(
-      string.join(
-        [
-          utc_time(at),
-          arrow(direction),
-          string.slice(contact, 0, 8),
-          inline(content_type),
-        ],
-        "  ",
-      )
-      <> "\n"
-      <> indent(message_text(payload)),
+    decode.success(Entry(
+      contact:,
+      message:,
+      direction:,
+      at:,
+      content_type:,
+      payload:,
+    ))
+  }
+
+  field(result, "entries", decode.list(row))
+}
+
+/// The entries grouped into an inbox: one conversation per contact, the
+/// contact with the most recent message first, and each contact's messages
+/// oldest first, in the order they were said.
+///
+/// The daemon answers newest first so that a limit keeps the most recent
+/// messages. Taking contacts in the order they first appear therefore sorts
+/// them by latest activity, and reversing each contact's own list restores
+/// the order of the conversation.
+fn conversations(
+  all: List(Entry),
+  names: List(ContactEntry),
+) -> List(Conversation) {
+  all
+  |> list.map(fn(entry) { entry.contact })
+  |> list.unique
+  |> list.map(fn(contact) {
+    let mine = list.filter(all, fn(entry) { entry.contact == contact })
+
+    Conversation(
+      contact:,
+      name: name_of(contact, names),
+      entries: list.reverse(mine),
+    )
+  })
+}
+
+/// The name the operator gave a contact, if the daemon still lists it.
+fn name_of(contact: String, names: List(ContactEntry)) -> Option(String) {
+  list.find(names, fn(known) { id.to_hex(known.contact) == contact })
+  |> result.map(fn(known) { known.description })
+  |> option.from_result
+}
+
+/// The audit log as an inbox for a person to read: a section for each
+/// contact, then each message as a header, `<UTC time> <-|-> <content type>
+/// <message prefix>`, with its payload indented below it. Contacts and
+/// messages are separated by a blank line.
+///
+/// A peer chooses both the payload and the content type, so both are shown
+/// with control characters escaped: a raw escape sequence would otherwise
+/// reach the operator's terminal. A name is the operator's own and is
+/// escaped as well, since it is printed on one line.
+fn messages(
+  result: Dynamic,
+  names: List(ContactEntry),
+  decoding: Decoding,
+) -> Result(Rendered, String) {
+  use all <- result.try(entries(result))
+
+  // A blank element between two sections is the blank line between them.
+  let sections =
+    conversations(all, names)
+    |> list.map(fn(conversation) { conversation_text(conversation, decoding) })
+
+  Ok(lines_of(list.intersperse(sections, "")))
+}
+
+/// One contact's section of the inbox.
+fn conversation_text(conversation: Conversation, decoding: Decoding) -> String {
+  let prefix = string.slice(conversation.contact, 0, 8)
+
+  // A contact with a name is titled by it and its prefix; one the daemon no
+  // longer lists is titled by the prefix alone.
+  let heading = case conversation.name {
+    Some(name) -> inline(name) <> "  (" <> prefix <> ")"
+    None -> prefix
+  }
+
+  let bodies =
+    list.map(conversation.entries, fn(entry) { entry_text(entry, decoding) })
+
+  string.join([heading, ..list.intersperse(bodies, "")], "\n")
+}
+
+/// One message: its header line and its payload below it.
+fn entry_text(entry: Entry, decoding: Decoding) -> String {
+  let header =
+    string.join(
+      [
+        utc_time(entry.at),
+        arrow(entry.direction),
+        inline(entry.content_type),
+        string.slice(entry.message, 0, 8),
+      ],
+      "  ",
+    )
+
+  // Decoding is the only difference between the two views: kept encoded, the
+  // payload is the base64 the daemon sent and nothing is interpreted.
+  let body = case decoding {
+    DecodeText -> message_text(entry.payload)
+    KeepEncoded -> "base64:" <> entry.payload
+  }
+
+  "  " <> header <> "\n" <> indent_by(body, "    ")
+}
+
+/// The same inbox as JSON for a program, as one answer in the usual envelope:
+/// `{"contacts": [{"contact", "description", "messages": [...]}]}`.
+///
+/// A message carries `text` when decoding is on and its payload is UTF-8, and
+/// the base64 `payload` otherwise, so a program always gets exactly one of
+/// the two. `cli_run` owns the output mode and calls this for `--json`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli_render.messages_json(result, [], cli.DecodeText)
+/// // -> Ok("{\"ok\":true,\"result\":{\"contacts\":[]}}")
+/// ```
+pub fn messages_json(
+  result: Dynamic,
+  names: List(ContactEntry),
+  decoding: Decoding,
+) -> Result(String, String) {
+  use all <- result.try(entries(result))
+
+  let contacts =
+    conversations(all, names)
+    |> json.array(fn(conversation) {
+      json.object([
+        #("contact", json.string(conversation.contact)),
+        #("description", json.nullable(conversation.name, json.string)),
+        #(
+          "messages",
+          json.array(conversation.entries, fn(entry) {
+            entry_json(entry, decoding)
+          }),
+        ),
+      ])
+    })
+
+  Ok(protocol.success_json(json.object([#("contacts", contacts)])))
+}
+
+/// One message as a JSON object.
+fn entry_json(entry: Entry, decoding: Decoding) -> json.Json {
+  let decoded =
+    bit_array.base64_decode(entry.payload)
+    |> result.try(bit_array.to_string)
+
+  // Exactly one of `text` and `payload` is present.
+  let body = case decoding, decoded {
+    DecodeText, Ok(text) -> #("text", json.string(text))
+    DecodeText, Error(Nil) | KeepEncoded, _ -> #(
+      "payload",
+      json.string(entry.payload),
     )
   }
 
-  use entries <- result.try(field(result, "entries", decode.list(row)))
-
-  // A blank element between two blocks is the blank line between them.
-  Ok(lines_of(list.intersperse(list.reverse(entries), "")))
+  json.object([
+    #("message", json.string(entry.message)),
+    #("direction", json.string(entry.direction)),
+    #("at", json.int(entry.at)),
+    #("time", json.string(utc_time(entry.at))),
+    #("content_type", json.string(entry.content_type)),
+    body,
+  ])
 }
 
 /// `<-` for a message that arrived and `->` for one that was sent.
@@ -321,10 +495,16 @@ fn message_text(encoded: String) -> String {
   }
 }
 
-/// Every line of `text` behind two spaces.
-fn indent(text: String) -> String {
+/// Every line of `text` behind `margin`.
+fn indent_by(text: String, margin: String) -> String {
   string.split(text, "\n")
-  |> list.map(fn(line) { "  " <> line })
+  |> list.map(fn(line) {
+    // A blank line stays empty, so no line ends in trailing spaces.
+    case line {
+      "" -> ""
+      _ -> margin <> line
+    }
+  })
   |> string.join("\n")
 }
 

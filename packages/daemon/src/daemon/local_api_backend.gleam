@@ -53,6 +53,7 @@ pub fn unavailable() -> Backend {
     decline: fn(_) { Error(Unavailable) },
     close: fn(_) { Error(Unavailable) },
     raise_budget: fn(_, _) { Error(Unavailable) },
+    rename: fn(_, _) { Error(Unavailable) },
     send: fn(_, _, _, _, _) { Error(Unavailable) },
     receive: fn(_, _) { Error(Unavailable) },
     acknowledge: fn(_) { Error(Unavailable) },
@@ -140,6 +141,9 @@ pub fn from_daemon(daemon: api.Daemon) -> Backend {
     close: fn(contact) { api.close(daemon, contact) |> map_error },
     raise_budget: fn(contact, by) {
       api.raise_budget(daemon, contact, by) |> map_error
+    },
+    rename: fn(contact, description) {
+      api.rename(daemon, contact, description) |> map_error
     },
     send: fn(contact, key, content_type, payload, in_reply_to) {
       // A key makes the send safe to retry (ADR-011).

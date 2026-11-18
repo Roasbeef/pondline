@@ -123,6 +123,7 @@ import core/id.{
 }
 import core/invitation
 import core/limits
+import core/message
 import core/offer.{type Approval}
 import core/plan.{type EnvelopeRef, type Plan, EnvelopeRef}
 import core/relationship.{type Relationship}
@@ -225,6 +226,7 @@ pub type JobKind {
   Decline
   Close
   RaiseBudget
+  Rename
   Send
   Consume
   ExpireOffers
@@ -777,6 +779,56 @@ pub fn raise_budget(
 
     Ok(Nil)
   })
+}
+
+/// Gives a contact a new description, the name the operator types to find it
+/// by. It changes one column and no relationship state, so it needs no version
+/// check and cannot race a transition. An empty name, one over
+/// `message.max_description_bytes` or one with a control character is
+/// refused, because the name is printed on a single line and typed back.
+///
+/// ## Examples
+///
+/// ```gleam
+/// engine.rename(name, contact, "kevin")
+/// // -> Ok(Nil)
+/// ```
+pub fn rename(
+  name: Handle(Message),
+  contact: Id(Contact),
+  description: String,
+) -> Result(Nil, Failure) {
+  run(name, Rename, fn(state) {
+    use _ <- result.try(check_description(description))
+    use renamed <- result.try(
+      fault(store.rename_contact(state.store, contact, description)),
+    )
+
+    // The store answers `False` when no contact has that identifier.
+    case renamed {
+      True -> Ok(Nil)
+      False -> Error(NotFound)
+    }
+  })
+}
+
+/// Refuses a name that is empty, too long or holds a control character.
+fn check_description(description: String) -> Result(Nil, Failure) {
+  let has_control =
+    string.to_utf_codepoints(description)
+    |> list.any(fn(point) {
+      let code = string.utf_codepoint_to_int(point)
+
+      code < 32 || code == 127 || { code >= 128 && code <= 159 }
+    })
+
+  // Each refusal is a fixed phrase, never the value.
+  case description == "", message.description_fits(description), has_control {
+    True, _, _ -> Error(Refused("the name is empty"))
+    _, False, _ -> Error(Refused("the name is too long"))
+    _, _, True -> Error(Refused("the name has a control character"))
+    False, True, False -> Ok(Nil)
+  }
 }
 
 /// Sends an application message: the ciphertext and the advanced session
@@ -1715,6 +1767,7 @@ pub fn kind_label(kind: JobKind) -> String {
     Decline -> "decline"
     Close -> "close"
     RaiseBudget -> "raise_budget"
+    Rename -> "rename"
     Send -> "send"
     Consume -> "consume"
     ExpireOffers -> "expire_offers"

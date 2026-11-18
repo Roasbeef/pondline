@@ -405,7 +405,7 @@ the operator, and the `pondline` command that speaks to it.
   runtime API changes here.
 - `daemon/local_api_client`: one request over the socket; used by the CLI
   and the tests.
-- `daemon/cli` (pure parse, `Environment` default `~/.pondline` / `PONDLINE_STATE_DIR`, `ContactRef` petname/prefix resolution, request building, exit codes), `cli_render` (human output; `messages` is the `audit` operation read oldest first, with control characters in peer text escaped), `json_indent` (re-indents `--json` output only when standard output is a terminal, applied in `pondline.gleam`), `cli_run` (`init` and persisted `<state-dir>/config.json` + `provision.cap`, `plg1` grant token materialization, runtime effects; ADR-015), and the top-level `pondline` module (`gleam run -m pondline -- <command>`). Release launchers export `PONDLINE_TOR_BIN` and `start_node` resolves `pondline-tor` automatically or fails fast under `--carrier tor`. `invite accept` takes an optional `--budget N` (`api.accept_with_budget`).
+- `daemon/cli` (pure parse, `Environment` default `~/.pondline` / `PONDLINE_STATE_DIR`, `ContactRef` petname/prefix resolution, request building, exit codes), `cli_render` (human output; `messages` is the `audit` operation reshaped client-side into an inbox grouped by contact, titled by the names `contacts` lists, with payloads decoded unless `--no-decode`; control characters in peer text are escaped), `json_indent` (re-indents `--json` output only when standard output is a terminal, applied in `pondline.gleam`), `cli_run` (`init` and persisted `<state-dir>/config.json` + `provision.cap`, `plg1` grant token materialization, runtime effects; ADR-015), and the top-level `pondline` module (`gleam run -m pondline -- <command>`). Release launchers export `PONDLINE_TOR_BIN` and `start_node` resolves `pondline-tor` automatically or fails fast under `--carrier tor`. `invite accept` takes an optional `--budget N` (`api.accept_with_budget`).
 - `daemon/build`: the running build's identity (`Identity(version,
   commit)`), read from `PONDLINE_BUILD_VERSION` and `PONDLINE_BUILD_COMMIT`,
   which the release launcher exports (`scripts/release.sh`, ADR-003
@@ -422,8 +422,11 @@ Invariants:
   arguments, backend. A forbidden operation never has its arguments read and
   never reaches the backend.
 - The agent scope may do contacts, send, receive, acknowledge, status and
-  health only. Invite, accept, approve, decline, close, raise_budget, audit
-  and incidents are operator-only (`required_scope`).
+  health only. Invite, accept, approve, decline, close, raise_budget, rename,
+  audit and incidents are operator-only (`required_scope`). `rename` (CLI
+  `contact alias`) rewrites `relationships.description`, the name petnames
+  resolve against, and refuses an empty name, one over
+  `max_description_bytes` or one with a control character.
 - `send` takes an optional `idempotency_key` (CLI `--idempotency-key`),
   sent only when given; `incidents` (CLI `pondline incidents [--limit N]`)
   lists identifiers, counts and times and never a payload.
