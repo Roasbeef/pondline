@@ -22,6 +22,14 @@ SET version = version + 1, phase = ?, blob = ?
 WHERE contact = ? AND version = ?
 RETURNING version;
 
+-- The operator's name for a contact. The description is a plain column the
+-- CLI resolves petnames against, not part of the snapshot, so renaming it
+-- touches no version and cannot race a state update. No returned row means
+-- there is no such contact.
+-- name: RenameRelationship :many
+UPDATE relationships SET description = ? WHERE contact = ?
+RETURNING contact;
+
 -- name: InsertOffer :exec
 INSERT INTO offers
   (invitation, version, phase, description, deadline, inbox_queue, inbox,

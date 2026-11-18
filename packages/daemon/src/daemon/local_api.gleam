@@ -118,6 +118,7 @@ type Operation {
   DeclineOp
   CloseOp
   RaiseBudgetOp
+  RenameOp
   SendOp
   ReceiveOp
   AcknowledgeOp
@@ -146,6 +147,7 @@ type Call {
   Decline(contact: Id(Contact))
   Close(contact: Id(Contact))
   RaiseBudget(contact: Id(Contact), by: Int)
+  Rename(contact: Id(Contact), description: String)
   Send(
     contact: Id(Contact),
     key: Option(String),
@@ -429,6 +431,7 @@ fn parse_operation(name: String) -> Result(Operation, Nil) {
     "decline" -> Ok(DeclineOp)
     "close" -> Ok(CloseOp)
     "raise_budget" -> Ok(RaiseBudgetOp)
+    "rename" -> Ok(RenameOp)
     "send" -> Ok(SendOp)
     "receive" -> Ok(ReceiveOp)
     "acknowledge" -> Ok(AcknowledgeOp)
@@ -454,6 +457,7 @@ fn required_scope(operation: Operation) -> Scope {
     | DeclineOp
     | CloseOp
     | RaiseBudgetOp
+    | RenameOp
     | AuditOp
     | IncidentsOp -> Operator
   }
@@ -503,6 +507,13 @@ fn parse_call(operation: Operation, args: Dynamic) -> Result(Call, Failure) {
       use by <- result.try(positive(args, "by"))
 
       Ok(RaiseBudget(contact:, by:))
+    }
+
+    RenameOp -> {
+      use contact <- result.try(contact_id(args))
+      use description <- result.try(required(args, "description", decode.string))
+
+      Ok(Rename(contact:, description:))
     }
 
     SendOp -> parse_send(args)
@@ -777,6 +788,7 @@ fn execute(context: Context, call: Call) -> Result(Json, Failure) {
     Decline(contact:) -> unit(backend.decline(contact))
     Close(contact:) -> unit(backend.close(contact))
     RaiseBudget(contact:, by:) -> unit(backend.raise_budget(contact, by))
+    Rename(contact:, description:) -> unit(backend.rename(contact, description))
 
     Send(contact:, key:, content_type:, payload:, in_reply_to:) ->
       backend.send(contact, key, content_type, payload, in_reply_to)

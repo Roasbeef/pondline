@@ -13,8 +13,8 @@
 import daemon/cli.{
   type Action, AcceptInvite, Acknowledge, ApproveContact, CloseContact,
   CreateInvite, DeclineContact, ListContacts, MessageStatus, RaiseBudget, Raw,
-  ReceiveMessages, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
-  ShowMessages,
+  ReceiveMessages, RenameContact, SendMessage, ShowAudit, ShowHealth,
+  ShowIncidents, ShowMessages,
 }
 import gleam/bit_array
 import gleam/dict
@@ -81,6 +81,7 @@ pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
     | DeclineContact(..)
     | CloseContact(..)
     | RaiseBudget(..)
+    | RenameContact(..)
     | Acknowledge(..) -> Ok(text("ok"))
 
     SendMessage(..) -> message_line(result)

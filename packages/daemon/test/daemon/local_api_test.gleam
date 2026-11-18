@@ -107,6 +107,13 @@ pub fn every_operator_op_round_trips_test() {
     ])
     |> succeeded
 
+  let _ =
+    ask(f, f.operator, "rename", [
+      #("contact", json.string(contact_hex())),
+      #("description", json.string("kevin")),
+    ])
+    |> succeeded
+
   let audit =
     ask(f, f.operator, "audit", [#("limit", json.int(10))]) |> succeeded
   assert first_string(audit, "entries", "direction") == "outbound"
@@ -127,6 +134,7 @@ pub fn every_operator_op_round_trips_test() {
       "decline " <> contact_hex(),
       "close " <> contact_hex(),
       "raise_budget " <> contact_hex() <> " 7",
+      "rename " <> contact_hex() <> " \"kevin\"",
       "audit 10",
       "incidents 3",
     ]
@@ -197,6 +205,10 @@ pub fn the_agent_credential_is_forbidden_on_operator_ops_test() {
     #("raise_budget", [
       #("contact", json.string(contact_hex())),
       #("by", json.int(1)),
+    ]),
+    #("rename", [
+      #("contact", json.string(contact_hex())),
+      #("description", json.string("x")),
     ]),
     #("audit", []),
     #("incidents", []),

@@ -1828,6 +1828,32 @@ pub fn consume(store: Store, message: Id(MessageKind)) -> Result(Bool, Error) {
   }
 }
 
+/// Gives a contact a new description, the name `--contact` finds it by.
+/// `False` means there is no such contact and nothing changed.
+///
+/// ## Examples
+///
+/// ```gleam
+/// store.rename_contact(store, contact, "kevin")
+/// // -> Ok(True)
+/// ```
+pub fn rename_contact(
+  store: Store,
+  contact: Id(Contact),
+  description: String,
+) -> Result(Bool, Error) {
+  use rows <- result.try(query(
+    store,
+    sql.rename_relationship(description:, contact: id.to_bytes(contact)),
+  ))
+
+  // An update that touched a row renamed an existing contact.
+  case rows {
+    [] -> Ok(False)
+    [_, ..] -> Ok(True)
+  }
+}
+
 /// Where an outbound message stands, if the daemon sent it.
 ///
 /// ## Examples

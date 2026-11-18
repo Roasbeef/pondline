@@ -8,8 +8,8 @@ import daemon/cli.{
   CreateInvite, DeclineContact, Encoded, ExactContact, FromInvitation,
   FromTicket, HumanOutput, InputFile, InputStdin, InvitationFile, JsonOutput,
   ListContacts, LookupContact, MessageStatus, NoInput, RaiseBudget, Raw,
-  ReceiveMessages, RunDaemon, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
-  ShowMessages, Target, TicketAndFile, TicketOnly,
+  ReceiveMessages, RenameContact, RunDaemon, SendMessage, ShowAudit, ShowHealth,
+  ShowIncidents, ShowMessages, Target, TicketAndFile, TicketOnly,
 }
 import daemon/fetcher
 import daemon/local_api_protocol as protocol
@@ -281,6 +281,27 @@ pub fn output_of_names_the_mode_each_command_prints_in_test() {
   assert cli.output_of(cli.Version) == HumanOutput
 }
 
+pub fn contact_alias_parses_and_resolves_a_petname_test() {
+  let assert Ok(Client(action:, ..)) =
+    parse(["contact", "alias", "--contact", hex, "--name", "kevin", ..common])
+  assert action == RenameContact(ExactContact(identifier(hex)), "kevin")
+
+  let assert Ok(Client(action:, ..)) =
+    parse(["contact", "alias", "--contact", "bob", "--name", "kevin", ..common])
+  assert cli.needs_contact_lookup(action)
+  assert cli.input_of(action) == NoInput
+
+  let #(op, _) = cli.request(action, <<>>)
+  assert op == "rename"
+
+  assert result_is_error(
+    parse(["contact", "alias", "--contact", hex, ..common]),
+  )
+  assert result_is_error(
+    parse(["contact", "alias", "--name", "kevin", ..common]),
+  )
+}
+
 pub fn daemon_test() {
   let assert Ok(RunDaemon(options)) =
     parse([
@@ -435,6 +456,7 @@ fn every_command() -> List(List(String)) {
     ["contact", "decline", "--contact", hex],
     ["contact", "close", "--contact", hex],
     ["contact", "budget", "--contact", hex, "--add", "1"],
+    ["contact", "alias", "--contact", hex, "--name", "n"],
     ["send", "--contact", hex, "--file", "f"],
     ["receive"],
     ["ack", "--message", hex],

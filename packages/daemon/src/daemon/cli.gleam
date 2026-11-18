@@ -24,8 +24,9 @@
 //// - `invite create --description TEXT --budget N [--auto-approve]`
 ////   `[--out FILE] [--ticket]` (at least one of the two) and `invite accept`
 ////   `[--ticket] (--file FILE | --stdin) [--description TEXT] [--budget N]`.
-//// - `contacts list`, `contact approve|decline|close --contact CONTACT` and
-////   `contact budget --contact CONTACT --add N`.
+//// - `contacts list`, `contact approve|decline|close --contact CONTACT`,
+////   `contact budget --contact CONTACT --add N` and
+////   `contact alias --contact CONTACT --name NAME`.
 //// - `send --contact CONTACT [--content-type T] (--file F | --stdin)`
 ////   `[--reply-to HEX] [--idempotency-key KEY]`.
 //// - `receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]`.
@@ -105,6 +106,7 @@ commands:
   contacts list
   contact approve|decline|close --contact CONTACT
   contact budget --contact CONTACT --add N
+  contact alias --contact CONTACT --name NAME
   send --contact CONTACT [--content-type T] (--file F | --stdin) [--reply-to HEX]
        [--idempotency-key KEY]
   receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]
@@ -264,6 +266,7 @@ pub type Action {
   DeclineContact(contact: ContactRef)
   CloseContact(contact: ContactRef)
   RaiseBudget(contact: ContactRef, add: Int)
+  RenameContact(contact: ContactRef, name: String)
   SendMessage(
     contact: ContactRef,
     content_type: String,
@@ -463,6 +466,16 @@ pub fn parse_with_env(
         ))
 
         Ok(RaiseBudget(contact:, add:))
+      })
+
+    // `alias` gives a contact the name `--contact` finds it by, and the name
+    // `contacts` and `messages` show for it.
+    ["contact", "alias", ..rest] ->
+      client(rest, env, ["--contact", "--name"], [], fn(options) {
+        use contact <- result.try(contact(options))
+        use name <- result.try(required(options, "--name"))
+
+        Ok(RenameContact(contact:, name:))
       })
 
     ["send", ..rest] -> parse_send(rest, env)
@@ -1124,6 +1137,7 @@ pub fn needs_contact_lookup(action: Action) -> Bool {
     | DeclineContact(LookupContact(..))
     | CloseContact(LookupContact(..))
     | RaiseBudget(contact: LookupContact(..), ..)
+    | RenameContact(contact: LookupContact(..), ..)
     | SendMessage(contact: LookupContact(..), ..) -> True
     ReceiveMessages(contact: Some(LookupContact(..)), ..)
     | ShowAudit(contact: Some(LookupContact(..)), ..)
@@ -1153,6 +1167,8 @@ pub fn resolve_action_contacts(
     CloseContact(ref) -> resolve_ref(ref, entries) |> result.map(CloseContact)
     RaiseBudget(ref, add) ->
       resolve_ref(ref, entries) |> result.map(RaiseBudget(_, add))
+    RenameContact(ref, name) ->
+      resolve_ref(ref, entries) |> result.map(RenameContact(_, name))
     SendMessage(ref, content_type, source, in_reply_to, idempotency_key) -> {
       use resolved <- result.map(resolve_ref(ref, entries))
       SendMessage(resolved, content_type, source, in_reply_to, idempotency_key)
@@ -1320,6 +1336,7 @@ pub fn input_of(action: Action) -> Input {
     | DeclineContact(..)
     | CloseContact(..)
     | RaiseBudget(..)
+    | RenameContact(..)
     | ReceiveMessages(..)
     | Acknowledge(..)
     | MessageStatus(..)
@@ -1407,6 +1424,14 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
       json.object([
         #("contact", contact_ref_json(contact)),
         #("by", json.int(add)),
+      ]),
+    )
+
+    RenameContact(contact:, name:) -> #(
+      "rename",
+      json.object([
+        #("contact", contact_ref_json(contact)),
+        #("description", json.string(name)),
       ]),
     )
 
