@@ -14,6 +14,7 @@ import daemon/cli.{
   type Action, AcceptInvite, Acknowledge, ApproveContact, CloseContact,
   CreateInvite, DeclineContact, ListContacts, MessageStatus, RaiseBudget, Raw,
   ReceiveMessages, SendMessage, ShowAudit, ShowHealth, ShowIncidents,
+  ShowMessages,
 }
 import gleam/bit_array
 import gleam/dict
@@ -86,6 +87,7 @@ pub fn render(action: Action, result: Dynamic) -> Result(Rendered, String) {
     ReceiveMessages(view:, ..) -> deliveries(result, view)
     MessageStatus(..) -> state_line(result)
     ShowAudit(..) -> audit(result)
+    ShowMessages(..) -> messages(result)
     ShowIncidents(..) -> incidents(result)
     ShowHealth -> health(result)
   }
@@ -214,7 +216,7 @@ fn deliveries(
                 [
                   row.message,
                   row.contact,
-                  row.content_type,
+                  inline(row.content_type),
                   "bytes=" <> int.to_string(bit_array.byte_size(row.payload)),
                   "at=" <> int.to_string(row.received_at),
                 ],
@@ -247,7 +249,7 @@ fn audit(result: Dynamic) -> Result(Rendered, String) {
         direction,
         contact,
         message,
-        content_type,
+        inline(content_type),
         show_payload(payload),
       ],
       " ",
@@ -256,6 +258,190 @@ fn audit(result: Dynamic) -> Result(Rendered, String) {
 
   use lines <- result.try(field(result, "entries", decode.list(row)))
   Ok(lines_of(lines))
+}
+
+/// The audit log read as a conversation, oldest first. Each message is a
+/// header, `<UTC time> <-|-> <contact prefix> <content type>`, then its
+/// payload indented by two spaces, with a blank line between messages.
+///
+/// The daemon answers newest first, so that a limit keeps the most recent
+/// messages; reversing here puts them in the order they were said. A peer
+/// chose the payload and the content type, so both are shown with control
+/// characters escaped: a raw escape sequence would otherwise reach the
+/// operator's terminal.
+fn messages(result: Dynamic) -> Result(Rendered, String) {
+  let row = {
+    use at <- decode.field("at", decode.int)
+    use direction <- decode.field("direction", decode.string)
+    use contact <- decode.field("contact", decode.string)
+    use content_type <- decode.field("content_type", decode.string)
+    use payload <- decode.field("payload", decode.string)
+
+    decode.success(
+      string.join(
+        [
+          utc_time(at),
+          arrow(direction),
+          string.slice(contact, 0, 8),
+          inline(content_type),
+        ],
+        "  ",
+      )
+      <> "\n"
+      <> indent(message_text(payload)),
+    )
+  }
+
+  use entries <- result.try(field(result, "entries", decode.list(row)))
+
+  // A blank element between two blocks is the blank line between them.
+  Ok(lines_of(list.intersperse(list.reverse(entries), "")))
+}
+
+/// `<-` for a message that arrived and `->` for one that was sent.
+fn arrow(direction: String) -> String {
+  case direction {
+    "inbound" -> "<-"
+    "outbound" -> "->"
+    other -> inline(other)
+  }
+}
+
+/// A base64 payload as printable text when it is UTF-8, else as base64.
+fn message_text(encoded: String) -> String {
+  let decoded =
+    bit_array.base64_decode(encoded)
+    |> result.try(bit_array.to_string)
+
+  // Text is shown as text, and bytes that are not text as the base64 they
+  // arrived in, so nothing is lost and nothing is misread.
+  case decoded {
+    Ok(text) -> printable(text)
+    Error(Nil) -> "base64:" <> encoded
+  }
+}
+
+/// Every line of `text` behind two spaces.
+fn indent(text: String) -> String {
+  string.split(text, "\n")
+  |> list.map(fn(line) { "  " <> line })
+  |> string.join("\n")
+}
+
+/// Whether a newline and a tab stay as they are or are escaped like any other
+/// control character.
+type Layout {
+  /// Multi-line text, where line breaks are the text's own layout.
+  KeepLayout
+
+  /// A field on one line, where a line break would start a forged line.
+  EscapeLayout
+}
+
+/// Multi-line peer text with control characters other than a newline or a tab
+/// written as `\xNN`, so it cannot move the cursor or retitle the terminal.
+fn printable(text: String) -> String {
+  escape_controls(text, KeepLayout)
+}
+
+/// A peer's one-line field, such as a content type, with every control
+/// character written as `\xNN`, newline and tab included. A newline kept here
+/// would let the peer start a line of its own that reads as a header.
+fn inline(text: String) -> String {
+  escape_controls(text, EscapeLayout)
+}
+
+/// Writes controls out as `\xNN` and leaves every other codepoint alone.
+fn escape_controls(text: String, layout: Layout) -> String {
+  string.to_utf_codepoints(text)
+  |> list.map(fn(point) {
+    let code = string.utf_codepoint_to_int(point)
+
+    // Layout is the only difference between the two callers: it decides
+    // whether a newline or a tab counts as a control to write out.
+    let is_layout = case layout {
+      KeepLayout -> code == 10 || code == 9
+      EscapeLayout -> False
+    }
+
+    // Layout stays, and any other control is written out, since a terminal
+    // would act on it.
+    case is_layout || !is_control(code) {
+      True -> string.from_utf_codepoints([point])
+      False -> "\\x" <> hex_digits(code, 2)
+    }
+  })
+  |> string.concat
+}
+
+/// Whether a codepoint is a C0 control, DEL or a C1 control. The C1 range
+/// (0x80 to 0x9f) acts as escape sequences on some terminals.
+fn is_control(code: Int) -> Bool {
+  code < 32 || code == 127 || { code >= 128 && code <= 159 }
+}
+
+/// `value` in lowercase hex, padded with zeros to `width` digits.
+fn hex_digits(value: Int, width: Int) -> String {
+  string.pad_start(string.lowercase(int.to_base16(value)), width, "0")
+}
+
+/// Unix seconds as `YYYY-MM-DD HH:MM:SSZ` in UTC. The calendar part is the
+/// civil-from-days algorithm: days are counted from 0000-03-01 so a leap day
+/// falls at the end of a year.
+fn utc_time(seconds: Int) -> String {
+  let seconds = int.max(seconds, 0)
+  let days = seconds / 86_400
+  let rest = seconds % 86_400
+
+  let z = days + 719_468
+  let era = z / 146_097
+  let day_of_era = z - era * 146_097
+  let year_of_era =
+    {
+      day_of_era
+      - day_of_era
+      / 1460
+      + day_of_era
+      / 36_524
+      - day_of_era
+      / 146_096
+    }
+    / 365
+  let day_of_year =
+    day_of_era - { 365 * year_of_era + year_of_era / 4 - year_of_era / 100 }
+  let shifted_month = { 5 * day_of_year + 2 } / 153
+  let day = day_of_year - { 153 * shifted_month + 2 } / 5 + 1
+
+  // The year starts in March, so January and February belong to the next
+  // calendar year and their shifted months are 10 and 11.
+  let month = case shifted_month < 10 {
+    True -> shifted_month + 3
+    False -> shifted_month - 9
+  }
+
+  // January and February fall in the year after the March-based one.
+  let year = case month <= 2 {
+    True -> year_of_era + era * 400 + 1
+    False -> year_of_era + era * 400
+  }
+
+  int.to_string(year)
+  <> "-"
+  <> two_digits(month)
+  <> "-"
+  <> two_digits(day)
+  <> " "
+  <> two_digits(rest / 3600)
+  <> ":"
+  <> two_digits(rest % 3600 / 60)
+  <> ":"
+  <> two_digits(rest % 60)
+  <> "Z"
+}
+
+/// A non-negative number below 100 as two digits.
+fn two_digits(value: Int) -> String {
+  string.pad_start(int.to_string(value), 2, "0")
 }
 
 /// The incidents as one line per entry:

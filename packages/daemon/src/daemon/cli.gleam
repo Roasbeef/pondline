@@ -30,7 +30,8 @@
 ////   `[--reply-to HEX] [--idempotency-key KEY]`.
 //// - `receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]`.
 //// - `ack --message HEX`, `status --message HEX`, `audit [--contact CONTACT]`
-////   `[--limit N]`, `incidents [--limit N]` and `health`.
+////   `[--limit N]`, `messages [--contact CONTACT] [--limit N]` (the audit
+////   log read as a conversation), `incidents [--limit N]` and `health`.
 //// - `--version` prints the build's version and commit.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
@@ -110,6 +111,7 @@ commands:
   ack --message HEX
   status --message HEX
   audit [--contact CONTACT] [--limit N]
+  messages [--contact CONTACT] [--limit N]
   incidents [--limit N]
   health
   --version
@@ -278,6 +280,7 @@ pub type Action {
   Acknowledge(message: Id(Message))
   MessageStatus(message: Id(Message))
   ShowAudit(contact: Option(ContactRef), limit: Int)
+  ShowMessages(contact: Option(ContactRef), limit: Int)
   ShowIncidents(limit: Int)
   ShowHealth
 }
@@ -304,6 +307,24 @@ pub type Command {
 
   /// Print the build's version and commit (`daemon/build`) and exit.
   Version
+}
+
+/// How `command` prints its answer. A command with no answer to format, the
+/// daemon itself and the usage and version text, is `HumanOutput`.
+///
+/// ## Examples
+///
+/// ```gleam
+/// cli.output_of(Version)
+/// // -> HumanOutput
+/// ```
+pub fn output_of(command: Command) -> Output {
+  case command {
+    InitDaemon(InitCommand(output:, ..)) -> output
+    ManageService(ServiceCommand(output:, ..)) -> output
+    Client(output:, ..) -> output
+    RunDaemon(..) | Help | Version -> HumanOutput
+  }
 }
 
 /// The options found on a command line.
@@ -464,6 +485,16 @@ pub fn parse_with_env(
         use limit <- result.try(optional_number(options, "--limit", 50, 1, 256))
 
         Ok(ShowAudit(contact:, limit:))
+      })
+
+    // `messages` asks the daemon the same question as `audit`; only the
+    // human rendering and the smaller default window differ.
+    ["messages", ..rest] ->
+      client(rest, env, ["--contact", "--limit"], [], fn(options) {
+        use contact <- result.try(optional_contact(options))
+        use limit <- result.try(optional_number(options, "--limit", 20, 1, 256))
+
+        Ok(ShowMessages(contact:, limit:))
       })
 
     ["incidents", ..rest] ->
@@ -1095,7 +1126,8 @@ pub fn needs_contact_lookup(action: Action) -> Bool {
     | RaiseBudget(contact: LookupContact(..), ..)
     | SendMessage(contact: LookupContact(..), ..) -> True
     ReceiveMessages(contact: Some(LookupContact(..)), ..)
-    | ShowAudit(contact: Some(LookupContact(..)), ..) -> True
+    | ShowAudit(contact: Some(LookupContact(..)), ..)
+    | ShowMessages(contact: Some(LookupContact(..)), ..) -> True
     _ -> False
   }
 }
@@ -1132,6 +1164,10 @@ pub fn resolve_action_contacts(
     ShowAudit(Some(ref), limit) -> {
       use resolved <- result.map(resolve_ref(ref, entries))
       ShowAudit(Some(resolved), limit)
+    }
+    ShowMessages(Some(ref), limit) -> {
+      use resolved <- result.map(resolve_ref(ref, entries))
+      ShowMessages(Some(resolved), limit)
     }
     other -> Ok(other)
   }
@@ -1288,6 +1324,7 @@ pub fn input_of(action: Action) -> Input {
     | Acknowledge(..)
     | MessageStatus(..)
     | ShowAudit(..)
+    | ShowMessages(..)
     | ShowIncidents(..)
     | ShowHealth -> NoInput
   }
@@ -1396,7 +1433,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     Acknowledge(message:) -> #("acknowledge", message_args(message))
     MessageStatus(message:) -> #("status", message_args(message))
 
-    ShowAudit(contact:, limit:) -> #(
+    ShowAudit(contact:, limit:) | ShowMessages(contact:, limit:) -> #(
       "audit",
       json.object([
         #("contact", json.nullable(contact, contact_ref_json)),

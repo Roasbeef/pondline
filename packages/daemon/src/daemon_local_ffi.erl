@@ -2,7 +2,8 @@
 -export([
     listen/1, accept/1, connect/2, recv_line/4, send/2, close/1,
     monotonic_ms/0, create_private_file/2, write_private_file/2,
-    make_private_dir/1, file_mode/1, write_stdout/1, read_stdin/1,
+    make_private_dir/1, file_mode/1, write_stdout/1, stdout_is_terminal/0,
+    read_stdin/1,
     getenv/1, find_executable/1, host_os/0, absolute_path/1,
     current_uid/0, run_program/3, halt/1
 ]).
@@ -143,6 +144,12 @@ file_mode(Path) ->
         {ok, Info} -> {ok, element(8, Info) band 8#777};
         {error, Reason} -> reason(Reason)
     end.
+
+%% Whether standard output is a terminal. `prim_tty:isatty/1` asks the OS
+%% about fd 1 itself, so a redirect or a pipe answers `false` even when the
+%% VM was started from a terminal.
+stdout_is_terminal() ->
+    prim_tty:isatty(stdout) =:= true.
 
 %% Writes raw bytes synchronously to `standard_io` under `latin1` encoding (1:1
 %% octets, restoring the previous encoding afterwards). Unlike opening `/dev/stdout`
