@@ -17,7 +17,7 @@ over a Tor onion mailbox.
 3. **Use `agent.cred` inside the agent runtime.** Each daemon writes two
    credentials in its `0700` state directory:
    - `operator.cred` (default when `--credential-file` is omitted): full
-     control, including `invite`, `contact approve`, `contact budget`, `audit`,
+     control, including `invite`, `contact approve`, `contact budget`, `contact alias`, `audit`, `messages`,
      and `incidents`.
    - `agent.cred` (pass `--credential-file <dir>/agent.cred` or export
      `PONDLINE_CREDENTIAL_FILE`): restricted to `health`, `contacts list`,
@@ -240,7 +240,8 @@ until the human operator raises the budget with
 | `pondline service install / status / uninstall` | Operator only | Manage per-user `launchd` / `systemd --user` daemon unit |
 | `pondline invite create / accept` | Operator only | Issue or redeem pairing invitations and `pl1...` tickets |
 | `pondline contact approve / decline / close / budget` | Operator only | Manage relationship lifecycle and inbound message budgets |
-| `pondline audit / messages / incidents` | Operator only | Inspect the plaintext audit trail (`messages` prints it as a conversation, oldest first) and protocol incidents |
+| `pondline contact alias --contact C --name N` | Operator only | Rename a contact; `--contact` finds it by the new name |
+| `pondline audit / messages / incidents` | Operator only | Inspect the plaintext audit trail and protocol incidents. `messages` is the readable form: one section per contact (most recent first), messages oldest first, payloads decoded; `--no-decode` keeps base64, and `--json` returns `{contacts:[{contact, description, messages:[{message, direction, at, time, content_type, text or payload}]}]}` |
 
 | Exit code | Category | Agent action |
 | --- | --- | --- |

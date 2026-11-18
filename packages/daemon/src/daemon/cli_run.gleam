@@ -39,8 +39,8 @@ import daemon/cli.{
   type Action, type Carrier, type Command, type Input, type Output, type Target,
   Client, CreateInvite, DaemonOptions, ExplicitMailbox, GrantMailbox, Help,
   HumanOutput, InitDaemon, InputFile, InputStdin, InstallService, JsonOutput,
-  Loopback, ManageService, NoInput, RunDaemon, SavedMailbox, ServiceStatus, Tor,
-  UninstallService, Version,
+  Loopback, ManageService, NoInput, RunDaemon, SavedMailbox, ServiceStatus,
+  ShowMessages, Tor, UninstallService, Version,
 }
 import daemon/cli_render
 import daemon/credential
@@ -651,8 +651,12 @@ fn attempt(
     protocol.Failed(category:, message:) ->
       Ok(failed(output, line, category, message))
 
-    protocol.Succeeded(result:) ->
-      succeeded(output, resolved_action, line, result)
+    protocol.Succeeded(result:) -> {
+      let names =
+        names_for(target, output, secret.expose(credential), resolved_action)
+
+      succeeded(output, resolved_action, line, result, names)
+    }
   }
 }
 
@@ -667,20 +671,53 @@ fn resolve_contacts_if_needed(
   case cli.needs_contact_lookup(action) {
     False -> Ok(action)
     True -> {
-      use #(line, response) <- result.try(
-        local_api_client.exchange(
-          target.socket,
-          credential_bytes,
-          "contacts",
-          json.object([]),
-          10_000,
-        )
-        |> result.map_error(unreachable(_, target.socket)),
-      )
-      use entries <- result.try(decode_contact_entries(output, line, response))
+      use entries <- result.try(fetch_contact_entries(
+        target,
+        output,
+        credential_bytes,
+      ))
       cli.resolve_action_contacts(action, entries)
       |> result.map_error(fn(message) { not_found_outcome(output, message) })
     }
+  }
+}
+
+/// Asks the daemon for its contacts over the local socket.
+fn fetch_contact_entries(
+  target: Target,
+  output: Output,
+  credential_bytes: BitArray,
+) -> Result(List(cli.ContactEntry), Outcome) {
+  use #(line, response) <- result.try(
+    local_api_client.exchange(
+      target.socket,
+      credential_bytes,
+      "contacts",
+      json.object([]),
+      10_000,
+    )
+    |> result.map_error(unreachable(_, target.socket)),
+  )
+
+  decode_contact_entries(output, line, response)
+}
+
+/// The contacts `messages` titles its sections with. A section is only a
+/// heading, so a daemon that cannot list its contacts leaves each one
+/// titled by its identifier instead of failing a command that already has
+/// its answer.
+fn names_for(
+  target: Target,
+  output: Output,
+  credential_bytes: BitArray,
+  action: Action,
+) -> List(cli.ContactEntry) {
+  case action {
+    ShowMessages(..) ->
+      fetch_contact_entries(target, output, credential_bytes)
+      |> result.unwrap([])
+
+    _ -> []
   }
 }
 
@@ -873,15 +910,23 @@ fn succeeded(
   action: Action,
   line: String,
   result: Dynamic,
+  names: List(cli.ContactEntry),
 ) -> Result(Outcome, Outcome) {
   case action, output {
     CreateInvite(output: handed, ..), _ ->
       hand_out_invitation(output, handed, result)
 
+    // `messages` is the one answer the CLI reshapes: the daemon's flat audit
+    // entries become an inbox grouped by contact, with payloads decoded.
+    ShowMessages(decoding:, ..), JsonOutput ->
+      cli_render.messages_json(result, names, decoding)
+      |> result.map(fn(text) { Outcome(cli.exit_ok, <<text:utf8, "\n">>, "") })
+      |> result.map_error(failure(cli.exit_unavailable, _))
+
     _, JsonOutput -> Ok(Outcome(cli.exit_ok, <<line:utf8, "\n">>, ""))
 
     _, _ ->
-      cli_render.render(action, result)
+      cli_render.render(action, result, names)
       |> result.map(fn(rendered) {
         Outcome(cli.exit_ok, rendered.stdout, rendered.stderr)
       })

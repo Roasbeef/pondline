@@ -198,7 +198,7 @@ pondline receive --state-dir /tmp/rw/A --credential-file /tmp/rw/A/agent.cred --
 pondline-mailbox status --db /tmp/rw/mb.db
 ```
 
-Run `pondline help` for the rest (`ack`, `status`, `audit`, `contact budget`, `incidents`, `health`). Every command takes `--json`, and exit codes are stable: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused or invalid, 6 unavailable.
+Run `pondline help` for the rest (`ack`, `status`, `audit`, `messages`, `contact budget`, `contact alias`, `incidents`, `health`). Every command takes `--json`, and exit codes are stable: 0 ok, 1 local failure, 2 usage, 3 unauthorized or forbidden, 4 not found, 5 refused or invalid, 6 unavailable.
 
 ## Logs
 

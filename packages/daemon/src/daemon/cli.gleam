@@ -31,8 +31,8 @@
 ////   `[--reply-to HEX] [--idempotency-key KEY]`.
 //// - `receive [--contact CONTACT] [--max N] [--wait SECONDS] [--raw]`.
 //// - `ack --message HEX`, `status --message HEX`, `audit [--contact CONTACT]`
-////   `[--limit N]`, `messages [--contact CONTACT] [--limit N]` (the audit
-////   log read as a conversation), `incidents [--limit N]` and `health`.
+////   `[--limit N]`, `messages [--contact CONTACT] [--limit N] [--no-decode]`
+////   (the audit log as an inbox, one section per contact), `incidents [--limit N]` and `health`.
 //// - `--version` prints the build's version and commit.
 ////
 //// Every client command also takes `--state-dir D` or `--socket P` to find
@@ -113,7 +113,7 @@ commands:
   ack --message HEX
   status --message HEX
   audit [--contact CONTACT] [--limit N]
-  messages [--contact CONTACT] [--limit N]
+  messages [--contact CONTACT] [--limit N] [--no-decode]
   incidents [--limit N]
   health
   --version
@@ -247,6 +247,15 @@ pub type ContactEntry {
   ContactEntry(contact: Id(Contact), phase: String, description: String)
 }
 
+/// Whether `messages` shows a payload as text or leaves it as base64.
+pub type Decoding {
+  /// A payload that is UTF-8 is shown as text; any other stays base64.
+  DecodeText
+
+  /// Every payload stays the base64 the daemon sent.
+  KeepEncoded
+}
+
 /// What a client command asks the daemon to do.
 pub type Action {
   CreateInvite(
@@ -283,7 +292,7 @@ pub type Action {
   Acknowledge(message: Id(Message))
   MessageStatus(message: Id(Message))
   ShowAudit(contact: Option(ContactRef), limit: Int)
-  ShowMessages(contact: Option(ContactRef), limit: Int)
+  ShowMessages(contact: Option(ContactRef), limit: Int, decoding: Decoding)
   ShowIncidents(limit: Int)
   ShowHealth
 }
@@ -503,11 +512,17 @@ pub fn parse_with_env(
     // `messages` asks the daemon the same question as `audit`; only the
     // human rendering and the smaller default window differ.
     ["messages", ..rest] ->
-      client(rest, env, ["--contact", "--limit"], [], fn(options) {
+      client(rest, env, ["--contact", "--limit"], ["--no-decode"], fn(options) {
         use contact <- result.try(optional_contact(options))
         use limit <- result.try(optional_number(options, "--limit", 20, 1, 256))
 
-        Ok(ShowMessages(contact:, limit:))
+        // `--no-decode` is a switch, so it is a branch on presence.
+        let decoding = case has_flag(options, "--no-decode") {
+          True -> KeepEncoded
+          False -> DecodeText
+        }
+
+        Ok(ShowMessages(contact:, limit:, decoding:))
       })
 
     ["incidents", ..rest] ->
@@ -1181,9 +1196,9 @@ pub fn resolve_action_contacts(
       use resolved <- result.map(resolve_ref(ref, entries))
       ShowAudit(Some(resolved), limit)
     }
-    ShowMessages(Some(ref), limit) -> {
+    ShowMessages(Some(ref), limit, decoding) -> {
       use resolved <- result.map(resolve_ref(ref, entries))
-      ShowMessages(Some(resolved), limit)
+      ShowMessages(Some(resolved), limit, decoding)
     }
     other -> Ok(other)
   }
@@ -1458,7 +1473,7 @@ pub fn request(action: Action, input: BitArray) -> #(String, Json) {
     Acknowledge(message:) -> #("acknowledge", message_args(message))
     MessageStatus(message:) -> #("status", message_args(message))
 
-    ShowAudit(contact:, limit:) | ShowMessages(contact:, limit:) -> #(
+    ShowAudit(contact:, limit:) | ShowMessages(contact:, limit:, ..) -> #(
       "audit",
       json.object([
         #("contact", json.nullable(contact, contact_ref_json)),
